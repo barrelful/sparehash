@@ -22,9 +22,10 @@ from .install_manifest import StoreContext, locked_store
 from .install_xmrig import choose, dry_run, isolated
 from .sysdetect import Capabilities
 from .xmrig_install import CollisionError, current_binary
-from .xmrig_ledger import Artifact, GroupIdentity, Operation, UserIdentity, choice
+from .xmrig_ledger import Artifact, GroupIdentity, Operation, UserIdentity, choice, fixed_target, leaf_identity
 
 UNITS: Final = "/etc/systemd/system"
+BOOTSTRAP_PATHS: Final = ("/opt/sparehash", "/opt/sparehash/src", "/usr/local/bin/sparehash")
 
 
 class Arguments(argparse.Namespace):
@@ -155,6 +156,25 @@ def post_install(tree: Tree, cfg: config.Config) -> None:
     print("post-install: controller enabled (not started); miner static; loopback API configured; idle scheduler configured")
 
 
+def bootstrap(ledger: Ledger, created: tuple[str, ...]) -> None:
+    """Record only paths the shell bootstrap created; leaf paths must match the fixed grammar."""
+    tree = ledger.tree
+    for name in BOOTSTRAP_PATHS:
+        if tree.path(name).exists():
+            ledger.applied(0, (tree.receipt(name, name in created),))
+    for name in created:
+        if name in BOOTSTRAP_PATHS:
+            continue
+        fixed = fixed_target(name)
+        identity = leaf_identity(name) if fixed is None else None
+        if fixed is None and identity is None:
+            raise DeploymentError("bootstrap", "unsupported bootstrap target: " + name)
+        receipt = tree.receipt(name, True, identity=identity)
+        if receipt.uid != tree.uid or (receipt.kind == "file" and receipt.sha256 is None):
+            raise DeploymentError("bootstrap", "unprotected bootstrap target: " + name)
+        ledger.applied(0, (receipt,))
+
+
 def execute(tree: Tree, caps: Capabilities, cfg: config.Config, *, use_existing: bool = False,
             bootstrap_created: tuple[str, ...] = ()) -> None:
     preflight(tree, caps)
@@ -172,9 +192,7 @@ def execute(tree: Tree, caps: Capabilities, cfg: config.Config, *, use_existing:
         token = xmrig_config.new_token()
     ledger.initialize()
     identities(ledger)
-    for name in ("/opt/sparehash", "/opt/sparehash/src", "/usr/local/bin/sparehash"):
-        if tree.path(name).exists():
-            ledger.applied(0, (tree.receipt(name, name in bootstrap_created),))
+    bootstrap(ledger, bootstrap_created)
     gid = grp.getgrnam("sparehash").gr_gid
     for name in ("/etc/sparehash", "/var/lib/sparehash"):
         existed = existed_dirs[name]
@@ -216,7 +234,7 @@ def main(argv: Sequence[str] | None = None, *, geteuid: Callable[[], int] = os.g
     parser = argparse.ArgumentParser(prog="sparehash install")
     _ = parser.add_argument("--answers", type=Path)
     _ = parser.add_argument("--use-existing", action="store_true")
-    _ = parser.add_argument("--bootstrap-created", action="append", choices=("/opt/sparehash", "/opt/sparehash/src", "/usr/local/bin/sparehash"), help=argparse.SUPPRESS)
+    _ = parser.add_argument("--bootstrap-created", action="append", metavar="PATH", help=argparse.SUPPRESS)
     args = parser.parse_args(argv, namespace=Arguments())
     if geteuid() != 0:
         print("sparehash: root: installation requires root", file=sys.stderr)

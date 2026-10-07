@@ -21,11 +21,18 @@ Operation = Literal["create-user", "create-group", "add-membership", "create-dir
 OPERATIONS: Final[tuple[Operation, ...]] = (
     "create-user", "create-group", "add-membership", "create-directory",
     "write-file", "merge-gaming", "daemon-reload", "enable-controller")
+DIRECTORIES: Final = frozenset((
+    "/opt/sparehash", "/opt/sparehash/src", "/opt/sparehash/src/sparehash",
+    "/opt/sparehash/src/systemd", "/etc/sparehash", "/var/lib/sparehash"))
 PATHS: Final = frozenset((
-    "/opt/sparehash", "/opt/sparehash/src", "/usr/local/bin/sparehash",
-    "/etc/sparehash", "/var/lib/sparehash", "/etc/sparehash/config.toml",
+    *DIRECTORIES, "/usr/local/bin/sparehash", "/etc/sparehash/config.toml",
     "/etc/sparehash/xmrig.json", "/etc/sparehash/xmrig.runtime.json",
     "/etc/systemd/system/sparehash.service", "/etc/systemd/system/sparehash-xmrig.service"))
+PACKAGE_DIR: Final = "/opt/sparehash/src/sparehash"
+TEMPLATE_DIR: Final = "/opt/sparehash/src/systemd"
+UNIT_TEMPLATES: Final = ("sparehash.service.in", "sparehash-xmrig.service.in")
+PACKAGE_LEAF: Final = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,63}\.py")
+ArtifactKind = Literal["file", "directory"]
 USERNAME: Final = re.compile(r"[a-z_][a-z0-9_-]{0,31}")
 HEX64: Final = re.compile(r"[0-9a-f]{64}")
 HEX32: Final = re.compile(r"[0-9a-f]{32}")
@@ -170,3 +177,31 @@ def date(value: Json) -> str:
     except ValueError as error:
         raise ManifestError("date") from error
     return result
+
+
+def fixed_target(identity: str) -> tuple[str, ArtifactKind] | None:
+    """Exact (path, kind) for a fixed receipt id, or None when outside the vocabulary."""
+    if identity in PATHS:
+        return identity, "directory" if identity in DIRECTORIES else "file"
+    prefix, separator, leaf = identity.partition(":")
+    if prefix == "package-file" and separator == ":" and PACKAGE_LEAF.fullmatch(leaf) is not None:
+        return PACKAGE_DIR + "/" + leaf, "file"
+    if prefix == "unit-template" and separator == ":" and leaf in UNIT_TEMPLATES:
+        return TEMPLATE_DIR + "/" + leaf, "file"
+    return None
+
+
+def leaf_identity(path: str) -> str | None:
+    """Exact typed receipt id for an installed package/template leaf path, or None."""
+    package = PACKAGE_DIR + "/"
+    if path.startswith(package):
+        leaf = path.removeprefix(package)
+        if PACKAGE_LEAF.fullmatch(leaf) is not None:
+            return "package-file:" + leaf
+        return None
+    template = TEMPLATE_DIR + "/"
+    if path.startswith(template):
+        leaf = path.removeprefix(template)
+        if leaf in UNIT_TEMPLATES:
+            return "unit-template:" + leaf
+    return None

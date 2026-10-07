@@ -13,9 +13,9 @@ from pathlib import PurePosixPath
 from typing import Callable, Final, Literal, assert_never
 
 from .xmrig_ledger import (
-    HEX32, HEX64, OPERATIONS, PATHS, USERNAME, Action, Artifact, GroupIdentity,
+    HEX32, HEX64, OPERATIONS, USERNAME, Action, Artifact, GroupIdentity,
     Installer, Json, ManifestError as ManifestError, Membership, UserIdentity,
-    boolean, choice, date, integer, items, keys, mapping, text,
+    boolean, choice, date, fixed_target, integer, items, keys, mapping, text,
 )
 
 MANIFEST_ROOT: Final = "/opt/xmrig"
@@ -85,21 +85,25 @@ def _artifact(value: Json) -> Artifact:
     identity, path = text(record["id"]), text(record["path"])
     kind: Literal["file", "directory"] = choice(record["kind"], ARTIFACT_KINDS)
     suffix = identity.partition(":")
-    gaming = suffix[0] in {"gaming-ini", "gaming-backup", "gaming-config-directory"}
-    if gaming:
+    fixed = fixed_target(identity)
+    if fixed is not None:
+        if path != fixed[0]:
+            raise ManifestError("artifact path")
+        directory = fixed[1] == "directory"
+    elif suffix[0] in {"gaming-ini", "gaming-backup", "gaming-config-directory"}:
         if not suffix[1] or USERNAME.fullmatch(suffix[2]) is None:
             raise ManifestError("gaming artifact id")
         ending = {"gaming-ini": "/.config/gamemode.ini", "gaming-backup": "/.config/gamemode.ini.sparehash-bak",
                   "gaming-config-directory": "/.config"}[suffix[0]]
         if not path.endswith(ending):
             raise ManifestError("gaming artifact path")
-    elif identity not in PATHS or path != identity:
+        directory = suffix[0] == "gaming-config-directory"
+    else:
         raise ManifestError("artifact id")
     if (not path.startswith("/") or path.startswith("//") or len(path) > 4096
             or any(ord(char) < 32 or ord(char) == 127 for char in path)
             or str(PurePosixPath(path)) != path or ".." in PurePosixPath(path).parts):
         raise ManifestError("artifact path")
-    directory = identity in {"/opt/sparehash", "/opt/sparehash/src", "/etc/sparehash", "/var/lib/sparehash"} or suffix[0] == "gaming-config-directory"
     if (kind == "directory") != directory:
         raise ManifestError("artifact kind")
     digest = None if record["sha256"] is None else text(record["sha256"])
@@ -121,8 +125,9 @@ def _action(value: Json) -> Action:
 
 
 def _pending_target(target: str) -> str | None:
-    if target in PATHS:
-        return "directory" if target in {"/opt/sparehash", "/opt/sparehash/src", "/etc/sparehash", "/var/lib/sparehash"} else "file"
+    fixed = fixed_target(target)
+    if fixed is not None:
+        return fixed[1]
     if target in {"user:xmrig", "group:xmrig", "group:sparehash"}:
         return target.partition(":")[0]
     parts = target.split(":")

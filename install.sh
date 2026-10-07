@@ -3,7 +3,6 @@ set -eu
 PATH=/usr/sbin:/usr/bin:/sbin:/bin
 export PATH
 umask 077
-bootstrap_created=
 
 refuse() {
     printf 'sparehash: %s\n' "$1" >&2
@@ -44,13 +43,14 @@ done
 for directory in /opt/sparehash /opt/sparehash/src; do
     if [ ! -e "$directory" ]; then
         mkdir -m 0755 "$directory" || refuse "cannot create directory: $directory"
-        bootstrap_created="$bootstrap_created $directory"
+        set -- "$@" --bootstrap-created "$directory"
     fi
     [ -d "$directory" ] && [ "$(stat -c '%u:%a' "$directory")" = 0:755 ] || refuse "directory ownership or mode is unsafe: $directory"
 done
 
 if [ ! -e /opt/sparehash/src/sparehash ]; then
     mkdir -m 0755 /opt/sparehash/src/sparehash || refuse 'cannot create package directory'
+    set -- "$@" --bootstrap-created /opt/sparehash/src/sparehash
 fi
 [ -d /opt/sparehash/src/sparehash ] && [ ! -L /opt/sparehash/src/sparehash ] || refuse 'installed package path is unsafe'
 [ "$(stat -c '%u:%a' /opt/sparehash/src/sparehash)" = 0:755 ] || refuse 'installed package directory ownership or mode is unsafe'
@@ -68,6 +68,7 @@ for source_file in "$source_package"/*.py; do
         cmp -s "$source_file" "$target_file" || refuse "installed package differs; refusing overwrite: $file"
     else
         install -o root -g root -m 0644 "$source_file" "$target_file" || refuse "cannot install package file: $file"
+        set -- "$@" --bootstrap-created "$target_file"
     fi
 done
 
@@ -75,6 +76,7 @@ template_source=$source_dir/systemd
 [ -d "$template_source" ] && [ ! -L "$template_source" ] || refuse 'systemd templates are missing or unsafe'
 if [ ! -e /opt/sparehash/src/systemd ]; then
     mkdir -m 0755 /opt/sparehash/src/systemd || refuse 'cannot create template directory'
+    set -- "$@" --bootstrap-created /opt/sparehash/src/systemd
 fi
 [ -d /opt/sparehash/src/systemd ] && [ ! -L /opt/sparehash/src/systemd ] || refuse 'installed template directory is unsafe'
 [ "$(stat -c '%u:%a' /opt/sparehash/src/systemd)" = 0:755 ] || refuse 'installed template directory ownership or mode is unsafe'
@@ -88,6 +90,7 @@ for unit in sparehash.service.in sparehash-xmrig.service.in; do
         cmp -s "$source_file" "$target_file" || refuse "installed template differs: $unit"
     else
         install -o root -g root -m 0644 "$source_file" "$target_file" || refuse "cannot install template: $unit"
+        set -- "$@" --bootstrap-created "$target_file"
     fi
 done
 
@@ -113,11 +116,8 @@ if [ -e /usr/local/bin/sparehash ] || [ -L /usr/local/bin/sparehash ]; then
     rm -f "$shim_tmp"
 else
     mv "$shim_tmp" /usr/local/bin/sparehash || refuse 'cannot install CLI shim'
-    bootstrap_created="$bootstrap_created /usr/local/bin/sparehash"
+    set -- "$@" --bootstrap-created /usr/local/bin/sparehash
 fi
 trap - 0 HUP INT TERM
 
-for directory in $bootstrap_created; do
-    set -- "$@" --bootstrap-created "$directory"
-done
 exec /usr/local/bin/sparehash install "$@"

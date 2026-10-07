@@ -40,6 +40,16 @@ def checked(argv: tuple[str, ...], timeout: float = 10) -> str:
     return result.stdout.strip()
 
 
+def protected_digest(name: str, data: bytes) -> str:
+    """SHA256 of artifact bytes; token-bearing configs strip the API access token first."""
+    if name in {"/etc/sparehash/xmrig.json", "/etc/sparehash/xmrig.runtime.json"}:
+        document = mapping(LOAD_JSON(data))
+        http = mapping(document["http"])
+        _ = http.pop("access-token", None)
+        data = json.dumps(document, sort_keys=True, separators=(",", ":")).encode()
+    return hashlib.sha256(data).hexdigest()
+
+
 def binary(value: str) -> Path:
     path = Path(value)
     if not path.is_absolute() or path.name != "xmrig" or ".." in path.parts:
@@ -128,7 +138,7 @@ class Tree:
                 except FileNotFoundError:
                     pass
 
-    def receipt(self, name: str, created: bool) -> Artifact:
+    def receipt(self, name: str, created: bool, *, identity: str | None = None) -> Artifact:
         with ExitStack() as stack:
             parent = self.pin(stack, str(Path(name).parent))
             info = os.stat(Path(name).name, dir_fd=parent, follow_symlinks=False)
@@ -138,11 +148,7 @@ class Tree:
             data = b"" if directory else self.read(name)
             if data is None:
                 raise DeploymentError("receipt", f"artifact disappeared: {name}")
-            if name in {"/etc/sparehash/xmrig.json", "/etc/sparehash/xmrig.runtime.json"}:
-                document = mapping(LOAD_JSON(data))
-                http = mapping(document["http"])
-                _ = http.pop("access-token", None)
-                data = json.dumps(document, sort_keys=True, separators=(",", ":")).encode()
-            digest = None if directory else hashlib.sha256(data).hexdigest()
-            return Artifact(name, name, "directory" if directory else "file", created,
+            digest = None if directory else protected_digest(name, data)
+            return Artifact(identity if identity is not None else name, name,
+                            "directory" if directory else "file", created,
                             info.st_uid, info.st_gid, stat.S_IMODE(info.st_mode), info.st_dev, info.st_ino, digest)
