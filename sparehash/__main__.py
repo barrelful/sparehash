@@ -1,0 +1,147 @@
+"""Sparehash command-line entrypoint and internal dispatch scaffold."""
+
+import argparse
+import os
+import pwd
+import sys
+from collections.abc import Callable, Sequence
+from typing import Final
+
+PUBLIC_COMMANDS: Final = (
+    "install",
+    "status",
+    "start",
+    "stop",
+    "pause",
+    "resume",
+    "config",
+    "logs",
+    "benchmark",
+    "update",
+    "uninstall",
+)
+GAMING_COMMANDS: Final = ("gaming-start", "gaming-end")
+INTERNAL_COMMANDS: Final = (
+    "__controller__",
+    "__cleanup__",
+    "__authorize_miner__",
+    "__miner_exec__",
+    "authorize-start",
+)
+ROOT_ONLY_COMMANDS: Final = ("__debug_set__", "__debug_clear__")
+PRIVILEGED_COMMANDS: Final = (
+    "__controller__",
+    "__cleanup__",
+    "__authorize_miner__",
+    "authorize-start",
+    "__debug_set__",
+    "__debug_clear__",
+)
+
+
+class CliArguments(argparse.Namespace):
+    json: bool = False
+    follow: bool = False
+    command: str = ""
+    config_command: str = ""
+    debug_command: str | None = None
+
+
+def _parser() -> argparse.ArgumentParser:
+    """Build the public argument parser."""
+    parser = argparse.ArgumentParser(prog="sparehash")
+    subparsers = parser.add_subparsers(dest="command", required=True)
+    for command in PUBLIC_COMMANDS:
+        command_parser = subparsers.add_parser(command)
+        if command == "install":
+            _ = command_parser.add_argument("--answers", metavar="FILE")
+        elif command == "uninstall":
+            _ = command_parser.add_argument("--purge", action="store_true")
+        elif command == "status":
+            _ = command_parser.add_argument("--json", action="store_true")
+        elif command == "logs":
+            _ = command_parser.add_argument("-f", "--follow", action="store_true")
+        elif command == "config":
+            config_commands = command_parser.add_subparsers(dest="config_command", required=True)
+            for action in ("show", "edit"):
+                _ = config_commands.add_parser(action)
+    for command in GAMING_COMMANDS:
+        _ = subparsers.add_parser(command)
+    debug = subparsers.add_parser("debug")
+    debug_commands = debug.add_subparsers(dest="debug_command", required=True)
+    for command in ("set-blocker", "clear-blocker"):
+        _ = debug_commands.add_parser(command).add_argument("name")
+    return parser
+
+
+def _incomplete(command: str) -> int:
+    print(f"sparehash: {command} is unavailable until its implementation is installed", file=sys.stderr)
+    return 2
+
+
+def _username(uid: int) -> str:
+    return pwd.getpwuid(uid).pw_name
+
+
+def main(
+    argv: Sequence[str] | None = None,
+    *,
+    geteuid: Callable[[], int] = os.geteuid,
+    getusername: Callable[[int], str] = _username,
+) -> int:
+    """Dispatch approved public and internal command names without fake success."""
+    arguments = list(sys.argv[1:] if argv is None else argv)
+    if arguments and arguments[0] in INTERNAL_COMMANDS + ROOT_ONLY_COMMANDS:
+        command = arguments[0]
+        if command in PRIVILEGED_COMMANDS and geteuid() != 0:
+            print("sparehash: privileged command requires root", file=sys.stderr)
+            return 2
+        if command == "__miner_exec__" and getusername(geteuid()) != "xmrig":
+            print("sparehash: miner command requires the xmrig identity", file=sys.stderr)
+            return 2
+        if command in ("__authorize_miner__", "authorize-start"):
+            if len(arguments) != 1:
+                return 1
+            from sparehash.controller_io import authorize_miner
+
+            return authorize_miner()
+        return _incomplete(command)
+
+    parsed = _parser().parse_args(arguments, namespace=CliArguments())
+    command = parsed.command
+    if command == "config":
+        from sparehash.cli_config import edit, show
+
+        return {"show": show, "edit": lambda: edit(geteuid=geteuid)}[parsed.config_command]()
+    if command == "benchmark":
+        from sparehash.cli_config import benchmark
+
+        return benchmark(geteuid=geteuid)
+    if command in ("start", "stop", "pause", "resume", "logs"):
+        from sparehash.cli_ops import logs, manual, stack
+
+        return {
+            "start": lambda: stack("start", geteuid=geteuid),
+            "stop": lambda: stack("stop", geteuid=geteuid),
+            "pause": lambda: manual("pause"),
+            "resume": lambda: manual("resume"),
+            "logs": lambda: logs(parsed.follow),
+        }[command]()
+    if command == "status":
+        from sparehash.status import run
+
+        return run(parsed.json)
+    if command in GAMING_COMMANDS:
+        from sparehash.gaming import gaming_end, gaming_start
+
+        return {"gaming-start": gaming_start, "gaming-end": gaming_end}[command]()
+    if command == "debug":
+        if geteuid() != 0:
+            print("sparehash: debug commands require root", file=sys.stderr)
+            return 2
+        return _incomplete(f"debug {parsed.debug_command}")
+    return _incomplete(command)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
