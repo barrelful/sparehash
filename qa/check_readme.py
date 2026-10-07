@@ -70,34 +70,32 @@ def _config_keys() -> list[str]:
     source = _read(CONFIG_PATH)
     tree = ast.parse(source, feature_version=(3, 11))
     
-    # Find the Config dataclass and extract field names
-    config_fields: list[str] = []
-    section_fields: dict[str, list[str]] = {}
+    all_dataclasses: dict[str, list[str]] = {}
+    config_fields: list[tuple[str, str]] = []
     
     for node in ast.walk(tree):
         if isinstance(node, ast.ClassDef):
-            # Check if this is Config or a section dataclass
+            fields: list[str] = []
+            for item in node.body:
+                if isinstance(item, ast.AnnAssign) and isinstance(item.target, ast.Name):
+                    fields.append(item.target.id)
+            all_dataclasses[node.name] = fields
+            
             if node.name == "Config":
                 for item in node.body:
                     if isinstance(item, ast.AnnAssign) and isinstance(item.target, ast.Name):
                         field_name = item.target.id
-                        if field_name not in ("version", "wallet", "donate_level"):
-                            config_fields.append(field_name)
-            elif node.name in ("Pool", "Cpu", "Thermal", "Gaming", "Hugepages", 
-                               "Api", "Controller", "Xmrig"):
-                section_name = node.name.lower()
-                fields: list[str] = []
-                for item in node.body:
-                    if isinstance(item, ast.AnnAssign) and isinstance(item.target, ast.Name):
-                        fields.append(item.target.id)
-                section_fields[section_name] = fields
+                        if isinstance(item.annotation, ast.Name):
+                            type_name = item.annotation.id
+                            config_fields.append((field_name, type_name))
     
-    # Build section-qualified keys
-    keys: list[str] = ["version", "wallet", "donate_level"]
-    for field in config_fields:
-        if field in section_fields:
-            for subfield in section_fields[field]:
-                keys.append(f"{field}.{subfield}")
+    keys: list[str] = []
+    for field_name, type_name in config_fields:
+        if type_name in all_dataclasses:
+            for subfield in all_dataclasses[type_name]:
+                keys.append(f"{field_name}.{subfield}")
+        else:
+            keys.append(field_name)
     
     return sorted(keys)
 
