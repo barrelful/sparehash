@@ -138,31 +138,42 @@ section accepts only `enabled = false`; any other value is rejected.
 
 SpareHash uses a blocker-based readiness system. The controller evaluates all
 blockers on every reconciliation cycle. Mining starts only when every blocker is
-clear. Blockers include:
+clear. The four registry blockers are:
 
-- **Manual pause**: operator issued `sparehash pause`
-- **Power**: battery running low, or UPS-only with no battery (desktop guard)
-- **Thermal**: CPU temperature at or above `thermal.pause_c`
+- **Battery**: credible battery inventory with on-battery/Discharging status, or
+  unknown/stale power evidence (fail-closed)
 - **Gaming**: a configured user has an active GameMode session
-- **Contention**: foreground CPU demand exceeds the spare threshold
-- **DNS**: pool hostname does not resolve (filtered DNS hint shown in status)
-- **Hugepages**: reservation in progress or degraded
+- **Manual**: operator issued `sparehash pause`
+- **Thermal**: CPU temperature at or above `thermal.pause_c`, or sensor unreadable
+  (fail-safe)
 
 The controller uses `BindsTo=` and `After=` dependencies with `sd_notify`
 readiness. The miner unit (`sparehash-xmrig.service`) is `static`; it is started
 only by the controller wrapper, never directly. If the controller dies, the
 miner stops with it.
 
+Soft workload contention is handled by kernel idle scheduling (`Nice=19`,
+`SCHED_IDLE`, conditional cgroup idle weights); the miner remains active but
+yields to foreground work. DNS resolution failure is a diagnostic hint shown in
+status, not a blocker. Hugepage reservation status is reported as a capability
+and degraded warning, not a central blocker.
+
 ## Power and UPS guard
 
 SpareHash reads power state from two sources: UPower (D-Bus) and `/sys/class/power_supply`.
-Both are consulted independently. If they disagree, mining is inhibited until
-consensus is reached.
+Both are consulted independently. The policy is conservative:
 
-On desktop systems with a UPS but no battery, SpareHash refuses to mine. This
-guard prevents unexpected shutdowns when the UPS battery is the only power
-backup. The status output reports `ups_guard: desktop/UPS-only` when this
-condition is detected.
+- **Battery present**: if either credible source reports on-battery/Discharging,
+  mining is inhibited. A FALSE from the other source cannot override it.
+- **Desktop/UPS-only**: a successfully inventoried machine with no battery
+  (including desktop systems with UPS) is allowed to mine. The status output
+  reports `ups_guard: desktop/UPS-only` when this condition is detected.
+- **Unknown inventory**: if the power inventory is incomplete or stale, mining
+  is inhibited (fail-closed). Stale laptop evidence (older than 10 seconds) is
+  treated as unknown.
+
+The status output reports the current power state, including battery presence,
+UPower and sysfs evidence with freshness indicators, and the UPS guard status.
 
 ## GameMode and gaming hooks
 
@@ -279,10 +290,11 @@ units, and identities. Without `--purge`, configuration is retained.
 
 ## Known limitations
 
-- The `systemd-run` isolated version probe may fail in certain VM environments
-  where transient unit creation is restricted. The rest of the post-install
-  verification (marker, units, controller enabled, miner static, loopback API,
-  idle scheduler) still passes. This is a VM capability gap, not a code defect.
+- The `systemd-run` isolated version probe has been observed to fail in certain
+  VM environments where transient unit creation is restricted. The rest of the
+  post-install verification (marker, units, controller enabled, miner static,
+  loopback API, idle scheduler) still passes. Probe reliability under restricted
+  systemd managers remains an open TODO.
 - `sparehash update` and `sparehash uninstall` are not yet implemented.
 
 ## QA

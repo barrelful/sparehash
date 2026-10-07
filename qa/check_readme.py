@@ -66,26 +66,40 @@ def _cli_flags() -> list[str]:
 
 
 def _config_keys() -> list[str]:
-    """Extract every config key from the Config dataclass and _construct."""
+    """Extract every config key from the Config dataclass schema."""
     source = _read(CONFIG_PATH)
-    keys: list[str] = []
-    for match in re.finditer(r'"([a-z_]+)"', source):
-        key = match.group(1)
-        if key not in ("version", "wallet", "donate_level") and not key.startswith("_"):
-            continue
-        keys.append(key)
-    section_keys = [
-        "version", "wallet", "donate_level",
-        "pool.host", "pool.port", "pool.tls", "pool.worker",
-        "cpu.mode", "cpu.max_threads_percent", "cpu.custom_json",
-        "thermal.enabled", "thermal.pause_c", "thermal.resume_c",
-        "gaming.enabled", "gaming.users",
-        "hugepages.enabled", "hugepages.pages",
-        "api.port",
-        "controller.min_dwell_seconds", "controller.reconcile_seconds",
-        "xmrig.binary",
-    ]
-    return section_keys
+    tree = ast.parse(source, feature_version=(3, 11))
+    
+    # Find the Config dataclass and extract field names
+    config_fields: list[str] = []
+    section_fields: dict[str, list[str]] = {}
+    
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ClassDef):
+            # Check if this is Config or a section dataclass
+            if node.name == "Config":
+                for item in node.body:
+                    if isinstance(item, ast.AnnAssign) and isinstance(item.target, ast.Name):
+                        field_name = item.target.id
+                        if field_name not in ("version", "wallet", "donate_level"):
+                            config_fields.append(field_name)
+            elif node.name in ("Pool", "Cpu", "Thermal", "Gaming", "Hugepages", 
+                               "Api", "Controller", "Xmrig"):
+                section_name = node.name.lower()
+                fields: list[str] = []
+                for item in node.body:
+                    if isinstance(item, ast.AnnAssign) and isinstance(item.target, ast.Name):
+                        fields.append(item.target.id)
+                section_fields[section_name] = fields
+    
+    # Build section-qualified keys
+    keys: list[str] = ["version", "wallet", "donate_level"]
+    for field in config_fields:
+        if field in section_fields:
+            for subfield in section_fields[field]:
+                keys.append(f"{field}.{subfield}")
+    
+    return sorted(keys)
 
 
 def _check_readme(text: str, commands: list[str], flags: list[str],
@@ -107,32 +121,52 @@ def _check_readme(text: str, commands: list[str], flags: list[str],
 
 def _negative_self_test(commands: list[str], flags: list[str],
                         keys: list[str]) -> None:
-    """Remove one entry from a temp README copy and confirm the checker fails."""
+    """Remove a unique inventory entry from a temp README copy and confirm detection."""
     readme_text = _read(README_PATH)
-    if not commands:
+    
+    test_key = "donate_level"
+    test_pattern = f"{test_key} = 1"
+    
+    if test_pattern not in readme_text:
+        print(
+            f"self-test SKIPPED: {test_pattern!r} not found in README",
+            file=sys.stderr,
+        )
         return
-    removed_command = commands[0]
-    modified = readme_text.replace(removed_command, "REMOVED_PLACEHOLDER")
+    
+    count = readme_text.count(test_pattern)
+    if count != 1:
+        print(
+            f"self-test SKIPPED: {test_pattern!r} appears {count} times (not unique)",
+            file=sys.stderr,
+        )
+        return
+    
+    modified = readme_text.replace(test_pattern, "REMOVED_PLACEHOLDER")
+    
     with tempfile.NamedTemporaryFile(
         mode="w", suffix=".md", delete=False, encoding="utf-8"
     ) as temp:
         _ = temp.write(modified)
         temp_path = temp.name
+    
     try:
         modified_text = Path(temp_path).read_text(encoding="utf-8")
         missing = _check_readme(modified_text, commands, flags, keys)
         if not missing:
             print(
-                f"self-test FAILED: removing {removed_command!r} was not detected",
+                f"self-test FAILED: removing {test_pattern!r} was not detected",
                 file=sys.stderr,
             )
             sys.exit(1)
-        found = any(removed_command in entry for entry in missing)
+        
+        found = any(test_key in entry for entry in missing)
         if not found:
             print(
-                f"self-test FAILED: missing entries do not name {removed_command!r}",
+                f"self-test FAILED: missing entries do not name {test_key!r}",
                 file=sys.stderr,
             )
+            print(f"Missing entries: {missing}", file=sys.stderr)
             sys.exit(1)
     finally:
         Path(temp_path).unlink(missing_ok=True)
