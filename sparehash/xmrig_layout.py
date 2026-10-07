@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import os
 import stat
 from contextlib import ExitStack
@@ -11,10 +10,11 @@ from typing import Final
 
 from .xmrig_archive import DIR_MODE, DIRECTORY_FLAGS, remove_tree
 from .xmrig_paths import MANIFEST_ROOT, MARKER_NAME, Manifest, PathTrust
+from .xmrig_manifest import format_manifest as format_manifest
 
 CURRENT_NAME: Final = "current"
 BINARY_NAME: Final = "xmrig"
-MANIFEST_MODE: Final = 0o644
+MANIFEST_MODE: Final = 0o640
 MAX_MANIFEST_BYTES: Final = 64 * 1024
 
 
@@ -32,17 +32,6 @@ class InstallError(Exception):
 
 class CollisionError(InstallError):
     """Untrusted, unrecorded or corrupt content already occupies a managed path."""
-
-
-def format_manifest(manifest: Manifest) -> bytes:
-    document = {
-        "root": manifest.root,
-        "versions": [
-            {"version": record.version, "installed_at": record.installed_at, "source": record.source}
-            for record in manifest.versions
-        ],
-    }
-    return (json.dumps(document, indent=2) + "\n").encode("utf-8")
 
 
 def _require_owned(fd: int, uid: int, what: str) -> None:
@@ -202,11 +191,12 @@ def _restore_manifest(dir_fd: int, name: str, prior: bytes | None) -> None:
 
 def publish(root_fd: int, trust: PathTrust, manifest: Manifest, version_name: str) -> None:
     """Publish manifest first, then the relative current link; a failed link restores it."""
+    data = format_manifest(manifest)
     manifest_path = trust.manifest_path
     with ExitStack() as stack:
         dir_fd = _open_dir(stack, manifest_path.parent, trust.root, trust.uid)
         prior = _read_prior(dir_fd, manifest_path.name)
-        temp_manifest = _write_temp(dir_fd, manifest_path.name, format_manifest(manifest))
+        temp_manifest = _write_temp(dir_fd, manifest_path.name, data)
         temp_link = f".{CURRENT_NAME}.tmp-{os.getpid()}"
         _unlink(root_fd, temp_link)
         os.symlink(version_name, temp_link, dir_fd=root_fd)

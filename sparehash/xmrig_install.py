@@ -116,7 +116,7 @@ def _run_gated(gate: UpdateGate, mutate: Callable[[], Installed]) -> Installed:
 def _new_manifest(request: InstallRequest, manifest: Manifest, version_name: str, now: str) -> Manifest:
     if version_name in manifest.names:
         return manifest
-    return Manifest(MANIFEST_ROOT, (*manifest.versions, VersionRecord(version_name, now, request.source)))
+    return Manifest(MANIFEST_ROOT, (*manifest.versions, VersionRecord(version_name, now, request.source)), manifest.installer)
 
 
 def _apply(request: InstallRequest, context: InstallContext, version_name: str, *, prune: bool) -> Installed:
@@ -234,7 +234,7 @@ def _rollback(trust: PathTrust) -> Installed:
         if index == 0:
             raise InstallError("rollback", "no previous recorded version to roll back to")
         previous_name = names[index - 1]
-        new_manifest = Manifest(MANIFEST_ROOT, tuple(r for r in manifest.versions if r.version != current_name))
+        new_manifest = Manifest(MANIFEST_ROOT, tuple(r for r in manifest.versions if r.version != current_name), manifest.installer)
         publish(root_fd, trust, new_manifest, previous_name)
         if require_version_dir(root_fd, current_name, trust.uid):
             remove_tree(root_fd, current_name)

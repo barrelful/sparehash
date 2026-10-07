@@ -11,6 +11,8 @@ from unittest import mock
 
 from sparehash import xmrig_detect as detect
 from sparehash import xmrig_paths as paths
+from sparehash.xmrig_manifest import format_manifest
+from tests.test_xmrig_manifest import manifest_fixture
 
 
 @final
@@ -75,6 +77,15 @@ class XmrigCurrentTests(unittest.TestCase):
         self.assertEqual(self.observed, [self.original])
         self.assertEqual(installs[0], detect.Install(self.candidate, (6, 26, 0), detect.ManagedBy.SPAREHASH, True, False))
         self.assertEqual(detect.classify(installs, consent=True).recommendation, detect.Recommendation.USE_EXISTING)
+
+    def test_current_is_verified_when_extended_manifest_records_the_target(self) -> None:
+        # Given
+        _ = self.manifest.write_bytes(format_manifest(manifest_fixture()))
+        # When
+        installs = self._detect()
+        # Then
+        self.assertTrue(installs[0].verified)
+        self.assertEqual(self.observed, [self.original])
 
     def test_current_is_unverified_when_marker_is_forged(self) -> None:
         # Given

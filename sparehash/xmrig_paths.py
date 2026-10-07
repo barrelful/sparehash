@@ -2,30 +2,22 @@
 
 from __future__ import annotations
 
-import json
 import os
-import re
 import stat
 import tempfile
-from collections.abc import Callable
 from contextlib import ExitStack
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Final, TypeAlias
+from typing import Final
 
-Json: TypeAlias = None | bool | int | float | str | list["Json"] | dict[str, "Json"]
-_LOAD_JSON: Final[Callable[..., Json]] = json.loads
+from .xmrig_manifest import MANIFEST_ROOT as MANIFEST_ROOT, Manifest as Manifest, VersionRecord as VersionRecord, parse_manifest as parse_manifest
 
 MAX_BINARY_BYTES: Final = 128 * 1024 * 1024
 MAX_METADATA_BYTES: Final = 64 * 1024
 DIRECTORY_FLAGS: Final = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
 FILE_FLAGS: Final = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
-MANIFEST_ROOT: Final = "/opt/xmrig"
 MARKER_NAME: Final = ".sparehash-managed"
 MANIFEST_RELPATH: Final = Path("var/lib/sparehash/install-manifest.json")
-VERSION_PATTERN: Final = re.compile(r"xmrig-\d+\.\d+\.\d+")
-INSTALLED_PATTERN: Final = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z")
-SOURCE_PATTERN: Final = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,255}")
 
 
 def _open_path(stack: ExitStack, path: Path, anchor: Path) -> list[int]:
@@ -88,67 +80,6 @@ def snapshot(path: Path, *, private_dir: Path) -> tuple[Path, bool] | None:
             return _snapshot_fd(descriptors[-1], private_dir, descriptors[:-1])
     except OSError:
         return None
-
-
-def _unique_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
-    seen: set[str] = set()
-    document: dict[str, object] = {}
-    for key, value in pairs:
-        if key in seen:
-            raise ValueError("duplicate manifest key")
-        seen.add(key)
-        document[key] = value
-    return document
-
-
-@dataclass(frozen=True, slots=True)
-class VersionRecord:
-    """One manifest-owned version directory with provenance."""
-
-    version: str
-    installed_at: str
-    source: str
-
-
-@dataclass(frozen=True, slots=True)
-class Manifest:
-    """Canonical install manifest: fixed root plus managed version inventory."""
-
-    root: str
-    versions: tuple[VersionRecord, ...]
-
-    @property
-    def names(self) -> tuple[str, ...]:
-        return tuple(record.version for record in self.versions)
-
-
-def parse_manifest(contents: str) -> Manifest | None:
-    """Strictly parse the canonical manifest; reject any extra, missing or duplicate drift."""
-    try:
-        document = _LOAD_JSON(contents, object_pairs_hook=_unique_object)
-    except (ValueError, TypeError):
-        return None
-    if not isinstance(document, dict) or set(document) != {"root", "versions"}:
-        return None
-    if document["root"] != MANIFEST_ROOT:
-        return None
-    raw_versions = document["versions"]
-    if not isinstance(raw_versions, list):
-        return None
-    records: list[VersionRecord] = []
-    seen: set[str] = set()
-    for item in raw_versions:
-        if not isinstance(item, dict) or set(item) != {"version", "installed_at", "source"}:
-            return None
-        version, installed_at, source = item["version"], item["installed_at"], item["source"]
-        if (not isinstance(version, str) or VERSION_PATTERN.fullmatch(version) is None
-                or not isinstance(installed_at, str) or INSTALLED_PATTERN.fullmatch(installed_at) is None
-                or not isinstance(source, str) or SOURCE_PATTERN.fullmatch(source) is None
-                or version in seen):
-            return None
-        seen.add(version)
-        records.append(VersionRecord(version, installed_at, source))
-    return Manifest(MANIFEST_ROOT, tuple(records))
 
 
 @dataclass(frozen=True, slots=True)

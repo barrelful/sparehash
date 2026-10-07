@@ -6,7 +6,6 @@ anchor; no test ever resolves a real /opt, systemd, root or network resource.
 
 from __future__ import annotations
 
-import json
 import os
 import tarfile
 import unittest
@@ -16,40 +15,22 @@ from unittest import mock
 
 from sparehash import xmrig_archive as archive
 from sparehash import xmrig_install as install
-from sparehash.xmrig_paths import VersionRecord, parse_manifest
+from sparehash.xmrig_paths import parse_manifest
 from sparehash.xmrig_verify import VerifyError
 from tests.xmrig_layout_fixtures import (
-    DATE,
     FakeGate,
     Layout,
     Member,
-    canonical_manifest,
     release_members,
     request_for,
-    source_for,
     write_tar,
 )
+from tests.test_xmrig_manifest import ManifestSchemaTests as ManifestSchemaTests
 
 V1 = "xmrig-6.26.0"
 V2 = "xmrig-6.26.1"
 V3 = "xmrig-6.26.2"
 V4 = "xmrig-6.26.3"
-
-
-@final
-class ManifestSchemaTests(unittest.TestCase):
-    def test_canonical_manifest_parses_and_drift_is_rejected(self) -> None:
-        valid = parse_manifest(canonical_manifest([V1]))
-        assert valid is not None
-        self.assertEqual(valid.versions, (VersionRecord(V1, DATE, source_for(V1)),))
-        drift = [canonical_manifest([V1]).replace("/opt/xmrig", "/opt/other", 1),
-                 json.dumps({"root": "/opt/xmrig", "versions": [], "extra": 1}),
-                 '{"root":"/opt/xmrig","root":"/opt/xmrig","versions":[]}',
-                 canonical_manifest([V1, V1]), canonical_manifest(["xmrig-6.26"]),
-                 json.dumps({"root": "/opt/xmrig", "versions": {}}), "{"]
-        for text in drift:
-            with self.subTest(text=text):
-                self.assertIsNone(parse_manifest(text))
 
 
 @final
