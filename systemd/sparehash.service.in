@@ -1,0 +1,27 @@
+# Managed by SpareHash
+[Unit]
+Description=SpareHash controller
+StartLimitIntervalSec=10min
+StartLimitBurst=10
+
+[Service]
+Type=notify
+NotifyAccess=main
+TimeoutStartSec=30s
+User=root
+Group=root
+ExecStart=/usr/local/bin/sparehash __controller__
+ExecStopPost=/usr/local/bin/sparehash __cleanup__
+Restart=on-failure
+RestartSec=5s
+StateDirectory=sparehash
+RuntimeDirectory=sparehash sparehash-miner
+RuntimeDirectoryMode=0750
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+[Install]
+WantedBy=multi-user.target

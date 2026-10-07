@@ -1,0 +1,34 @@
+# Managed by SpareHash
+[Unit]
+Description=SpareHash unprivileged XMRig
+BindsTo=sparehash.service
+After=sparehash.service network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=10min
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=xmrig
+Group=xmrig
+ExecCondition=+/usr/local/bin/sparehash __authorize_miner__
+ExecStart=/usr/local/bin/sparehash __miner_exec__
+Restart=on-failure
+RestartSec=30s
+Nice=19
+CPUSchedulingPolicy=idle
+IOSchedulingClass=idle
+@WEIGHTS@
+@CREDENTIAL@
+OOMScoreAdjust=500
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictNamespaces=yes
+LockPersonality=yes
+KillMode=control-group
+TimeoutStopSec=3s
+SendSIGKILL=yes
