@@ -84,7 +84,7 @@ class CliTests(unittest.TestCase):
     def test_unfinished_public_command_remains_unavailable(self) -> None:
         """Given an unfinished public command, dispatch still exits nonzero."""
         result = subprocess.run(
-            [sys.executable, "-m", "sparehash", "update"],
+            [sys.executable, "-m", "sparehash", "uninstall"],
             check=False,
             capture_output=True,
             text=True,

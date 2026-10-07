@@ -147,6 +147,10 @@ def main(
         from sparehash.gaming import gaming_end, gaming_start
 
         return {"gaming-start": gaming_start, "gaming-end": gaming_end}[command]()
+    if command == "update":
+        from sparehash.cli_lifecycle import update
+
+        return update(geteuid=geteuid)
     if command == "debug":
         if geteuid() != 0:
             print("sparehash: debug commands require root", file=sys.stderr)

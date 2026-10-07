@@ -83,6 +83,21 @@ def dry_run(request: DryRunRequest) -> DryRunResult:
         return DryRunResult(code, 65534, PROPERTIES, True, output)
 
 
+def download_release(stage: Path) -> InstallRequest:
+    """Fetch, select and download the latest signed release into a staging directory."""
+    release = fetch_latest_release()
+    archive_url, sums_url, sig_url = select_asset(release.assets)
+    version = parse_version("XMRig " + release.tag_name.removeprefix("v"))
+    if version is None or not is_supported(version):
+        raise DeploymentError("xmrig", "upstream version is unsupported")
+    archive = stage / archive_url.rsplit("/", 1)[-1]
+    sums, sig = stage / "SHA256SUMS", stage / "SHA256SUMS.sig"
+    for url, target in ((archive_url, archive), (sums_url, sums), (sig_url, sig)):
+        download(url, target)
+    return InstallRequest(ReleaseArtifacts(archive, sums, sig, fetch_signing_key()), version,
+                          "github:xmrig/xmrig:" + release.tag_name)
+
+
 def choose(cfg: Config, caps: Capabilities, use_existing: bool) -> Config:
     candidates = detect_installations(caps, probe=version_probe)
     for candidate in candidates:
@@ -99,17 +114,7 @@ def choose(cfg: Config, caps: Capabilities, use_existing: bool) -> Config:
                         os.fchmod(fd, 0o755)
             print(f"xmrig: using verified {candidate.version} at {binary}")
             return replace(cfg, xmrig=replace(cfg.xmrig, binary=str(binary)))
-    release = fetch_latest_release()
-    archive_url, sums_url, sig_url = select_asset(release.assets)
-    version = parse_version("XMRig " + release.tag_name.removeprefix("v"))
-    if version is None or not is_supported(version):
-        raise DeploymentError("xmrig", "upstream version is unsupported")
     with tempfile.TemporaryDirectory(prefix="sparehash-release-") as directory:
-        stage = Path(directory)
-        archive = stage / archive_url.rsplit("/", 1)[-1]
-        sums, sig = stage / "SHA256SUMS", stage / "SHA256SUMS.sig"
-        for url, target in ((archive_url, archive), (sums_url, sums), (sig_url, sig)):
-            download(url, target)
-        installed = install_release(InstallRequest(ReleaseArtifacts(archive, sums, sig, fetch_signing_key()), version, "github:xmrig/xmrig:" + release.tag_name))
+        installed = install_release(download_release(Path(directory)))
     print(f"xmrig: installed signed {installed.version}")
     return replace(cfg, xmrig=replace(cfg.xmrig, binary=str(installed.binary)))
