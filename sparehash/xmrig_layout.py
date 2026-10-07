@@ -5,17 +5,18 @@ from __future__ import annotations
 import os
 import stat
 from contextlib import ExitStack
-from pathlib import Path
-from typing import Final
+from dataclasses import dataclass
+from typing import Final, assert_never
+from uuid import uuid4
 
 from .xmrig_archive import DIR_MODE, DIRECTORY_FLAGS, remove_tree
 from .xmrig_paths import MANIFEST_ROOT, MARKER_NAME, Manifest, PathTrust
 from .xmrig_manifest import format_manifest as format_manifest
+from .install_manifest import ManifestStore
 
 CURRENT_NAME: Final = "current"
 BINARY_NAME: Final = "xmrig"
 MANIFEST_MODE: Final = 0o640
-MAX_MANIFEST_BYTES: Final = 64 * 1024
 
 
 class InstallError(Exception):
@@ -56,6 +57,7 @@ def open_managed_root(trust: PathTrust, stack: ExitStack, *, create: bool) -> tu
             fd = os.open(part, DIRECTORY_FLAGS, dir_fd=fd)
         except OSError as exc:
             raise CollisionError("root", f"managed root path is unsafe: {exc}") from exc
+        _ = stack.callback(os.close, fd)
         _require_owned(fd, trust.uid, "managed root")
     return fd, parent_fd
 
@@ -138,42 +140,6 @@ def require_version_dir(root_fd: int, name: str, uid: int) -> bool:
     return True
 
 
-def _open_dir(stack: ExitStack, path: Path, anchor: Path, uid: int) -> int:
-    fd = os.open(anchor, DIRECTORY_FLAGS)
-    _ = stack.callback(os.close, fd)
-    for part in path.relative_to(anchor).parts:
-        try:
-            fd = os.open(part, DIRECTORY_FLAGS, dir_fd=fd)
-        except FileNotFoundError:
-            os.mkdir(part, DIR_MODE, dir_fd=fd)
-            fd = os.open(part, DIRECTORY_FLAGS, dir_fd=fd)
-        _require_owned(fd, uid, "manifest directory")
-    return fd
-
-
-def _read_prior(dir_fd: int, name: str) -> bytes | None:
-    try:
-        fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=dir_fd)
-    except FileNotFoundError:
-        return None
-    with os.fdopen(fd, "rb") as stream:
-        return stream.read(MAX_MANIFEST_BYTES + 1)
-
-
-def _write_temp(dir_fd: int, name: str, data: bytes) -> str:
-    temp = f".{name}.tmp-{os.getpid()}"
-    fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, MANIFEST_MODE, dir_fd=dir_fd)
-    try:
-        os.fchmod(fd, MANIFEST_MODE)
-        with os.fdopen(fd, "wb", closefd=False) as stream:
-            _ = stream.write(data)
-            stream.flush()
-            os.fsync(stream.fileno())
-    finally:
-        os.close(fd)
-    return temp
-
-
 def _unlink(fd: int, name: str) -> None:
     try:
         os.unlink(name, dir_fd=fd)
@@ -181,37 +147,43 @@ def _unlink(fd: int, name: str) -> None:
         return
 
 
-def _restore_manifest(dir_fd: int, name: str, prior: bytes | None) -> None:
-    if prior is None:
-        _unlink(dir_fd, name)
-        return
-    temp = _write_temp(dir_fd, name, prior)
-    os.rename(temp, name, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
+@dataclass(frozen=True, slots=True)
+class Publication:
+    manifest: Manifest
+    version: str
 
 
-def publish(root_fd: int, trust: PathTrust, manifest: Manifest, version_name: str) -> None:
+def publish(root_fd: int, store: ManifestStore, publication: Publication) -> None:
     """Publish manifest first, then the relative current link; a failed link restores it."""
-    data = format_manifest(manifest)
-    manifest_path = trust.manifest_path
-    with ExitStack() as stack:
-        dir_fd = _open_dir(stack, manifest_path.parent, trust.root, trust.uid)
-        prior = _read_prior(dir_fd, manifest_path.name)
-        temp_manifest = _write_temp(dir_fd, manifest_path.name, data)
-        temp_link = f".{CURRENT_NAME}.tmp-{os.getpid()}"
-        _unlink(root_fd, temp_link)
-        os.symlink(version_name, temp_link, dir_fd=root_fd)
-        try:
-            os.rename(temp_manifest, manifest_path.name, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
-        except OSError as exc:
-            _unlink(dir_fd, temp_manifest)
-            _unlink(root_fd, temp_link)
-            raise InstallError("publish", f"cannot publish manifest: {exc}") from exc
+    _ = format_manifest(publication.manifest)
+    prior = store.read()
+    prior_link = current_target(root_fd)
+    temp_link = f".{CURRENT_NAME}.tmp-{uuid4().hex}"
+    os.symlink(publication.version, temp_link, dir_fd=root_fd)
+    try:
+        store.write(publication.manifest)
+        changed = False
         try:
             os.rename(temp_link, CURRENT_NAME, src_dir_fd=root_fd, dst_dir_fd=root_fd)
-        except OSError as exc:
-            _restore_manifest(dir_fd, manifest_path.name, prior)
-            _unlink(root_fd, temp_link)
-            raise InstallError("publish", f"cannot publish current link: {exc}") from exc
+            changed = True
+            os.fsync(root_fd)
+        except (OSError, KeyboardInterrupt) as exc:
+            if changed:
+                if prior_link is None:
+                    _unlink(root_fd, CURRENT_NAME)
+                else:
+                    os.symlink(prior_link, temp_link, dir_fd=root_fd)
+                    os.rename(temp_link, CURRENT_NAME, src_dir_fd=root_fd, dst_dir_fd=root_fd)
+                os.fsync(root_fd)
+            store.restore(prior)
+            match exc:
+                case KeyboardInterrupt():
+                    raise
+                case OSError():
+                    raise InstallError("publish", f"cannot publish current link: {exc}") from exc
+            assert_never(exc)
+    finally:
+        _unlink(root_fd, temp_link)
 
 
 def prune(root_fd: int, old: Manifest, new: Manifest, protect: tuple[str | None, ...],

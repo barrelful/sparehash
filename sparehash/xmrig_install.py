@@ -10,11 +10,14 @@ from pathlib import Path
 from typing import Final, Protocol
 
 from .controller_io import Generation, LifecycleBusy
+from .install_manifest import StoreContext, StoreError, locked_store
+from .xmrig_manifest import ManifestError, format_manifest
 from .xmrig_archive import ArchiveError, extract_archive, remove_tree
 from .xmrig_layout import (
     BINARY_NAME,
     CollisionError,
     InstallError,
+    Publication,
     current_target,
     dir_exists,
     ensure_marker,
@@ -122,16 +125,15 @@ def _new_manifest(request: InstallRequest, manifest: Manifest, version_name: str
 def _apply(request: InstallRequest, context: InstallContext, version_name: str, *, prune: bool) -> Installed:
     trust = context.trust
     with ExitStack() as stack:
+        store = stack.enter_context(locked_store(StoreContext(trust, create=True)))
+        prior = store.read()
         root_fd, root_parent = open_managed_root(trust, stack, create=False)
         created_root = root_fd is None
         manifest = trust.manifest()
         if root_fd is None:
-            if manifest is not None:
+            if prior is not None and (prior.manifest.versions or prior.manifest.installer is None):
                 raise CollisionError("root", "install manifest exists without a managed root")
-            root_fd, root_parent = open_managed_root(trust, stack, create=True)
-            if root_fd is None:
-                raise InstallError("root", "managed root could not be created")
-            manifest = Manifest(MANIFEST_ROOT, ())
+            manifest = prior.manifest if prior is not None else Manifest(MANIFEST_ROOT, ())
             prior_link = None
         else:
             if manifest is None:
@@ -141,6 +143,12 @@ def _apply(request: InstallRequest, context: InstallContext, version_name: str, 
                 raise CollisionError("current", "existing current symlink is not manifest-authorized")
         published = False
         extracted = False
+        new_manifest = _new_manifest(request, manifest, version_name, context.now())
+        _ = format_manifest(new_manifest)
+        if root_fd is None:
+            root_fd, root_parent = open_managed_root(trust, stack, create=True)
+            if root_fd is None:
+                raise InstallError("root", "managed root could not be created")
         try:
             if version_name not in manifest.names:
                 if dir_exists(root_fd, version_name):
@@ -152,8 +160,7 @@ def _apply(request: InstallRequest, context: InstallContext, version_name: str, 
                 extracted = True
             verify_binary(root_fd, version_name, trust.uid)
             ensure_marker(root_fd, trust.uid)
-            new_manifest = _new_manifest(request, manifest, version_name, context.now())
-            publish(root_fd, trust, new_manifest, version_name)
+            publish(root_fd, store, Publication(new_manifest, version_name))
             published = True
             pruned = (prune_versions(root_fd, manifest, new_manifest, (version_name, prior_link),
                                      context.retain, trust.uid) if prune else ())
@@ -184,7 +191,12 @@ def _install(request: InstallRequest, context: InstallContext, *, prune: bool) -
     version_name = f"xmrig-{request.version[0]}.{request.version[1]}.{request.version[2]}"
 
     def mutate() -> Installed:
-        return _apply(request, context, version_name, prune=prune)
+        try:
+            return _apply(request, context, version_name, prune=prune)
+        except StoreError as error:
+            raise CollisionError(error.stage, error.detail) from error
+        except ManifestError as error:
+            raise InstallError("manifest", str(error)) from error
 
     if context.gate is None:
         return mutate()
@@ -212,13 +224,20 @@ def rollback(trust: PathTrust = _DEFAULT_TRUST, *, gate: UpdateGate | None = Non
         raise InstallError("gate", "rollback requires an injected lifecycle gate; no files changed")
 
     def mutate() -> Installed:
-        return _rollback(trust)
+        try:
+            return _rollback(trust)
+        except StoreError as error:
+            raise CollisionError(error.stage, error.detail) from error
+        except ManifestError as error:
+            raise InstallError("manifest", str(error)) from error
 
     return _run_gated(gate, mutate)
 
 
 def _rollback(trust: PathTrust) -> Installed:
     with ExitStack() as stack:
+        store = stack.enter_context(locked_store(StoreContext(trust)))
+        _ = store.read()
         root_fd, _ = open_managed_root(trust, stack, create=False)
         if root_fd is None:
             raise CollisionError("root", "no managed installation to roll back")
@@ -235,7 +254,7 @@ def _rollback(trust: PathTrust) -> Installed:
             raise InstallError("rollback", "no previous recorded version to roll back to")
         previous_name = names[index - 1]
         new_manifest = Manifest(MANIFEST_ROOT, tuple(r for r in manifest.versions if r.version != current_name), manifest.installer)
-        publish(root_fd, trust, new_manifest, previous_name)
+        publish(root_fd, store, Publication(new_manifest, previous_name))
         if require_version_dir(root_fd, current_name, trust.uid):
             remove_tree(root_fd, current_name)
         return Installed(previous_name, trust.managed_root / previous_name / BINARY_NAME, new_manifest,
