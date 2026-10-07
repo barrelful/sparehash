@@ -50,6 +50,19 @@ def protected_digest(name: str, data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
+def _read_pinned(fd: int, limit: int) -> bytes:
+    """Read at most limit bytes from an already-pinned descriptor."""
+    chunks: list[bytes] = []
+    remaining = limit
+    while remaining > 0:
+        chunk = os.read(fd, min(remaining, 65536))
+        if not chunk:
+            break
+        chunks.append(chunk)
+        remaining -= len(chunk)
+    return b"".join(chunks)
+
+
 def binary(value: str) -> Path:
     path = Path(value)
     if not path.is_absolute() or path.name != "xmrig" or ".." in path.parts:
@@ -139,16 +152,30 @@ class Tree:
                     pass
 
     def receipt(self, name: str, created: bool, *, identity: str | None = None) -> Artifact:
+        """Describe one pinned artifact; identity and content come from a single descriptor."""
         with ExitStack() as stack:
             parent = self.pin(stack, str(Path(name).parent))
-            info = os.stat(Path(name).name, dir_fd=parent, follow_symlinks=False)
+            try:
+                fd = os.open(Path(name).name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent)
+            except FileNotFoundError as error:
+                raise DeploymentError("receipt", f"artifact disappeared: {name}") from error
+            except OSError as error:
+                raise DeploymentError("receipt", f"unsafe artifact: {name}") from error
+            _ = stack.callback(os.close, fd)
+            info = os.fstat(fd)
             directory = stat.S_ISDIR(info.st_mode)
             if not directory and not stat.S_ISREG(info.st_mode):
                 raise DeploymentError("receipt", f"not a regular artifact: {name}")
-            data = b"" if directory else self.read(name)
-            if data is None:
-                raise DeploymentError("receipt", f"artifact disappeared: {name}")
-            digest = None if directory else protected_digest(name, data)
+            digest = None
+            if not directory:
+                if info.st_size > 2 * 1024 * 1024:
+                    raise DeploymentError("receipt", f"oversized artifact: {name}")
+                data = _read_pinned(fd, 2 * 1024 * 1024 + 1)
+                after = os.fstat(fd)
+                if (len(data) != info.st_size or after.st_ino != info.st_ino
+                        or after.st_mtime_ns != info.st_mtime_ns or after.st_ctime_ns != info.st_ctime_ns):
+                    raise DeploymentError("receipt", f"artifact changed during read: {name}")
+                digest = protected_digest(name, data)
             return Artifact(identity if identity is not None else name, name,
                             "directory" if directory else "file", created,
                             info.st_uid, info.st_gid, stat.S_IMODE(info.st_mode), info.st_dev, info.st_ino, digest)

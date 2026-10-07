@@ -31,6 +31,8 @@ PATHS: Final = frozenset((
 PACKAGE_DIR: Final = "/opt/sparehash/src/sparehash"
 TEMPLATE_DIR: Final = "/opt/sparehash/src/systemd"
 UNIT_TEMPLATES: Final = ("sparehash.service.in", "sparehash-xmrig.service.in")
+BOOTSTRAP_DIRS: Final = ("/opt/sparehash", "/opt/sparehash/src", PACKAGE_DIR, TEMPLATE_DIR)
+BOOTSTRAP_SHIM: Final = "/usr/local/bin/sparehash"
 PACKAGE_LEAF: Final = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,63}\.py")
 ArtifactKind = Literal["file", "directory"]
 USERNAME: Final = re.compile(r"[a-z_][a-z0-9_-]{0,31}")
@@ -205,3 +207,19 @@ def leaf_identity(path: str) -> str | None:
         if leaf in UNIT_TEMPLATES:
             return "unit-template:" + leaf
     return None
+
+
+def bootstrap_target(path: str) -> tuple[ArtifactKind, str, int] | None:
+    """Exact (kind, receipt identity, mode) for a path install.sh itself creates, or None.
+
+    The shell bootstrap owns only four directories, the CLI shim and package/template
+    leaves; configuration, deployed units and runtime state are never bootstrap targets.
+    """
+    if path in BOOTSTRAP_DIRS:
+        return "directory", path, 0o755
+    if path == BOOTSTRAP_SHIM:
+        return "file", path, 0o755
+    identity = leaf_identity(path)
+    if identity is None:
+        return None
+    return "file", identity, 0o644

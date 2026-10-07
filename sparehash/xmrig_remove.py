@@ -13,11 +13,13 @@ from .deployment import DeploymentError, Tree
 from .install_manifest import StoreContext, locked_store
 from .xmrig_archive import remove_tree
 from .xmrig_layout import CollisionError, current_target, open_managed_root, verify_binary
-from .xmrig_ledger import Artifact, PACKAGE_DIR, TEMPLATE_DIR, fixed_target, leaf_identity
+from .xmrig_ledger import Artifact, Installer, PACKAGE_DIR, TEMPLATE_DIR, fixed_target, leaf_identity
 from .xmrig_paths import DIRECTORY_FLAGS, MARKER_NAME, PathTrust
 
 LEAF_DIRS: Final = (PACKAGE_DIR, TEMPLATE_DIR)
 PRUNE_DIRS: Final = (PACKAGE_DIR, TEMPLATE_DIR, "/opt/sparehash/src", "/opt/sparehash")
+CONTAINER_CHILDREN: Final = {"/opt/sparehash": frozenset(("src",)),
+                             "/opt/sparehash/src": frozenset(("sparehash", "systemd"))}
 
 
 def _validate_tree(fd: int, uid: int) -> None:
@@ -85,48 +87,84 @@ def _fields(artifact: Artifact) -> tuple[int, int, int, int, int, str | None]:
     return (artifact.uid, artifact.gid, artifact.mode, artifact.device, artifact.inode, artifact.sha256)
 
 
+def _current(tree: Tree, path: str) -> Artifact:
+    try:
+        return tree.receipt(path, True)
+    except DeploymentError as error:
+        raise CollisionError("receipt", "authorized artifact is missing or unsafe: " + path) from error
+
+
+def _authorized_leaves(tree: Tree, installer: Installer) -> dict[str, Artifact]:
+    authorized: dict[str, Artifact] = {}
+    for artifact in installer.artifacts:
+        if not artifact.created or artifact.kind != "file" or leaf_identity(artifact.path) is None:
+            continue
+        if fixed_target(artifact.id) != (artifact.path, "file"):
+            raise CollisionError("receipt", "receipt does not match the fixed grammar: " + artifact.id)
+        if _fields(_current(tree, artifact.path)) != _fields(artifact):
+            raise CollisionError("receipt", "authorized artifact changed since install: " + artifact.path)
+        authorized[artifact.path] = artifact
+    return authorized
+
+
+def _authorized_directories(tree: Tree, installer: Installer) -> dict[str, Artifact]:
+    authorized: dict[str, Artifact] = {}
+    for artifact in installer.artifacts:
+        if not artifact.created or artifact.kind != "directory" or artifact.path not in PRUNE_DIRS:
+            continue
+        try:
+            current = tree.receipt(artifact.path, True)
+        except DeploymentError:
+            continue
+        if _fields(current) != _fields(artifact):
+            raise CollisionError("receipt", "created directory changed since install: " + artifact.path)
+        authorized[artifact.path] = artifact
+    return authorized
+
+
+def _allowed_children(directory: str, leaves: dict[str, Artifact]) -> frozenset[str] | set[str]:
+    if directory in CONTAINER_CHILDREN:
+        return CONTAINER_CHILDREN[directory]
+    return {Path(path).name for path in leaves if str(Path(path).parent) == directory}
+
+
 def remove_leaf_receipts(trust: PathTrust) -> tuple[str, ...]:
-    """Remove only created package/template file receipts after full preflight; never infer ownership."""
+    """Remove only created package/template file receipts after a full preflight of every container."""
     tree = Tree(trust.root, trust.uid)
     with ExitStack() as stack:
         store = stack.enter_context(locked_store(StoreContext(trust)))
         prior = store.read()
         if prior is None or prior.manifest.installer is None:
             raise CollisionError("receipt", "no per-file installer receipts; reinstall before removal")
-        authorized: dict[str, Artifact] = {}
-        for artifact in prior.manifest.installer.artifacts:
-            if not artifact.created or artifact.kind != "file" or leaf_identity(artifact.path) is None:
-                continue
-            fixed = fixed_target(artifact.id)
-            if fixed is None or fixed[0] != artifact.path or fixed[1] != "file":
-                raise CollisionError("receipt", "receipt does not match the fixed grammar: " + artifact.id)
+        leaves = _authorized_leaves(tree, prior.manifest.installer)
+        directories = _authorized_directories(tree, prior.manifest.installer)
+        roots: dict[str, int] = {}
+        for directory in (*LEAF_DIRS, *CONTAINER_CHILDREN):
             try:
-                current = tree.receipt(artifact.path, True)
-            except DeploymentError as error:
-                raise CollisionError("receipt", "authorized artifact is missing or unsafe: " + artifact.path) from error
-            if _fields(current) != _fields(artifact):
-                raise CollisionError("receipt", "authorized artifact changed since install: " + artifact.path)
-            authorized[artifact.path] = artifact
-        removed: list[str] = []
-        for directory in LEAF_DIRS:
-            try:
-                fd = tree.pin(stack, directory)
+                roots[directory] = tree.pin(stack, directory)
             except FileNotFoundError:
                 continue
-            here = sorted(path for path in authorized if str(Path(path).parent) == directory)
-            if set(os.listdir(fd)) != {Path(path).name for path in here}:
+            except (DeploymentError, OSError) as error:
+                raise CollisionError("receipt", "unsafe directory: " + directory) from error
+        for directory, fd in roots.items():
+            if not set(os.listdir(fd)) <= set(_allowed_children(directory, leaves)):
                 raise CollisionError("receipt", "unrecorded content under " + directory + "; nothing removed")
-            for path in here:
-                os.unlink(Path(path).name, dir_fd=fd)
-                os.fsync(fd)
-                removed.append(path)
-        created_dirs = {item.path for item in prior.manifest.installer.artifacts
-                        if item.created and item.kind == "directory"}
-        for directory in sorted(created_dirs.intersection(PRUNE_DIRS), key=len, reverse=True):
-            try:
-                parent = tree.pin(stack, str(Path(directory).parent))
-                os.rmdir(Path(directory).name, dir_fd=parent)
-                os.fsync(parent)
-            except (FileNotFoundError, OSError):
+        removed: list[str] = []
+        for directory in LEAF_DIRS:
+            fd = roots.get(directory)
+            if fd is None:
                 continue
+            for path in sorted(path for path in leaves if str(Path(path).parent) == directory):
+                os.unlink(Path(path).name, dir_fd=fd)
+                removed.append(path)
+            os.fsync(fd)
+        for directory in sorted(directories, key=lambda item: item.count("/"), reverse=True):
+            parent = roots.get(str(Path(directory).parent))
+            if parent is None:
+                parent = tree.pin(stack, str(Path(directory).parent))
+            try:
+                os.rmdir(Path(directory).name, dir_fd=parent)
+            except OSError:
+                continue
+            os.fsync(parent)
         return tuple(removed)

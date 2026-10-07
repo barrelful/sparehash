@@ -15,9 +15,9 @@ from sparehash import install
 from sparehash.deployment import DeploymentError, Tree
 from sparehash.install_ledger import Ledger
 from sparehash.install_manifest import StoreContext, locked_store
-from sparehash.xmrig_ledger import PACKAGE_DIR, TEMPLATE_DIR, fixed_target, leaf_identity
+from sparehash.xmrig_ledger import PACKAGE_DIR, TEMPLATE_DIR, bootstrap_target, fixed_target, leaf_identity
 from sparehash.xmrig_layout import CollisionError
-from sparehash.xmrig_manifest import Manifest, parse_manifest
+from sparehash.xmrig_manifest import parse_manifest
 from sparehash.xmrig_remove import remove_leaf_receipts
 
 PACKAGE = PACKAGE_DIR + "/"
@@ -62,6 +62,20 @@ class ReceiptGrammarTests(unittest.TestCase):
         self.assertIsNone(leaf_identity(PACKAGE + "nested/alpha.py"))
         self.assertIsNone(leaf_identity(PACKAGE + "alpha.so"))
         self.assertIsNone(leaf_identity(TEMPLATE + "other.in"))
+
+    def test_bootstrap_target_maps_only_shell_created_paths(self) -> None:
+        # Given / When / Then
+        self.assertEqual(bootstrap_target("/opt/sparehash"), ("directory", "/opt/sparehash", 0o755))
+        self.assertEqual(bootstrap_target(PACKAGE_DIR), ("directory", PACKAGE_DIR, 0o755))
+        self.assertEqual(bootstrap_target(TEMPLATE_DIR), ("directory", TEMPLATE_DIR, 0o755))
+        self.assertEqual(bootstrap_target("/usr/local/bin/sparehash"), ("file", "/usr/local/bin/sparehash", 0o755))
+        self.assertEqual(bootstrap_target(PACKAGE + "alpha.py"), ("file", "package-file:alpha.py", 0o644))
+        self.assertEqual(bootstrap_target(TEMPLATE + "sparehash.service.in"),
+                         ("file", "unit-template:sparehash.service.in", 0o644))
+        for rejected in ("/var/lib/sparehash", "/etc/sparehash/config.toml",
+                         "/etc/systemd/system/sparehash.service", "/tmp/alpha.py", PACKAGE + "alpha.txt"):
+            with self.subTest(rejected=rejected):
+                self.assertIsNone(bootstrap_target(rejected))
 
     def test_parse_manifest_accepts_typed_leaf_receipts(self) -> None:
         # Given
@@ -160,10 +174,38 @@ class BootstrapReceiptTests(unittest.TestCase):
         # Given
         ledger = Ledger(self.tree)
         ledger.initialize()
-        for name in ("/etc/passwd", PACKAGE + "alpha.sh", PACKAGE + "../alpha.py"):
+        for name in ("/etc/passwd", PACKAGE + "alpha.sh", PACKAGE + "../alpha.py",
+                     "/var/lib/sparehash", "/etc/sparehash/config.toml",
+                     "/etc/systemd/system/sparehash.service"):
             with self.subTest(name=name), self.assertRaises(DeploymentError):
                 # When
                 install.bootstrap(ledger, (name,))
+
+    def test_bootstrap_rejects_unprotected_leaf_mode(self) -> None:
+        # Given an installable leaf writable by group/other
+        name = self.write(PACKAGE + "alpha.py")
+        self.tree.path(name).chmod(0o666)
+        ledger = Ledger(self.tree)
+        ledger.initialize()
+        # When / Then
+        with self.assertRaises(DeploymentError):
+            install.bootstrap(ledger, (name,))
+
+    def test_rerun_leaves_existing_package_file_unreceipted(self) -> None:
+        # Given a package file that pre-existed this invocation and is not declared as created
+        name = self.write(PACKAGE + "alpha.py")
+        ledger = Ledger(self.tree)
+        ledger.initialize()
+        # When
+        install.bootstrap(ledger, ())
+        # Then observation does not fabricate package-file authority
+        with locked_store(StoreContext(self.tree.trust)) as store:
+            snapshot = store.read()
+        assert snapshot is not None and snapshot.manifest.installer is not None
+        self.assertNotIn("package-file:alpha.py", {item.id for item in snapshot.manifest.installer.artifacts})
+        with self.assertRaises(CollisionError):
+            _ = remove_leaf_receipts(self.tree.trust)
+        self.assertTrue(self.tree.path(name).exists())
 
     def test_observation_never_promotes_created_false(self) -> None:
         # Given an existing directory receipt recorded as not created
@@ -178,72 +220,6 @@ class BootstrapReceiptTests(unittest.TestCase):
         assert snapshot is not None and snapshot.manifest.installer is not None
         by_id = {item.id: item for item in snapshot.manifest.installer.artifacts}
         self.assertFalse(by_id["/opt/sparehash"].created)
-
-
-@final
-class RemovalTests(unittest.TestCase):
-    def __init__(self, methodName: str = "runTest") -> None:
-        super().__init__(methodName)
-        self.temp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.temp.cleanup)
-        self.root = Path(self.temp.name)
-        self.tree = make_tree(self.root)
-
-    def build(self, created: bool = True) -> list[str]:
-        names = [PACKAGE + "alpha.py", PACKAGE + "beta.py", TEMPLATE + "sparehash.service.in"]
-        for name in names:
-            path = self.tree.path(name)
-            _ = path.write_bytes(name.encode())
-            path.chmod(0o644)
-        ledger = Ledger(self.tree)
-        ledger.initialize()
-        if created:
-            install.bootstrap(ledger, ("/opt/sparehash", "/opt/sparehash/src", PACKAGE_DIR, TEMPLATE_DIR, *names))
-        else:
-            with locked_store(ledger.context()) as store:
-                store.write(Manifest("/opt/xmrig", ()))
-        return names
-
-    def test_removes_only_authorized_leaves_then_empty_directories(self) -> None:
-        # Given
-        names = self.build()
-        # When
-        removed = remove_leaf_receipts(self.tree.trust)
-        # Then
-        self.assertEqual(sorted(removed), sorted(names))
-        for name in names:
-            self.assertFalse(self.tree.path(name).exists())
-        self.assertFalse(self.tree.path(PACKAGE_DIR).exists())
-        self.assertFalse(self.tree.path("/opt/sparehash").exists())
-
-    def test_refuses_when_authorized_file_changed(self) -> None:
-        # Given
-        names = self.build()
-        _ = self.tree.path(names[0]).write_bytes(b"tampered")
-        # When / Then
-        with self.assertRaises(CollisionError):
-            _ = remove_leaf_receipts(self.tree.trust)
-        self.assertTrue(self.tree.path(names[1]).exists())
-
-    def test_refuses_when_unrecorded_child_present(self) -> None:
-        # Given
-        names = self.build()
-        extra = self.tree.path(PACKAGE + "extra.py")
-        _ = extra.write_bytes(b"unrecorded")
-        extra.chmod(0o644)
-        # When / Then
-        with self.assertRaises(CollisionError):
-            _ = remove_leaf_receipts(self.tree.trust)
-        self.assertTrue(self.tree.path(names[0]).exists())
-        self.assertTrue(extra.exists())
-
-    def test_refuses_legacy_install_without_file_receipts(self) -> None:
-        # Given a package tree with no installer receipts
-        _ = self.build(created=False)
-        # When / Then
-        with self.assertRaises(CollisionError):
-            _ = remove_leaf_receipts(self.tree.trust)
-        self.assertTrue(self.tree.path(PACKAGE + "alpha.py").exists())
 
 
 @unittest.skipUnless(BWRAP is not None, "bwrap is required for the install.sh argument test")

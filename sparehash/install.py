@@ -22,7 +22,7 @@ from .install_manifest import StoreContext, locked_store
 from .install_xmrig import choose, dry_run, isolated
 from .sysdetect import Capabilities
 from .xmrig_install import CollisionError, current_binary
-from .xmrig_ledger import Artifact, GroupIdentity, Operation, UserIdentity, choice, fixed_target, leaf_identity
+from .xmrig_ledger import Artifact, GroupIdentity, Operation, UserIdentity, bootstrap_target, choice
 
 UNITS: Final = "/etc/systemd/system"
 BOOTSTRAP_PATHS: Final = ("/opt/sparehash", "/opt/sparehash/src", "/usr/local/bin/sparehash")
@@ -157,20 +157,19 @@ def post_install(tree: Tree, cfg: config.Config) -> None:
 
 
 def bootstrap(ledger: Ledger, created: tuple[str, ...]) -> None:
-    """Record only paths the shell bootstrap created; leaf paths must match the fixed grammar."""
+    """Record only paths the shell bootstrap created, restricted to its exact grammar."""
     tree = ledger.tree
+    declared = set(created)
     for name in BOOTSTRAP_PATHS:
-        if tree.path(name).exists():
-            ledger.applied(0, (tree.receipt(name, name in created),))
+        if name not in declared and tree.path(name).exists():
+            ledger.applied(0, (tree.receipt(name, False),))
     for name in created:
-        if name in BOOTSTRAP_PATHS:
-            continue
-        fixed = fixed_target(name)
-        identity = leaf_identity(name) if fixed is None else None
-        if fixed is None and identity is None:
+        target = bootstrap_target(name)
+        if target is None:
             raise DeploymentError("bootstrap", "unsupported bootstrap target: " + name)
+        kind, identity, mode = target
         receipt = tree.receipt(name, True, identity=identity)
-        if receipt.uid != tree.uid or (receipt.kind == "file" and receipt.sha256 is None):
+        if receipt.kind != kind or receipt.uid != tree.uid or receipt.mode != mode:
             raise DeploymentError("bootstrap", "unprotected bootstrap target: " + name)
         ledger.applied(0, (receipt,))
 
