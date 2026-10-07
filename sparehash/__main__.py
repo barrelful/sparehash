@@ -46,6 +46,7 @@ class CliArguments(argparse.Namespace):
     config_command: str = ""
     debug_command: str | None = None
     name: str = ""
+    purge: bool = False
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -151,6 +152,10 @@ def main(
         from sparehash.cli_lifecycle import update
 
         return update(geteuid=geteuid)
+    if command == "uninstall":
+        from sparehash.cli_uninstall import uninstall
+
+        return uninstall(purge=parsed.purge, geteuid=geteuid)
     if command == "debug":
         if geteuid() != 0:
             print("sparehash: debug commands require root", file=sys.stderr)

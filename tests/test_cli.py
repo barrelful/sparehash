@@ -81,8 +81,8 @@ class CliTests(unittest.TestCase):
         self.assertIn("unavailable", result.stdout)
         self.assertIn("stopped", result.stdout)
 
-    def test_unfinished_public_command_remains_unavailable(self) -> None:
-        """Given an unfinished public command, dispatch still exits nonzero."""
+    def test_uninstall_requires_root_when_unprivileged(self) -> None:
+        """Given an unprivileged identity, uninstall refuses before any removal."""
         result = subprocess.run(
             [sys.executable, "-m", "sparehash", "uninstall"],
             check=False,
@@ -91,7 +91,7 @@ class CliTests(unittest.TestCase):
         )
 
         self.assertEqual(result.returncode, 2)
-        self.assertIn("unavailable", result.stderr)
+        self.assertIn("requires root", result.stderr)
 
     def test_internal_commands_require_root(self) -> None:
         """Given an unprivileged identity, internal commands stop before dispatch."""
