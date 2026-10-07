@@ -117,30 +117,48 @@ def _check_readme(text: str, commands: list[str], flags: list[str],
     return missing
 
 
+def _negative_fixture(readme_text: str, pattern: str) -> str:
+    count = readme_text.count(pattern)
+    if count != 1:
+        raise ValueError(
+            f"negative self-test pattern {pattern!r} appears {count} times; expected 1"
+        )
+    return readme_text.replace(pattern, "REMOVED_PLACEHOLDER", 1)
+
+
+def _test_negative_fixture() -> None:
+    # Given one exact occurrence, when fixture creation runs, then it is removed.
+    modified = _negative_fixture("donate_level = 1", "donate_level = 1")
+    if "donate_level = 1" in modified:
+        raise AssertionError("unique pattern was not removed")
+
+    # Given no occurrence, when fixture creation runs, then it raises explicitly.
+    try:
+        _ = _negative_fixture("other text", "donate_level = 1")
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("missing pattern did not fail")
+
+    # Given duplicate occurrences, when fixture creation runs, then it raises explicitly.
+    try:
+        _ = _negative_fixture(
+            "donate_level = 1\ndonate_level = 1", "donate_level = 1"
+        )
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("duplicate pattern did not fail")
+
+
 def _negative_self_test(commands: list[str], flags: list[str],
                         keys: list[str]) -> None:
     """Remove a unique inventory entry from a temp README copy and confirm detection."""
+    _test_negative_fixture()
     readme_text = _read(README_PATH)
-    
     test_key = "donate_level"
     test_pattern = f"{test_key} = 1"
-    
-    if test_pattern not in readme_text:
-        print(
-            f"self-test SKIPPED: {test_pattern!r} not found in README",
-            file=sys.stderr,
-        )
-        return
-    
-    count = readme_text.count(test_pattern)
-    if count != 1:
-        print(
-            f"self-test SKIPPED: {test_pattern!r} appears {count} times (not unique)",
-            file=sys.stderr,
-        )
-        return
-    
-    modified = readme_text.replace(test_pattern, "REMOVED_PLACEHOLDER")
+    modified = _negative_fixture(readme_text, test_pattern)
     
     with tempfile.NamedTemporaryFile(
         mode="w", suffix=".md", delete=False, encoding="utf-8"
