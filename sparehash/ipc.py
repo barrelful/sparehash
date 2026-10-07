@@ -198,7 +198,7 @@ def _dispatch(connection: socket.socket, handler: Handler) -> None:
         raise IPCError("connection error") from exc
 
 
-def serve(sock_path: str | Path, handler: Handler, stop_event: Event) -> None:
+def serve(sock_path: str | Path, handler: Handler, stop_event: Event, *, bound: Event | None = None) -> None:
     """Accept nonblocking; each connection has a total bounded receive/send budget.
 
     Handler must be nonblocking: controller lifecycle/observation work belongs outside
@@ -227,6 +227,8 @@ def serve(sock_path: str | Path, handler: Handler, stop_event: Event) -> None:
                 os.chmod("control.sock", 0o660, dir_fd=fd)
                 listener.listen(16)
                 listener.setblocking(False)
+                if bound is not None:
+                    bound.set()
                 _ = selector.register(listener, selectors.EVENT_READ)
                 while not stop_event.is_set():
                     for _key, _mask in selector.select(0.05):

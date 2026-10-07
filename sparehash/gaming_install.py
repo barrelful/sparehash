@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import grp
+import hashlib
+import stat
 import pwd
 import subprocess
 from collections.abc import Callable
@@ -12,7 +14,9 @@ from typing import Final, TypedDict
 
 from .config import Config
 from .gaming import Runner, User, UserError, resolve_helper
-from .gaming_ini import Home, UnsafePathError, edit
+from .gaming_ini import EditReceipt, Home, UnsafePathError, edit
+from .install_ledger import Ledger, Receipt
+from .xmrig_ledger import Artifact, Membership
 from .sysdetect import FIXED_PATH, Capabilities
 
 INSTALL_ARGS: Final = (("apt-get", ("install", "-y", "gamemode")),
@@ -37,6 +41,7 @@ class InstallResult:
     config: Config
     available: bool
     warnings: tuple[str, ...] = ()
+    receipts: tuple[Receipt, ...] = ()
 
 
 def detect_gaming(caps: Capabilities) -> GamingDetection:
@@ -55,11 +60,11 @@ def _run(argv: tuple[str, ...], runner: Runner) -> None:
         raise InstallError("helper", f"{argv[0]} exited {result.returncode}")
 
 
-def merge(user: User) -> bool:
+def merge(user: User, *, record: Callable[[EditReceipt], None] | None = None) -> bool:
     account = pwd.getpwnam(user.name)
     if account.pw_uid != user.uid:
         raise UserError(user.name)
-    return edit(Home(Path(account.pw_dir), account.pw_uid, account.pw_gid), True)
+    return edit(Home(Path(account.pw_dir), account.pw_uid, account.pw_gid), True, record=record)
 
 
 def unmerge(user: User) -> bool:
@@ -70,7 +75,7 @@ def unmerge(user: User) -> bool:
 
 
 def configure(cfg: Config, caps: Capabilities, consent: Callable[[str], bool], *,
-              runner: Runner = subprocess.run) -> InstallResult:
+              runner: Runner = subprocess.run, ledger: Ledger | None = None) -> InstallResult:
     """Return immutable enabled/disabled state for Todo18, never persist it here.
 
     Runner is an independent privileged-command test seam, not a config input.
@@ -79,6 +84,7 @@ def configure(cfg: Config, caps: Capabilities, consent: Callable[[str], bool], *
     if not cfg.gaming.enabled:
         return InstallResult(cfg, False)
     warnings: list[str] = []
+    receipts: list[Receipt] = []
     available = detect_gaming(caps)["gamemode"] and resolve_helper("gamemoded") is not None
     if not available:
         notice = "GameMode not found — it is the supported way to pause mining while gaming"
@@ -105,12 +111,36 @@ def configure(cfg: Config, caps: Capabilities, consent: Callable[[str], bool], *
                 user = User.from_name(name)
                 group = grp.getgrnam("sparehash")
                 account = pwd.getpwnam(name)
+                added = False
                 if account.pw_gid != group.gr_gid and name not in group.gr_mem:
                     helper = resolve_helper("usermod")
                     if helper is None:
                         raise InstallError("group", "usermod unavailable; add account to sparehash group and rerun")
+                    sequence = ledger.begin(f"membership:{name}:sparehash", "add-membership") if ledger else 0
                     _run((helper, "-aG", "sparehash", name), runner)
-                _ = merge(user)
+                    added = True
+                    if ledger:
+                        ledger.applied(sequence, (Membership(name, account.pw_uid, "sparehash", group.gr_gid, True),))
+                membership = Membership(name, account.pw_uid, "sparehash", group.gr_gid, added)
+                receipts.append(membership)
+                if ledger is None:
+                    _ = merge(user)
+                else:
+                    ledger.applied(0, (membership,))
+                    sequence = ledger.begin("gaming-ini:" + name, "merge-gaming")
+                    captured: list[Artifact] = []
+                    def record(result: EditReceipt) -> None:
+                        for kind, payload, created in (("ini", result.configuration, result.created),
+                                                       ("backup", result.backup, True)):
+                            if payload is None:
+                                continue
+                            data, info = payload
+                            suffix = ".config/gamemode.ini" + (".sparehash-bak" if kind == "backup" else "")
+                            captured.append(Artifact("gaming-" + kind + ":" + name, str(Path(account.pw_dir) / suffix), "file", created,
+                                                     info.st_uid, info.st_gid, stat.S_IMODE(info.st_mode), info.st_dev, info.st_ino, hashlib.sha256(data).hexdigest()))
+                    _ = merge(user, record=record)
+                    ledger.applied(sequence, tuple(captured))
+                    receipts.extend(captured)
             except FileNotFoundError:
                 warnings.append(f"Skipping {name}: home or .config missing; gaming integration disabled")
                 available = False
@@ -121,4 +151,4 @@ def configure(cfg: Config, caps: Capabilities, consent: Callable[[str], bool], *
     for warning in warnings:
         if not warning.startswith("GameMode not found"):
             print(warning)
-    return InstallResult(replace(cfg, gaming=gaming), available, tuple(warnings))
+    return InstallResult(replace(cfg, gaming=gaming), available, tuple(warnings), tuple(receipts))

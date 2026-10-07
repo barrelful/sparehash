@@ -175,7 +175,7 @@ class Controller:
             self.failures = 0
         self.apply()
 
-    def authorize(self) -> bool:
+    def authorize(self, consume: bool = True) -> bool:
         """B1: only just-refreshed current generation; unavailable/unknown denies.
 
         Wrapper must compare this generation again before exec (Todo24). No token
@@ -190,7 +190,7 @@ class Controller:
             self.refresh()
         if self.mode is Mode.BENCHMARK:
             allowed = allowed and not self.benchmark_authorized
-            self.benchmark_authorized = self.benchmark_authorized or allowed
+            self.benchmark_authorized = self.benchmark_authorized or (allowed and consume)
         return allowed
 
     def acquire_update(self) -> Generation:

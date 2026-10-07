@@ -47,6 +47,7 @@ def open_managed_root(trust: PathTrust, stack: ExitStack, *, create: bool) -> tu
     _ = stack.callback(os.close, fd)
     parent_fd = fd
     for part in trust.managed_root.relative_to(trust.root).parts:
+        created = False
         parent_fd = fd
         try:
             fd = os.open(part, DIRECTORY_FLAGS, dir_fd=fd)
@@ -54,11 +55,14 @@ def open_managed_root(trust: PathTrust, stack: ExitStack, *, create: bool) -> tu
             if not create:
                 return None, parent_fd
             os.mkdir(part, DIR_MODE, dir_fd=fd)
+            created = True
             fd = os.open(part, DIRECTORY_FLAGS, dir_fd=fd)
         except OSError as exc:
             raise CollisionError("root", f"managed root path is unsafe: {exc}") from exc
         _ = stack.callback(os.close, fd)
         _require_owned(fd, trust.uid, "managed root")
+        if created:
+            os.fchmod(fd, DIR_MODE)
     return fd, parent_fd
 
 

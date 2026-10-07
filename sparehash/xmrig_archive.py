@@ -41,6 +41,7 @@ def extract_archive(archive: Path, parent_fd: int, name: str, uid: int) -> None:
         info = os.fstat(version_fd)
         if info.st_uid != uid or info.st_mode & 0o022:
             raise ArchiveError("version directory is not protected")
+        os.fchmod(version_fd, DIR_MODE)
         _extract_into(archive, version_fd, name)
     except BaseException:
         os.close(version_fd)
@@ -101,6 +102,7 @@ def _subdir(cache: dict[str, int], held: list[int], root_fd: int, relative: str)
     parent = root_fd if not parent_rel else _subdir(cache, held, root_fd, parent_rel)
     try:
         fd = os.open(name, DIRECTORY_FLAGS, dir_fd=parent)
+        os.fchmod(fd, DIR_MODE)
     except FileNotFoundError:
         os.mkdir(name, DIR_MODE, dir_fd=parent)
         fd = os.open(name, DIRECTORY_FLAGS, dir_fd=parent)

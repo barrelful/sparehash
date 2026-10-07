@@ -45,6 +45,7 @@ class CliArguments(argparse.Namespace):
     command: str = ""
     config_command: str = ""
     debug_command: str | None = None
+    name: str = ""
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -99,6 +100,13 @@ def main(
         if command == "__miner_exec__" and getusername(geteuid()) != "xmrig":
             print("sparehash: miner command requires the xmrig identity", file=sys.stderr)
             return 2
+        if command in ("__controller__", "__cleanup__", "__miner_exec__"):
+            if len(arguments) != 1 or (command == "__miner_exec__" and geteuid() == 0):
+                return 1
+            from sparehash.runtime import cleanup, run
+            from sparehash.runtime_spec import miner
+
+            return {"__controller__": run, "__cleanup__": cleanup, "__miner_exec__": miner}[command]()
         if command in ("__authorize_miner__", "authorize-start"):
             if len(arguments) != 1:
                 return 1
@@ -107,6 +115,10 @@ def main(
             return authorize_miner()
         return _incomplete(command)
 
+    if arguments and arguments[0] == "install":
+        from sparehash.install import main as install
+
+        return install(arguments[1:], geteuid=geteuid)
     parsed = _parser().parse_args(arguments, namespace=CliArguments())
     command = parsed.command
     if command == "config":
@@ -139,7 +151,13 @@ def main(
         if geteuid() != 0:
             print("sparehash: debug commands require root", file=sys.stderr)
             return 2
-        return _incomplete(f"debug {parsed.debug_command}")
+        from sparehash.ipc import IPCError, call
+
+        verb = "debug-set" if parsed.debug_command == "set-blocker" else "debug-clear"
+        try:
+            return 0 if call({"cmd": verb, "blocker": parsed.name}, timeout=1).get("ok") is True else 1
+        except IPCError:
+            return 1
     return _incomplete(command)
 
 

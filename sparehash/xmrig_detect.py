@@ -56,7 +56,8 @@ class IsolationProbe(Protocol):
 
 
 class Capabilities(Protocol):
-    xmrig_path: str | None
+    @property
+    def xmrig_path(self) -> str | None: ...
 
 
 class MetadataRunner(Protocol):

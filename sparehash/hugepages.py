@@ -80,6 +80,7 @@ class LeaseManager:
     roots: Roots = Roots()
     boot_id: str | None = None
     ownership: Ownership = Ownership()
+    empty_proof: Callable[[], bool] | None = None
 
     @property
     def ledger_path(self) -> Path:
@@ -151,7 +152,7 @@ class LeaseManager:
     def _empty(self) -> bool:
         path = self.roots.cgroup
         if path is None:
-            return False
+            return self.empty_proof() if self.empty_proof is not None else False
         fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
         try:
             contents: list[str] = []

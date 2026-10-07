@@ -148,6 +148,22 @@ class StoreTests(unittest.TestCase):
 
 @final
 class BootstrapTests(unittest.TestCase):
+    def test_public_version_directories_when_installer_umask_is_private(self) -> None:
+        # Given
+        layout = Layout()
+        self.addCleanup(layout.cleanup)
+        archive = write_tar(layout.root / "release.tar.gz", release_members("xmrig-6.26.0"))
+        previous = os.umask(0o077)
+        try:
+            # When
+            with mock.patch.object(install, "verify_release"):
+                _ = install.install_release(request_for(archive), install.InstallContext(layout.trust))
+        finally:
+            _ = os.umask(previous)
+        # Then
+        self.assertEqual(layout.managed.stat().st_mode & 0o777, 0o755)
+        self.assertEqual(layout.binary("xmrig-6.26.0").parent.stat().st_mode & 0o777, 0o755)
+
     def test_prior_manifest_restored_when_current_publication_is_interrupted(self) -> None:
         # Given
         layout = Layout()

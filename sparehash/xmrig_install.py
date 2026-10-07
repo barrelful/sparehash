@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from collections.abc import Callable
 from contextlib import ExitStack
 from dataclasses import dataclass
@@ -159,6 +160,10 @@ def _apply(request: InstallRequest, context: InstallContext, version_name: str, 
                     raise InstallError("archive", exc.detail) from exc
                 extracted = True
             verify_binary(root_fd, version_name, trust.uid)
+            os.fchmod(root_fd, 0o755)
+            version_fd = os.open(version_name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=root_fd)
+            _ = stack.callback(os.close, version_fd)
+            os.fchmod(version_fd, 0o755)
             ensure_marker(root_fd, trust.uid)
             publish(root_fd, store, Publication(new_manifest, version_name))
             published = True

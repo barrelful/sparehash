@@ -13,6 +13,7 @@ import re
 import secrets
 import stat
 from contextlib import ExitStack
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Final
@@ -47,6 +48,13 @@ class Home:
                 or ".." in self.path.parts or self.path.anchor != "/"
                 or "\x00" in str(self.path) or min(self.uid, self.gid) < 0):
             raise UnsafePathError(self.path, "invalid home or identity")
+
+
+@dataclass(frozen=True, slots=True)
+class EditReceipt:
+    created: bool
+    configuration: tuple[bytes, os.stat_result]
+    backup: tuple[bytes, os.stat_result] | None = None
 
 
 def _layout(lines: list[str]) -> tuple[int | None, int, list[tuple[int, str]]]:
@@ -205,7 +213,7 @@ def _cleanup(directory: int, name: str, owned: os.stat_result) -> None:
         os.unlink(name, dir_fd=directory)
 
 
-def edit(home: Home, enabled: bool) -> bool:
+def edit(home: Home, enabled: bool, *, record: Callable[[EditReceipt], None] | None = None) -> bool:
     """Merge/unmerge using identical protection; return whether content changed."""
     try:
         with ExitStack() as stack:
@@ -214,13 +222,16 @@ def edit(home: Home, enabled: bool) -> bool:
             prior = _read(directory, NAME)
             data = prior[0] if prior else b""
             updated = transform(data, enabled)
+            backup: tuple[bytes, os.stat_result] | None = None
             if data == updated:
                 check_identity(chain, prior)
+                if record is not None and prior is not None:
+                    record(EditReceipt(False, prior))
                 return False
             check_identity(chain, prior)
             if prior and enabled and _read(directory, BACKUP) is None:
                 try:
-                    _ = _write(directory, BACKUP, prior)
+                    backup = (prior[0], _write(directory, BACKUP, prior))
                 except FileExistsError:
                     if _read(directory, BACKUP) is None:
                         raise UnsafePathError(home.path, "backup disappeared")
@@ -236,6 +247,8 @@ def edit(home: Home, enabled: bool) -> bool:
                 if updated:
                     os.replace(temp, NAME, src_dir_fd=directory, dst_dir_fd=directory)
                     published = True
+                    if record is not None:
+                        record(EditReceipt(prior is None, (updated, owned), backup))
                 else:
                     os.unlink(NAME, dir_fd=directory)
             finally:

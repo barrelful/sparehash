@@ -3,6 +3,7 @@ set -eu
 PATH=/usr/sbin:/usr/bin:/sbin:/bin
 export PATH
 umask 077
+bootstrap_created=
 
 refuse() {
     printf 'sparehash: %s\n' "$1" >&2
@@ -43,6 +44,7 @@ done
 for directory in /opt/sparehash /opt/sparehash/src; do
     if [ ! -e "$directory" ]; then
         mkdir -m 0755 "$directory" || refuse "cannot create directory: $directory"
+        bootstrap_created="$bootstrap_created $directory"
     fi
     [ -d "$directory" ] && [ "$(stat -c '%u:%a' "$directory")" = 0:755 ] || refuse "directory ownership or mode is unsafe: $directory"
 done
@@ -69,6 +71,26 @@ for source_file in "$source_package"/*.py; do
     fi
 done
 
+template_source=$source_dir/systemd
+[ -d "$template_source" ] && [ ! -L "$template_source" ] || refuse 'systemd templates are missing or unsafe'
+if [ ! -e /opt/sparehash/src/systemd ]; then
+    mkdir -m 0755 /opt/sparehash/src/systemd || refuse 'cannot create template directory'
+fi
+[ -d /opt/sparehash/src/systemd ] && [ ! -L /opt/sparehash/src/systemd ] || refuse 'installed template directory is unsafe'
+[ "$(stat -c '%u:%a' /opt/sparehash/src/systemd)" = 0:755 ] || refuse 'installed template directory ownership or mode is unsafe'
+for unit in sparehash.service.in sparehash-xmrig.service.in; do
+    source_file=$template_source/$unit
+    target_file=/opt/sparehash/src/systemd/$unit
+    [ -f "$source_file" ] && [ ! -L "$source_file" ] || refuse "unsafe unit template: $unit"
+    if [ -e "$target_file" ] || [ -L "$target_file" ]; then
+        [ -f "$target_file" ] && [ ! -L "$target_file" ] || refuse "unsafe installed template: $unit"
+        [ "$(stat -c '%u:%a' "$target_file")" = 0:644 ] || refuse "unsafe template protection: $unit"
+        cmp -s "$source_file" "$target_file" || refuse "installed template differs: $unit"
+    else
+        install -o root -g root -m 0644 "$source_file" "$target_file" || refuse "cannot install template: $unit"
+    fi
+done
+
 shim_tmp=$(mktemp /usr/local/bin/.sparehash.XXXXXX) || refuse 'cannot create temporary CLI shim'
 trap 'rm -f "$shim_tmp"' 0 HUP INT TERM
 cat > "$shim_tmp" <<'PYTHON_SHIM'
@@ -91,7 +113,11 @@ if [ -e /usr/local/bin/sparehash ] || [ -L /usr/local/bin/sparehash ]; then
     rm -f "$shim_tmp"
 else
     mv "$shim_tmp" /usr/local/bin/sparehash || refuse 'cannot install CLI shim'
+    bootstrap_created="$bootstrap_created /usr/local/bin/sparehash"
 fi
 trap - 0 HUP INT TERM
 
+for directory in $bootstrap_created; do
+    set -- "$@" --bootstrap-created "$directory"
+done
 exec /usr/local/bin/sparehash install "$@"
