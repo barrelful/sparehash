@@ -194,7 +194,7 @@ fi
         # Clear the blocker
         python3 -c "
 import sys
-sys.path.insert(0, '$REPO_DIR')
+sys.path.insert(0, REPO_DIR)
 from sparehash.state import BlockerState
 state = BlockerState()
 state.clear('$blocker')

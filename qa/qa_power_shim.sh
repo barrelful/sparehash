@@ -48,7 +48,6 @@ wait_miner_inactive() {
         fi
         echo "  [$label] Miner stopped after ${elapsed}s"
         return 0
-        fi
         sleep 0.5
         elapsed=$((elapsed + 1))
     done
