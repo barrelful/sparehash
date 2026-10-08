@@ -106,7 +106,8 @@ class UninstallTests(unittest.TestCase):
         infrastructure = cli_uninstall.Infrastructure(run=fake.run, cgroup_empty=fake.cgroup_empty,
                                                       free_hugepages=fake.free_hugepages, unmerge=fake.unmerge)
         result = cli_uninstall.uninstall(purge=purge, geteuid=lambda: root, trust=self.tree.trust,
-                                         client=client, infrastructure=infrastructure, request_id=REQUEST)
+                                         client=client, infrastructure=infrastructure, request_id=REQUEST,
+                                         lifecycle_path=self.root / "lifecycle.json")
         return result, client, fake
 
     def commands(self, fake: FakeInfrastructure) -> list[tuple[str, ...]]:

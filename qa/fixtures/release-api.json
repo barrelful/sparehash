@@ -1,0 +1,23 @@
+{
+    "tag_name": "v6.26.0",
+    "assets": [
+        {
+            "name": "linux-static-x64.tar.xz",
+            "url": "https://github.com/xmrig/xmrig/releases/download/v6.26.0/xmrig-6.26.0-linux-static-x64.tar.xz",
+            "size": 98765432,
+            "sha256": "fc6f8ae5f64e4f17481f7e3be29a1c56949f216a998414188003eae1db20c9e5"
+        },
+        {
+            "name": "SHA256SUMS",
+            "url": "https://raw.githubusercontent.com/xmrig/xmrig/master/dist/SHA256SUMS",
+            "size": 123456,
+            "sha256": "aaf4c6f2e85b4bb8c8f4a5e8b3d5f2e9e8b3d5f2e9e8b3d5f2e9e8b3d5f2e9e8"
+        },
+        {
+            "name": "SHA256SUMS.sig",
+            "url": "https://raw.githubusercontent.com/xmrig/xmrig/master/dist/SHA256SUMS.sig",
+            "size": 2345,
+            "sha256": "b3a4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d"
+        }
+    ]
+}

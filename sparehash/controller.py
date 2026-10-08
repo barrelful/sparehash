@@ -7,6 +7,7 @@ from typing import Final, assert_never, final
 
 from .controller_io import Action, Completion, Generation, Job, LifecycleBusy, Mode, Observation, Operation, Ports, SampleId, SafetyBlocker, dispatch
 from .ipc import Document, Peer, Request, Uid
+from .lifecycle import is_retired
 from .state import BlockerState
 
 LOGGER: Final = logging.getLogger(__name__)
@@ -55,6 +56,10 @@ class Controller:
             self.ports.providers.request(self.sample, self.requested_at + 10)
 
     def start(self) -> None:
+        if is_retired():
+            LOGGER.info("SpareHash is retired; uninstall has completed. Clear the lifecycle latch to reinstall.")
+            self.stopping = True
+            return
         self.sync()
         self.refresh()
         self.apply()

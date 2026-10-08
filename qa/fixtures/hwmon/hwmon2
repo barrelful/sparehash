@@ -1,0 +1,3 @@
+# Another thermal sensor: k10temp
+/temp1_input: 86000
+/temp1_label: Tctl

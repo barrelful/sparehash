@@ -1,0 +1,8 @@
+# Battery present, discharging
+/type: Battery
+/present: 1
+/status: Discharging
+/voltage_now: 3900000
+/energy_full: 45000000
+/energy_now: 38000000
+/energy_rate: 12000000

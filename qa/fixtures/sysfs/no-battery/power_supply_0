@@ -1,0 +1,5 @@
+# No battery, UPS-only
+/type: UPS
+/present: 1
+/status: Online
+/voltage_now: 230000

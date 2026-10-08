@@ -1,0 +1,139 @@
+#!/usr/bin/env python3
+"""gdbus shim for QA testing.
+
+Emulates org.freedesktop.UPower D-Bus service responses for QA test suites.
+Supports fixture files to script responses for PropertiesGet and PropertiesChanged.
+
+The shim is designed to be prepended to PATH so it takes priority over the
+real gdbus binary when QA scripts call gdbus.
+
+Features:
+- Properties.Get for UPower properties (OnBattery, LinePower, etc.)
+- Scripted PropertiesChanged sequences via fixture files
+- Configurable via environment variables and --fixture flag
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import sys
+from pathlib import Path
+
+# Fixture directory relative to the script location
+SCRIPT_DIR = Path(__file__).resolve().parent
+FIXTURES_DIR = SCRIPT_DIR / "fixtures"
+DEFAULT_UPOWER_FIXTURE = FIXTURES_DIR / "upower.json"
+
+# Default fixture: battery present, on battery
+DEFAULT_UPOWER = {
+    "org.freedesktop.UPower.Device": {
+        "OnBattery": True,
+        "LinePower": "Battery",
+        "BatteryPercentage": 85,
+        "BatteryStatus": "Discharging",
+    },
+    "org.freedesktop.UPower": {
+        "OnBattery": True,
+        "LinePower": "Battery",
+        "BatteryPercentage": 85,
+        "BatteryStatus": "Discharging",
+        "IsPresent": True,
+    },
+}
+
+
+def load_fixture(fixture_path: str | None = None) -> dict:
+    """Load the upower fixture, falling back to defaults."""
+    if fixture_path:
+        with open(fixture_path, "r") as f:
+            return json.load(f)
+    if DEFAULT_UPOWER_FIXTURE.exists():
+        with open(DEFAULT_UPOWER_FIXTURE, "r") as f:
+            return json.load(f)
+    return DEFAULT_UPOWER
+
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="gdbus shim for UPower QA testing"
+    )
+    parser.add_argument(
+        "--fixture", type=str, default=None,
+        help="Path to JSON fixture file (overrides default)"
+    )
+    parser.add_argument(
+        "--list", action="store_true",
+        help="List available fixture properties and exit"
+    )
+    return parser.parse_args(argv)
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = parse_args(argv)
+    fixture = load_fixture(args.fixture)
+    if args.list:
+        for obj_name, props in fixture.items():
+            for prop_name in props:
+                print(f"{obj_name}.{prop_name}")
+        return 0
+
+    # If no D-Bus-style arguments, show usage
+    if len(sys.argv) < 2:
+        print(
+            "Usage: gdbus [--fixture FILE] PROPERTY_PATH [PROPERTY_NAME]\n"
+            "  PROPERTY_PATH: e.g. /org/freedesktop/UPower or /org/freedesktop/UPower/Device\n"
+            "  PROPERTY_NAME: e.g. OnBattery, BatteryStatus",
+            file=sys.stderr
+        )
+        return 1
+
+    # Parse the D-Bus style path and property from arguments
+    args_list = sys.argv[1:]
+    obj_path = args_list[0] if len(args_list) > 0 else "/org/freedesktop/UPower"
+
+    # Remaining arguments are property names (for Get) or changed properties
+    prop_name = args_list[1] if len(args_list) > 1 else None
+
+    # Look up the property in the fixture
+    result = None
+    for obj_key, props in fixture.items():
+        # Match object path: /org/freedesktop/UPower -> "org.freedesktop.UPower"
+        # The fixture keys use dotted notation matching D-Bus interface names
+        if obj_path.strip("/").replace("/", ".") == obj_key:
+            if prop_name and prop_name in props:
+                result = props[prop_name]
+            elif not prop_name:
+                result = props
+            break
+
+    if result is None:
+        # Try exact path match for the root UPower object
+        if obj_path == "/org/freedesktop/UPower" and "org.freedesktop.UPower" in fixture:
+            if prop_name and "org.freedesktop.UPower" in fixture["org.freedesktop.UPower"]:
+                result = fixture["org.freedesktop.UPower"].get(prop_name)
+            elif not prop_name:
+                result = fixture["org.freedesktop.UPower"]
+
+    if result is None:
+        print(
+            f"gdbus: {obj_path}.{prop_name}: property not found in fixture",
+            file=sys.stderr
+        )
+        return 1
+
+    # Output in the format that real gdbus would produce
+    if isinstance(result, bool):
+        result_str = "true" if result else "false"
+    elif isinstance(result, (int, float)):
+        result_str = str(result)
+    else:
+        result_str = json.dumps(result) if not isinstance(result, str) else result
+
+    print(f"({result_str},)")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

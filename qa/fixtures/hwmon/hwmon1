@@ -1,0 +1,3 @@
+# Thermal sensor: coretemp
+/temp1_input: 80000
+/temp1_label: Package id 0

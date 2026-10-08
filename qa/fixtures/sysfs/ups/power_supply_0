@@ -1,0 +1,8 @@
+# UPS present, on mains
+/type: UPS
+/present: 1
+/status: Online
+/vendor: "APC"
+/model: "Back-UPS 600"
+/device: "apc-ups"
+/linefreq: 60.000000

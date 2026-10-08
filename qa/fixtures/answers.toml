@@ -1,0 +1,40 @@
+# Answers file for non-interactive SpareHash install
+# This file is used with: sudo ./install.sh --answers qa/fixtures/answers.toml
+
+version = 1
+wallet = "REPLACE_WITH_YOUR_MONERO_WALLET_ADDRESS"
+donate_level = 1
+
+[pool]
+host = "127.0.0.1"
+port = 3333
+tls = false
+worker = "sparehash"
+
+[cpu]
+mode = "spare"
+max_threads_percent = 75
+custom_json = ""
+
+[thermal]
+enabled = false
+pause_c = 85
+resume_c = 75
+
+[gaming]
+enabled = true
+users = []
+
+[hugepages]
+enabled = false
+pages = 1280
+
+[api]
+port = 38087
+
+[controller]
+min_dwell_seconds = 60
+reconcile_seconds = 30
+
+[xmrig]
+binary = "/opt/xmrig/current/xmrig"

@@ -1,0 +1,15 @@
+{
+    "org.freedesktop.UPower": {
+        "OnBattery": "b true",
+        "LinePower": "b Battery",
+        "BatteryPercentage": "i 85",
+        "BatteryStatus": "b Discharging",
+        "IsPresent": "b true"
+    },
+    "org.freedesktop.UPower.Device": {
+        "OnBattery": "b true",
+        "LinePower": "b Battery",
+        "BatteryPercentage": "i 85",
+        "BatteryStatus": "b Discharging"
+    }
+}

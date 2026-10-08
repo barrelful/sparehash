@@ -1,0 +1,104 @@
+#!/usr/bin/env python3
+"""gamemoded shim for QA testing.
+
+Emulates gamemoded -s output for QA test suites.
+Supports fixture files to script active/inactive states.
+
+The shim is designed to be prepended to PATH so it takes priority over the
+real gamemoded binary when QA scripts call gamemoded.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import sys
+from pathlib import Path
+
+# Fixture directory relative to the script location
+SCRIPT_DIR = Path(__file__).resolve().parent
+FIXTURES_DIR = SCRIPT_DIR / "fixtures"
+DEFAULT_GAMEMODED_FIXTURE = FIXTURES_DIR / "gamemoded.json"
+
+# Default fixture: gamemode is inactive
+DEFAULT_GAMEMODED = {
+    "active": False,
+    "status": "gamemode is inactive",
+}
+
+
+def load_fixture(fixture_path: str | None = None) -> dict:
+    """Load the gamemoded fixture, falling back to defaults."""
+    if fixture_path:
+        with open(fixture_path, "r") as f:
+            return json.load(f)
+    if DEFAULT_GAMEMODED_FIXTURE.exists():
+        with open(DEFAULT_GAMEMODED_FIXTURE, "r") as f:
+            return json.load(f)
+    return DEFAULT_GAMEMODED
+
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="gamemoded shim for QA testing"
+    )
+    parser.add_argument(
+        "--fixture", type=str, default=None,
+        help="Path to JSON fixture file (overrides default)"
+    )
+    parser.add_argument(
+        "--state", action="store_true",
+        help="Output current state and exit (default behavior)"
+    )
+    parser.add_argument(
+        "--set-active", action="store_true",
+        help="Set active state (for testing toggle)"
+    )
+    parser.add_argument(
+        "--set-inactive", action="store_true",
+        help="Set inactive state (for testing toggle)"
+    )
+    return parser.parse_args(argv)
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = parse_args(argv)
+    fixture = load_fixture(args.fixture)
+
+    # Handle --set-active and --set-inactive flags
+    if args.set_active:
+        fixture["active"] = True
+        fixture["status"] = "gamemode is active"
+        # Write updated fixture back
+        fixture_path = args.fixture or str(DEFAULT_GAMEMODED_FIXTURE)
+        with open(fixture_path, "w") as f:
+            json.dump(fixture, f, indent=2)
+        print("gamemode is active")
+        return 0
+
+    if args.set_inactive:
+        fixture["active"] = False
+        fixture["status"] = "gamemode is inactive"
+        # Write updated fixture back
+        fixture_path = args.fixture or str(DEFAULT_GAMEMODED_FIXTURE)
+        with open(fixture_path, "w") as f:
+            json.dump(fixture, f, indent=2)
+        print("gamemode is inactive")
+        return 0
+
+    # Default: output current state
+    active = fixture.get("active", False)
+    status = fixture.get("status", "gamemode is inactive")
+
+    if args.state or True:  # default behavior is to output state
+        if active:
+            print(status)
+        else:
+            print(status)
+
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

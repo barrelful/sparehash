@@ -12,12 +12,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Final, assert_never
 
-from . import ipc
+from . import ipc, lifecycle
 from .cli_lifecycle import LifecycleError, acquire, await_ready, end_update
 from .cli_ops import Client, OperationError
 from .deployment import DeploymentError, Tree, checked
 from .hugepages import LeaseManager
 from .install_manifest import StoreContext, locked_store
+from .lifecycle import retire
 from .runtime_jobs import empty
 from .xmrig_ledger import Artifact, GroupIdentity, Installer, UserIdentity
 from .xmrig_layout import InstallError
@@ -107,7 +108,7 @@ def _remove_accounts(run: Callable[[tuple[str, ...]], None], installer: Installe
 def uninstall(*, purge: bool = False, geteuid: Callable[[], int] = os.geteuid, trust: PathTrust = _DEFAULT_TRUST,
               client: Client = ipc.call, infrastructure: Infrastructure | None = None,
               clock: Callable[[], float] = time.monotonic, pause: Callable[[float], None] = time.sleep,
-              request_id: str | None = None) -> int:
+              request_id: str | None = None, lifecycle_path: Path = lifecycle.LIFECYCLE_PATH) -> int:
     """Stop, verify empty, restore hugepages, then remove only receipt-owned artifacts."""
     if geteuid() != 0:
         print("sparehash: uninstall requires root", file=sys.stderr)
@@ -121,6 +122,7 @@ def uninstall(*, purge: bool = False, geteuid: Callable[[], int] = os.geteuid, t
         await_ready(client, token, clock=clock, pause=pause)
         if not end_update(client, token, "commit"):
             raise LifecycleError("end-update", "controller could not retire the lifecycle lease")
+        retire()
         token = None
         infra.run(("/usr/bin/systemctl", "disable", "--now", "sparehash.service"))
         infra.run(("/usr/bin/systemctl", "stop", "sparehash-xmrig.service"))
@@ -140,5 +142,6 @@ def uninstall(*, purge: bool = False, geteuid: Callable[[], int] = os.geteuid, t
             _ = end_update(client, token, "abort")
         print(f"sparehash: uninstall: {error}", file=sys.stderr)
         return 1
+    retire(lifecycle_path)
     print("SpareHash removed." if purge else "SpareHash removed; configuration retained.")
     return 0
