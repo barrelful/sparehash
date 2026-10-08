@@ -122,7 +122,6 @@ def uninstall(*, purge: bool = False, geteuid: Callable[[], int] = os.geteuid, t
         await_ready(client, token, clock=clock, pause=pause)
         if not end_update(client, token, "commit"):
             raise LifecycleError("end-update", "controller could not retire the lifecycle lease")
-        retire()
         token = None
         infra.run(("/usr/bin/systemctl", "disable", "--now", "sparehash.service"))
         infra.run(("/usr/bin/systemctl", "stop", "sparehash-xmrig.service"))
