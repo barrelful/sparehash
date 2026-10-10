@@ -109,6 +109,14 @@ class IPCTests(unittest.TestCase):
                 command: ipc.Document = {"cmd": verb.value}
                 if verb in ipc.DEBUG:
                     command["blocker"] = "battery"
+                elif verb is ipc.Verb.BEGIN_UPDATE:
+                    command["purpose"] = "test"
+                    command["request_id"] = "abc"
+                elif verb is ipc.Verb.UPDATE_STATUS:
+                    command["token"] = "0x1"
+                elif verb is ipc.Verb.END_UPDATE:
+                    command["token"] = "0x1"
+                    command["outcome"] = "commit"
                 # When
                 response = ipc.call(command)
                 # Then
@@ -124,6 +132,14 @@ class IPCTests(unittest.TestCase):
                 command: ipc.Document = {"cmd": verb.value}
                 if verb in ipc.DEBUG:
                     command["blocker"] = "thermal"
+                elif verb is ipc.Verb.BEGIN_UPDATE:
+                    command["purpose"] = "test"
+                    command["request_id"] = "abc"
+                elif verb is ipc.Verb.UPDATE_STATUS:
+                    command["token"] = "0x1"
+                elif verb is ipc.Verb.END_UPDATE:
+                    command["token"] = "0x1"
+                    command["outcome"] = "commit"
                 # When
                 response = ipc.call(command)
                 # Then

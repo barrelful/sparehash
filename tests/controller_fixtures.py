@@ -8,7 +8,7 @@ from typing import final
 
 from sparehash.controller import Controller
 from sparehash.controller_io import Action, Completion, Job, Observation, Operation, Ports, SampleId
-from sparehash.ipc import Command, Gid, Peer, Uid, Verb
+from sparehash.ipc import Command, Gid, OrdinaryVerb, Peer, Uid
 from sparehash.state import BlockerState
 
 ROOT = Peer(Uid(0), Gid(0))
@@ -84,5 +84,5 @@ class ControllerFixture(unittest.TestCase):
         self.finish()
         self.finish()
 
-    def command(self, verb: Verb, uid: int = 0) -> None:
+    def command(self, verb: OrdinaryVerb, uid: int = 0) -> None:
         _ = self.c.handle(Command(verb), Peer(Uid(uid), Gid(0)))

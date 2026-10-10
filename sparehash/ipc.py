@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (c) 2026 SpareHash contributors
+
 """Bounded local control transport; the controller owns all state decisions."""
 
 from __future__ import annotations
@@ -12,13 +15,15 @@ import socket
 import stat
 import sys
 import tempfile
+import threading
 import time
+from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 from threading import Event
-from typing import Final, NewType, TypeAlias
+from typing import Final, Literal, NewType, TypeAlias, TypeGuard
 
 from .paths import RUN_DIR
 from .state import BLOCKERS
@@ -29,8 +34,16 @@ Uid = NewType("Uid", int)
 Gid = NewType("Gid", int)
 MAX_FRAME: Final = 4096
 CONNECTION_TIMEOUT: Final = 1.0
+RATE_WINDOW_SECONDS: Final = 1.0
+RATE_MAX_PER_WINDOW: Final = 20
 LOGGER: Final = logging.getLogger(__name__)
 _LOAD_JSON: Final[Callable[..., Json]] = json.loads
+_connection_log: dict[int, deque[float]] = {}
+_connection_lock = threading.Lock()
+# allow: SIZE_OK — trusted framing, credentials, rate limit, and typed boundary parsing are one transport unit.
+_TOKEN_MAX: Final = 64
+_PURPOSE_MAX: Final = 32
+_REQUEST_MAX: Final = 128
 
 
 class Verb(StrEnum):
@@ -44,12 +57,25 @@ class Verb(StrEnum):
     DEBUG_CLEAR = "debug-clear"
     AUTHORIZE_START = "authorize-start"
     BENCHMARK = "benchmark"
+    BEGIN_UPDATE = "begin-update"
+    UPDATE_STATUS = "update-status"
+    END_UPDATE = "end-update"
 
 
 VERBS: Final = frozenset(Verb)
 ROOT_ONLY: Final = frozenset((Verb.RELOAD, Verb.DEBUG_SET, Verb.DEBUG_CLEAR,
-                            Verb.AUTHORIZE_START, Verb.BENCHMARK))
+                            Verb.AUTHORIZE_START, Verb.BENCHMARK,
+                            Verb.BEGIN_UPDATE, Verb.UPDATE_STATUS, Verb.END_UPDATE))
 DEBUG: Final = frozenset((Verb.DEBUG_SET, Verb.DEBUG_CLEAR))
+LIFECYCLE: Final = frozenset((Verb.BEGIN_UPDATE, Verb.UPDATE_STATUS, Verb.END_UPDATE))
+ORDINARY: Final = VERBS - DEBUG - LIFECYCLE
+
+OrdinaryVerb = Literal[Verb.STATUS, Verb.PAUSE, Verb.RESUME, Verb.GAMING_START, Verb.GAMING_END,
+                        Verb.RELOAD, Verb.AUTHORIZE_START, Verb.BENCHMARK]
+DebugVerb = Literal[Verb.DEBUG_SET, Verb.DEBUG_CLEAR]
+LifecycleVerb = Literal[Verb.BEGIN_UPDATE, Verb.UPDATE_STATUS, Verb.END_UPDATE]
+Outcome = Literal["commit", "abort"]
+OUTCOMES: Final[tuple[Outcome, ...]] = ("commit", "abort")
 
 
 @dataclass(frozen=True, slots=True)
@@ -60,18 +86,38 @@ class Peer:
 
 @dataclass(frozen=True, slots=True)
 class Command:
-    verb: Verb
+    verb: OrdinaryVerb
 
 
 @dataclass(frozen=True, slots=True)
 class DebugCommand:
     """Only modifies injected observations; never a real blocker-clear instruction."""
 
-    verb: Verb
+    verb: DebugVerb
     blocker: str
 
 
-Request: TypeAlias = Command | DebugCommand
+@dataclass(frozen=True, slots=True)
+class LifecycleBegin:
+    verb: Literal[Verb.BEGIN_UPDATE]
+    purpose: str
+    request_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class LifecycleStatus:
+    verb: Literal[Verb.UPDATE_STATUS]
+    token: str
+
+
+@dataclass(frozen=True, slots=True)
+class LifecycleEnd:
+    verb: Literal[Verb.END_UPDATE]
+    token: str
+    outcome: Outcome
+
+
+Request: TypeAlias = Command | DebugCommand | LifecycleBegin | LifecycleStatus | LifecycleEnd
 Handler: TypeAlias = Callable[[Request, Peer], Document]
 
 
@@ -104,6 +150,32 @@ def _document(frame: bytes) -> Document:
     return raw
 
 
+def _is_debug(verb: Verb) -> TypeGuard[DebugVerb]:
+    return verb in DEBUG
+
+
+def _is_lifecycle(verb: Verb) -> TypeGuard[LifecycleVerb]:
+    return verb in LIFECYCLE
+
+
+def _is_ordinary(verb: Verb) -> TypeGuard[OrdinaryVerb]:
+    return verb in ORDINARY
+
+
+def _is_outcome(value: str) -> TypeGuard[Outcome]:
+    return value in OUTCOMES
+
+
+def _bounded_token(value: Json | None) -> TypeGuard[str]:
+    if not isinstance(value, str) or not 0 < len(value) <= _TOKEN_MAX:
+        return False
+    try:
+        _ = int(value, 16)
+    except ValueError:
+        return False
+    return True
+
+
 def parse_request(frame: bytes) -> Request:
     """Consume client input once, rejecting all non-protocol fields."""
     raw = _document(frame)
@@ -111,14 +183,40 @@ def parse_request(frame: bytes) -> Request:
     if not isinstance(name, str) or name not in VERBS:
         raise IPCError("unknown verb")
     verb = Verb(name)
-    if verb in DEBUG:
+    if _is_debug(verb):
         blocker = raw.get("blocker")
         if set(raw) != {"cmd", "blocker"} or not isinstance(blocker, str) or blocker not in BLOCKERS:
             raise IPCError("invalid blocker")
         return DebugCommand(verb, blocker)
+    if _is_lifecycle(verb):
+        return _parse_lifecycle(verb, raw)
+    if not _is_ordinary(verb):
+        raise IPCError("unknown verb")
     if set(raw) != {"cmd"}:
         raise IPCError("unexpected field")
     return Command(verb)
+
+
+def _parse_lifecycle(verb: LifecycleVerb, raw: Document) -> LifecycleBegin | LifecycleStatus | LifecycleEnd:
+    if verb is Verb.BEGIN_UPDATE:
+        purpose = raw.get("purpose")
+        request_id = raw.get("request_id")
+        if (set(raw) != {"cmd", "purpose", "request_id"} or not isinstance(purpose, str)
+                or not 0 < len(purpose) <= _PURPOSE_MAX
+                or not isinstance(request_id, str) or not 0 < len(request_id) <= _REQUEST_MAX):
+            raise IPCError("invalid lifecycle begin")
+        return LifecycleBegin(verb, purpose, request_id)
+    if verb is Verb.UPDATE_STATUS:
+        token = raw.get("token")
+        if set(raw) != {"cmd", "token"} or not _bounded_token(token):
+            raise IPCError("invalid lifecycle status")
+        return LifecycleStatus(verb, token)
+    token = raw.get("token")
+    outcome = raw.get("outcome")
+    if (set(raw) != {"cmd", "token", "outcome"} or not _bounded_token(token)
+            or not isinstance(outcome, str) or not _is_outcome(outcome)):
+        raise IPCError("invalid lifecycle end")
+    return LifecycleEnd(verb, token, outcome)
 
 
 def peer_credentials(connection: socket.socket) -> Peer:
@@ -179,10 +277,24 @@ def _encode(document: Document) -> bytes:
     return frame
 
 
+def _rate_limited(uid: int) -> bool:
+    now = time.monotonic()
+    with _connection_lock:
+        log = _connection_log.setdefault(uid, deque(maxlen=RATE_MAX_PER_WINDOW))
+        while log and log[0] < now - RATE_WINDOW_SECONDS:
+            log.popleft()
+        if len(log) >= RATE_MAX_PER_WINDOW:
+            return True
+        log.append(now)
+    return False
+
+
 def _dispatch(connection: socket.socket, handler: Handler) -> None:
     deadline = time.monotonic() + CONNECTION_TIMEOUT
     try:
         peer = peer_credentials(connection)
+        if _rate_limited(peer.uid):
+            raise IPCError("rate limited")
         request = parse_request(_frame(connection, deadline))
         LOGGER.info("control command", extra={"uid": peer.uid, "gid": peer.gid, "verb": request.verb.value})
         if peer.uid < 0 or peer.gid < 0 or (request.verb in ROOT_ONLY and peer.uid != 0):
