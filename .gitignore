@@ -1,2 +1,44 @@
+# OpenCode / agent internals
+.omo/
+
+# Git worktrees
+.worktrees/
+
+# Python
 __pycache__/
 *.py[cod]
+*$py.class
+*.so
+.Python
+
+# Virtual environments
+.env
+.env/
+venv/
+.venv/
+env/
+ENV/
+
+# Editors
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Build / distribution
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# Logs and local runtime artifacts
+*.log
+qa/evidence/
+sparehash-*.log
+
+# Local test / download artifacts
+xmrig-*.tar.gz
+SHA256SUMS*
+.sparehash-*
