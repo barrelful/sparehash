@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (c) 2026 SpareHash contributors
+
 """Read-only setup boundary: injected prompts or TOML answers produce Config."""
 
 from __future__ import annotations
