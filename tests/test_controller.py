@@ -75,6 +75,27 @@ class ControllerTests(ControllerFixture):
         # Then
         self.assertNotIn("battery", self.state.active())
 
+    def test_battery_reason_when_power_unknown_or_discharging(self) -> None:
+        for inventory, upower, sysfs, reason in ((None, False, False, "battery power state unknown"),
+                                                 (True, True, False, "on battery"),
+                                                 (True, False, True, "on battery"),
+                                                 (True, None, None, "unsafe or unknown observation")):
+            # Given
+            observation = replace(self.snapshot(), battery_present=inventory, upower=upower, sysfs=sysfs)
+            # When
+            self.fresh(observation)
+            # Then
+            self.assertEqual(self.state.active()["battery"][0], reason)
+
+    def test_battery_clear_when_maintenance_observation_opted_in(self) -> None:
+        # Given
+        observation = replace(self.snapshot(), sysfs=True, ac_online=True,
+                              discharge_rate_w=0.179, maintenance_mode=True)
+        # When
+        self.fresh(observation)
+        # Then
+        self.assertNotIn("battery", self.state.active())
+
     def test_manual_when_persisted_survives_new_controller(self) -> None:
         # Given
         self.command(Verb.PAUSE)

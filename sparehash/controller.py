@@ -119,7 +119,13 @@ class Controller:
         changed = False
         for name in ("battery", "gaming", "thermal"):
             blocked = self.real[name] or name in self.debug or (name == "gaming" and bool(self.hooks))
-            transition = (self.state.set(name, "unsafe or unknown observation", "controller")
+            reason = "unsafe or unknown observation"
+            if name == "battery":
+                if self.observation is None or self.observation.battery_present is None:
+                    reason = "battery power state unknown"
+                elif self.observation.upower is True or self.observation.sysfs is True:
+                    reason = "on battery"
+            transition = (self.state.set(name, reason, "controller")
                           if blocked else self.state.clear(name))
             if transition.changed:
                 changed = True
