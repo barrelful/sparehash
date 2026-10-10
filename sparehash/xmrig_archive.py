@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (c) 2026 SpareHash contributors
+
 """Descriptor-safe extraction and removal of release archives inside a managed root."""
 
 from __future__ import annotations
