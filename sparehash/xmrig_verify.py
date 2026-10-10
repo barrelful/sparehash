@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (c) 2026 SpareHash contributors
+
 """Fail-closed authentication of disposable XMRig release downloads."""
 from __future__ import annotations
 
@@ -12,6 +15,7 @@ from pathlib import Path
 from typing import Final, Literal, TypeAlias
 
 from .xmrig_release import FetchError, ReleaseClient
+from .sysdetect import FIXED_PATH
 
 XMRIG_GPG_FINGERPRINT: Final = "9AC4CEA8E66E35A5C7CDDC1B446A53638BE94409"
 SIGNING_KEY_URL: Final = "https://raw.githubusercontent.com/xmrig/xmrig/master/doc/gpg_keys/xmrig.asc"
@@ -47,7 +51,7 @@ def run_gpg(home: Path, args: tuple[str, ...], stage: Stage) -> str:
         result = subprocess.run(
             (executable, "--no-options", "--homedir", str(home), "--batch", "--no-tty", "--no-autostart",
              "--no-auto-key-retrieve", "--auto-key-locate", "clear", *args),
-            env={**os.environ, "GNUPGHOME": str(home)}, capture_output=True,
+            env={"PATH": FIXED_PATH, "GNUPGHOME": str(home), "LC_ALL": "C"}, capture_output=True,
             text=True, encoding="utf-8", errors="replace", timeout=30, check=False,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
