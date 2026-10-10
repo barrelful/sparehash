@@ -143,6 +143,41 @@ class StatusTests(unittest.TestCase):
         self.assertEqual(result['gaming'], [{'uid': 12345, 'user': 'unknown', 'active': None, 'stale': True}])
         self.assertEqual(result['blockers'], [['thermal', 'hot'], ['gaming', 'unknown user']])
 
+    def test_power_diagnostics_when_ac_maintenance_discharge(self) -> None:
+        # Given
+        sample = PowerSample(0, Evidence(True, 0), Evidence(False, 0), Evidence(True, 0), True, 0.179)
+        # When
+        result = decode(status.format_status(status.StatusSnapshot(power=sample), True))
+        # Then
+        power = result['power']
+        assert isinstance(power, dict)
+        self.assertIs(power['ac_online'], True)
+        self.assertEqual(power['discharge_rate_w'], 0.179)
+
+    def test_power_diagnostics_when_evidence_unavailable(self) -> None:
+        # Given / When
+        result = decode(status.format_status(status.StatusSnapshot(), True))
+        # Then
+        power = result['power']
+        assert isinstance(power, dict)
+        self.assertIsNone(power['ac_online'])
+        self.assertIsNone(power['discharge_rate_w'])
+
+    def test_live_power_diagnostics_when_sysfs_reports_rate(self) -> None:
+        # Given
+        provider = status.LiveProvider(controller_reader=lambda: {'ok': True, 'ready': True},
+                                       resolver=lambda host: True)
+        evidence = (Evidence(True, 0), Evidence(True, 0), True, 0.179)
+        with patch('sparehash.status.read_sysfs', return_value=evidence), patch(
+            'sparehash.status.Helpers', PowerHelper
+        ), patch('sparehash.status.load', return_value=Config()):
+            # When
+            snapshot = provider.snapshot()
+        # Then
+        assert snapshot.power is not None
+        self.assertIs(snapshot.power.ac_online, True)
+        self.assertEqual(snapshot.power.discharge_rate_w, 0.179)
+
     def test_scheduler_when_effective_values_missing(self) -> None:
         # Given
         with tempfile.TemporaryDirectory() as directory:

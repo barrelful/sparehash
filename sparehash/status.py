@@ -185,7 +185,7 @@ class LiveProvider:
                     active = entry[1] if isinstance(entry[1], bool) and fresh else None
                     users.append(Gaming(uid, user, active, not fresh))
         now = time.monotonic()
-        inventory, sysfs = read_sysfs(Path('/sys'), now)
+        inventory, sysfs, ac_online, discharge_rate_w = read_sysfs(Path('/sys'), now)
         helpers = Helpers()
         try:
             try:
@@ -194,7 +194,7 @@ class LiveProvider:
                 upower = Evidence(None, now)
         finally:
             helpers.close()
-        power = PowerSample(time.monotonic(), inventory, upower, sysfs)
+        power = PowerSample(time.monotonic(), inventory, upower, sysfs, ac_online, discharge_rate_w)
         sensor = find_sensor(Path('/sys/class/hwmon'))
         temperature = None
         if sensor is not None:
@@ -242,6 +242,8 @@ def format_status(snapshot: StatusSnapshot, json_output: bool = False) -> str:
         for name, evidence in (('inventory', snapshot.power.inventory), ('upower', snapshot.power.upower_evidence),
                                ('sysfs', snapshot.power.sysfs_evidence))}
     data['power'] = power
+    power['ac_online'] = None if snapshot.power is None else snapshot.power.ac_online
+    power['discharge_rate_w'] = None if snapshot.power is None else snapshot.power.discharge_rate_w
     data['ups_guard'] = 'unavailable' if snapshot.power is None else ('desktop/UPS-only' if snapshot.power.battery_present is False else 'battery/unknown')
     rendered = re.sub(r'[0-9a-fA-F]{64}', '[redacted]', json.dumps(data, allow_nan=False))
     if json_output:
