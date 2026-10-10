@@ -5,8 +5,8 @@
 
 from __future__ import annotations
 
-import selectors
 import logging
+import selectors
 from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
@@ -15,8 +15,8 @@ from typing import Literal, NewType, Protocol, assert_never
 from .ipc import (Command, DebugCommand, Document, IPCError, LifecycleBegin, LifecycleEnd,
                     LifecycleStatus, Outcome, Peer, ROOT_ONLY, Request, Uid, Verb, call)
 from .lifecycle_lease import LeaseError, Purpose, is_purpose
-from .state import BLOCKERS, BlockerState, StatePersistenceError
 from .power import Evidence, PowerSample, blocked
+from .state import BLOCKERS, BlockerState, StatePersistenceError
 
 Generation = NewType("Generation", int)
 SampleId = NewType("SampleId", int)
