@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (c) 2026 SpareHash contributors
+
 """Safe discovery and version policy for existing XMRig binaries."""
 
 from __future__ import annotations
