@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (c) 2026 SpareHash contributors
+
 """Manifest-owned /opt/xmrig install, gated update flow and rollback."""
 
 from __future__ import annotations
