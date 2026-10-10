@@ -1,303 +1,189 @@
 #!/usr/bin/env bash
-#
-# qa_controller_lifecycle.sh - Integration QA for controller lifecycle
-#
-# Tests:
-#   1. Explicit controller stop
-#   2. SIGKILL main PID
-#   3. Failed initial readiness and restart while each blocker is active
-#   4. Confirm miner cgroup empty <=5s
-#   5. No restart without fresh approval
-#   5. No deadlock
-#
-# This script is designed to run in a disposable systemd VM with the SpareHash
-# controller and miner already running.
-#
-# Exit code: 0 on success, 1 on failure
-#
-
+# Disposable systemd VM only. The parent runner owns mounts and power fixtures.
 set -euo pipefail
-
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_DIR="$(dirname "$SCRIPT_DIR")"
-QA_DIR="$REPO_DIR/qa"
-SPAREHASH_DIR="$REPO_DIR/sparehash"
+source "$SCRIPT_DIR/lib/runtime.sh"
+CONTROLLER_SERVICE=sparehash.service
+MINER_SERVICE=sparehash-xmrig.service
+POWER=$QA_ROOT/power
+DROPIN=
+POWER_BACKUP=
 
-# Paths
-CONTROLLER_BIN="/usr/local/bin/sparehash"
-MINER_SERVICE="sparehash-xmrig.service"
-CONTROLLER_SERVICE="sparehash.service"
-EVIDENCE_DIR="/omo/evidence"
+finish() {
+    local result=$?
+    trap - EXIT
+    set +e
+    cleanup
+    (exit "$result")
+    qa_cleanup
+}
+trap finish EXIT
 
-# Ensure evidence directory exists
-mkdir -p "$EVIDENCE_DIR" 2>/dev/null || true
+check() { PYTHONPATH="/opt/sparehash/src:${SCRIPT_DIR}/.." python3 "$SCRIPT_DIR/lifecycle_check.py" "$@"; }
+start_controller() { timeout 40 systemctl start "$CONTROLLER_SERVICE"; }
+stop_controller() { timeout 40 "$CONTROLLER_BIN" stop; check off; }
+baseline() { check baseline; }
 
-echo "=== qa_controller_lifecycle.sh: Controller Lifecycle QA ==="
+# ExecCondition exit 1 skips activation successfully: systemctl's return code
+# alone is NOT a denial proof. Require the condition result and no miner PID.
+deny_direct_start() {
+    timeout 15 systemctl start "$MINER_SERVICE"
+    check denied
+}
 
-# -------------------------------------------------------
-# Helper: wait for cgroup to be empty
-# -------------------------------------------------------
-wait_cgroup_empty() {
-    local timeout=$1
-    local label=$2
-    local elapsed=0
+restore_namespace() {
+    if [[ -n "$DROPIN" ]]; then
+        rm "$DROPIN"
+        DROPIN=
+        systemctl daemon-reload
+    fi
+}
 
-    while [ $elapsed -lt $timeout ]; do
-        # Check if the miner cgroup is empty
-        # This typically means no processes are in the cgroup
-        cgroup_path=$(systemctl show -p CPUQuota "$MINER_SERVICE" 2>/dev/null || echo "")
-        # Alternative: check cgroup directly
-        if [ -d "/sys/fs/cgroup/cpu/sparehash-xmrig" ]; then
-            # Check if there are any tasks in the cgroup
-            task_count=$(cat /sys/fs/cgroup/cpu/sparehash-xmrig/tasks 2>/dev/null || echo "unknown")
-            if [ "$task_count" = "0" ] || [ "$task_count" = "none" ]; then
-                echo "  [$label] Cgroup empty after ${elapsed}s (tasks: $task_count)"
-                return 0
-            fi
+cleanup() {
+    restore_namespace
+    if [[ -n "$POWER_BACKUP" ]]; then
+        cp "$POWER_BACKUP/online" "$POWER/AC/online"
+        if [[ -d "$POWER_BACKUP/BAT0" ]]; then
+            for attribute in type present status; do
+                if [[ -f "$POWER_BACKUP/BAT0/$attribute" ]]; then
+                    cp "$POWER_BACKUP/BAT0/$attribute" "$POWER/BAT0/$attribute"
+                else
+                    rm "$POWER/BAT0/$attribute"
+                fi
+            done
+        else
+            rm "$POWER/BAT0/type" "$POWER/BAT0/present" "$POWER/BAT0/status"
+            rmdir "$POWER/BAT0"
         fi
-        sleep 0.5
-        elapsed=$((elapsed + 1))
+        rm -r "$POWER_BACKUP"
+        POWER_BACKUP=
+    fi
+}
+
+main() {
+    [[ $EUID -eq 0 ]] || { echo 'FAIL: disposable VM root required' >&2; return 1; }
+    if [[ -n ${QA_RUNTIME_OWNER:-} ]]; then
+        qa_attach
+    else
+        qa_quiesce
+        qa_setup
+        qa_fixture_overlays
+    fi
+    [[ -f "$POWER/AC/type" && -f "$POWER/AC/online" ]]
+    [[ $(stat -c %u "$POWER") == 0 ]]
+    # Mutation is in-place; replacing a bind-mounted source directory is wrong.
+    echo '=== Controller lifecycle acceptance ==='
+    start_controller
+    baseline
+    stop_controller
+    echo 'PASS: explicit stop shuts down controller and miner'
+
+    start_controller
+    baseline
+    check loss
+    echo 'PASS: old miner tasks/cgroup empty <=5s; automatic controller restart and fresh recovery'
+
+    for blocker in battery gaming thermal manual; do
+        baseline
+        check ipc debug-set "$blocker"
+        check debug "$blocker"
+        deny_direct_start
+        check ipc debug-clear "$blocker"
+        # Explicit resume bypasses dwell, never other blockers.
+        check ipc resume
+        baseline
+        echo "PASS: live IPC $blocker override stops mining and denies direct start"
     done
 
-    echo "  [$label] TIMEOUT: Cgroup not empty after ${timeout}s" >&2
-    return 1
-}
+    baseline
+    check ipc pause
+    check blocked manual
+    stop_controller
+    start_controller
+    check blocked manual
+    deny_direct_start
+    check hold manual
+    check ipc resume
+    baseline
+    echo 'PASS: acknowledged manual pause survives restart beyond dwell; resume recovers'
 
-# -------------------------------------------------------
-# Helper: set a blocker (battery, gaming, thermal, manual)
-# -------------------------------------------------------
-set_blocker() {
-    local blocker_name=$1
-    echo "  Setting blocker: $blocker_name"
-    # Use the controller IPC to set the blocker
-    python3 -c "
-import sys
-sys.path.insert(0, '$REPO_DIR')
-from sparehash.controller_io import dispatch
-from sparehash.ipc import Command, parse_request, _encode, socket_path
-from pathlib import Path
-import socket
+    baseline
+    # BAT0 is optional in the runner baseline. Add attributes, never replace POWER.
+    POWER_BACKUP=$(mktemp -d "$QA_ROOT/lifecycle-power.XXXXXX")
+    cp "$POWER/AC/online" "$POWER_BACKUP/online"
+    if [[ -d "$POWER/BAT0" ]]; then cp -a "$POWER/BAT0" "$POWER_BACKUP/BAT0"; fi
+    mkdir -p "$POWER/BAT0"
+    printf 'Battery\n' > "$POWER/BAT0/type"
+    printf '1\n' > "$POWER/BAT0/present"
+    printf 'Discharging\n' > "$POWER/BAT0/status"
+    printf '0\n' > "$POWER/AC/online"
+    check blocked battery
+    stop_controller
+    start_controller
+    check blocked battery
+    deny_direct_start
+    check hold battery
+    printf 'Full\n' > "$POWER/BAT0/status"
+    printf '1\n' > "$POWER/AC/online"
+    check ipc resume
+    baseline
+    cleanup
+    echo 'PASS: persistent sysfs battery evidence inhibits restart and permits recovery on AC'
 
-# Try to set blocker via the controller
-sock = socket_path()
-try:
-    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
-        connection.connect(str(sock))
-        cmd = {'cmd': 'pause'}  # This sets the manual blocker
-        connection.sendall(_encode(cmd))
-        response = connection.recv(4096)
-        print(f'  Block response: {response}', end='')
-except Exception as e:
-    print(f'  Block error: {e}', end='')
-" 2>/dev/null || true
-}
+    baseline
+    printf '86000\n' > "$QA_ROOT/hwmon/hwmon0/temp1_input"
+    check blocked thermal 45
+    stop_controller
+    start_controller
+    check blocked thermal 45
+    deny_direct_start
+    check hold thermal
+    printf '74000\n' > "$QA_ROOT/hwmon/hwmon0/temp1_input"
+    check baseline
+    printf '40000\n' > "$QA_ROOT/hwmon/hwmon0/temp1_input"
+    echo 'PASS: thermal fixture evidence inhibits restart and recovers below resume'
 
-# -------------------------------------------------------
-# Phase 1: Explicit controller stop
-# -------------------------------------------------------
-echo "--- Phase 1: Explicit controller stop ---"
+    baseline
+    qa_gamemode_state active
+    check blocked gaming 60
+    stop_controller
+    start_controller
+    check blocked gaming 45
+    deny_direct_start
+    check hold gaming
+    qa_gamemode_state inactive
+    check baseline
+    echo 'PASS: provider-driven gaming evidence inhibits restart and recovers when idle'
 
-echo "  Stopping controller..."
-$CONTROLLER_BIN stop 2>/dev/null || true
-sleep 1
-
-if systemctl is-active "$CONTROLLER_SERVICE" >/dev/null 2>&1; then
-    echo "  FAIL: Controller still active after stop command" >&2
-    exit 1
-else
-    echo "  PASS: Controller stopped"
-fi
-
-# -------------------------------------------------------
-# Phase 2: SIGKILL main PID
-# -------------------------------------------------------
-echo ""
-echo "--- Phase 2: SIGKILL main PID ---"
-
-echo "  Getting miner main PID..."
-miner_pid=$(systemctl show -p MainPID "$MINER_SERVICE" 2>/dev/null || echo "0")
-echo "  Miner PID: $miner_pid"
-
-if [ "$miner_pid" != "0" ] && [ -n "$miner_pid" ]; then
-    echo "  Sending SIGKILL to miner PID $miner_pid..."
-    kill -9 "$miner_pid" 2>/dev/null || true
-    sleep 1
-fi
-
-# Check if miner service is still running after SIGKILL
-if systemctl is-active "$MINER_SERVICE" >/dev/null 2>&1; then
-    echo "  MINER: Still active after SIGKILL" >&2
-fi
-echo "  PASS: SIGKILL sent to miner main PID"
-
-# -------------------------------------------------------
-# Phase 3: Failed initial readiness and restart with blockers
-# -------------------------------------------------------
-echo ""
-echo "--- Phase 3: Blocker lifecycle with active blockers ---"
-
-# Start the controller fresh
-echo "  Starting controller..."
-$CONTROLLER_BIN start 2>/dev/null || true
-sleep 2
-
-# Verify controller is running
-if ! systemctl is-active "$CONTROLLER_SERVICE" >/dev/null 2>&1; then
-    echo "  FAIL: Controller could not start" >&2
-    exit 1
-fi
-echo "  Controller started"
-
-# Test each blocker individually
-for blocker in battery gaming thermal manual; do
-    echo "  --- Testing blocker: $blocker ---"
-
-    # Set the blocker
-    python3 -c "
-import sys
-sys.path.insert(0, '$REPO_DIR')
-from sparehash.state import BlockerState
-from pathlib import Path
-
-state = BlockerState()
-# Set the blocker
-transition = state.set('$blocker', 'test reason', 'test_source')
-print(f'  Blocker set: {transition.message}')
-" 2>/dev/null || true
-
-    # Check that mining is not allowed
-    python3 -c "
-import sys
-sys.path.insert(0, '$REPO_DIR')
-from sparehash.state import BlockerState
-state = BlockerState()
-# Set blocker and check
-state.set('$blocker', 'test reason', 'test_source')
-allowed = state.mining_allowed()
-print(f'  Mining allowed with $blocker blocker: {allowed}')
-if allowed:
-    echo "  FAIL: Mining should not be allowed with $blocker blocker" >&2
-else
-    echo "  PASS: Mining correctly blocked by $blocker"
-fi
-
-    # Try to restart controller while blocker is active
-    echo "  Attempting controller restart with $blocker active..."
-    $CONTROLLER_BIN stop 2>/dev/null || true
-    sleep 1
-    $CONTROLLER_BIN start 2>/dev/null || true
-    sleep 2
-
-    # Check that miner is not active with blocker
-    if systemctl is-active "$MINER_SERVICE" >/dev/null 2>&1; then
-        echo "  MINER: Active despite $blocker blocker" >&2
-        # Clear the blocker
-        python3 -c "
-import sys
-sys.path.insert(0, REPO_DIR)
-from sparehash.state import BlockerState
-state = BlockerState()
-state.clear('$blocker')
-" 2>/dev/null || true
+    baseline
+    stop_controller
+    # Runtime-only, uniquely owned namespace overlay: never chmod/write config.
+    mkdir -p /run/systemd/system/sparehash.service.d
+    DROPIN=$(mktemp /run/systemd/system/sparehash.service.d/qa-lifecycle-XXXXXX.conf)
+    printf '[Service]\nInaccessiblePaths=/etc/sparehash/config.toml\n' > "$DROPIN"
+    systemctl daemon-reload
+    if timeout 40 systemctl start "$CONTROLLER_SERVICE"; then
+        echo 'FAIL: controller became ready with inaccessible config' >&2
+        return 1
     else
-        echo "  PASS: Miner correctly stopped by $blocker blocker"
+        [[ $? -eq 1 ]] || { echo 'FAIL: start failed for reason other than unit failure' >&2; return 1; }
     fi
+    # on-failure may keep retrying: require no ready controller/miner, not inactive.
+    check unready
+    timeout 40 systemctl stop "$CONTROLLER_SERVICE"
+    restore_namespace
+    systemctl reset-failed "$CONTROLLER_SERVICE"
+    start_controller
+    baseline
+    echo 'PASS: failed initial readiness keeps miner off; namespace removal recovers'
 
-    # Clear the blocker for next test
-    python3 -c "
-import sys
-sys.path.insert(0, '$REPO_DIR')
-from sparehash.state import BlockerState
-state = BlockerState()
-state.clear('$blocker')
-" 2>/dev/null || true
-done
+    for i in 1 2 3; do
+        stop_controller
+        start_controller
+        baseline
+    done
+    echo 'PASS: three bounded stop/start cycles recover mining without deadlock'
+    echo '=== Lifecycle acceptance complete ==='
+}
 
-# -------------------------------------------------------
-# Phase 4: No restart without fresh approval
-# -------------------------------------------------------
-echo ""
-echo "--- Phase 4: No restart without fresh approval ---"
-
-# Set a blocker
-python3 -c "
-import sys
-sys.path.insert(0, '$REPO_DIR')
-from sparehash.state import BlockerState
-state = BlockerState()
-state.set('manual', 'test manual pause', 'test_source')
-" 2>/dev/null || true
-
-# Try to start the controller - should fail because manual blocker is active
-echo "  Attempting controller start with manual blocker active..."
-set +e
-$CONTROLLER_BIN start 2>/dev/null
-exit_code=$?
-set -e
-
-echo "  Controller start exit code: $exit_code"
-
-# The controller should not start mining with manual blocker
-if systemctl is-active "$MINER_SERVICE" >/dev/null 2>&1; then
-    echo "  MINER: Started despite manual blocker (unexpected)" >&2
-    # Clear the blocker
-    python3 -c "
-import sys
-sys.path.insert(0, '$REPO_DIR')
-from sparehash.state import BlockerState
-state = BlockerState()
-state.clear('manual')
-" 2>/dev/null || true
-else
-    echo "  PASS: Miner did not start with manual blocker active"
-fi
-
-# Clear the blocker
-python3 -c "
-import sys
-sys.path.insert(0, '$REPO_DIR')
-from sparehash.state import BlockerState
-state = BlockerState()
-state.clear('manual')
-" 2>/dev/null || true
-
-# -------------------------------------------------------
-# Phase 5: No deadlock
-# -------------------------------------------------------
-echo ""
-echo "--- Phase 5: No deadlock ---"
-
-# Perform a sequence of operations that could potentially deadlock
-echo "  Performing sequence: stop -> start -> stop -> start..."
-
-$CONTROLLER_BIN stop 2>/dev/null || true
-sleep 1
-
-$CONTROLLER_BIN start 2>/dev/null || true
-sleep 2
-
-$CONTROLLER_BIN stop 2>/dev/null || true
-sleep 1
-
-$CONTROLLER_BIN start 2>/dev/null || true
-sleep 2
-
-# Check that we're in a consistent state
-if systemctl is-active "$CONTROLLER_SERVICE" >/dev/null 2>&1; then
-    echo "  PASS: Controller is active after sequence (no deadlock)"
-else
-    echo "  FAIL: Controller not responding after sequence" >&2
-    exit 1
-fi
-
-# -------------------------------------------------------
-# Summary
-# -------------------------------------------------------
-echo ""
-echo "=== qa_controller_lifecycle.sh: Complete ==="
-echo "  Phase 1 (explicit controller stop): Complete"
-echo "  Phase 2 (SIGKILL main PID): Complete"
-echo "  Phase 3 (blocker lifecycle): Complete"
-echo "  Phase 4 (no restart without fresh approval): Complete"
-echo "  Phase 5 (no deadlock): Complete"
-exit 0
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then main "$@"; fi
