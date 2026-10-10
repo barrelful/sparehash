@@ -160,8 +160,10 @@ class LiveProvider:
     def snapshot(self) -> StatusSnapshot:
         try:
             raw = self.controller_reader()
-        except (ipc.IPCError, OSError):
-            return StatusSnapshot()
+        except ipc.IPCError as error:
+            return StatusSnapshot(controller='unavailable' if error.code in ('socket missing', 'connection refused') else 'ipc-error')
+        except OSError:
+            return StatusSnapshot(controller='ipc-error')
         if raw.get('ok') is not True or type(raw.get('ready')) is not bool:
             return StatusSnapshot()
         reasons = raw.get('reasons')
@@ -250,4 +252,4 @@ def format_status(snapshot: StatusSnapshot, json_output: bool = False) -> str:
 def run(json_output: bool = False, provider: Provider | None = None) -> int:
     snapshot = (provider if provider is not None else LiveProvider()).snapshot()
     print(format_status(snapshot, json_output))
-    return 3 if snapshot.controller == 'unavailable' else 0
+    return {'unavailable': 3, 'ipc-error': 1}.get(snapshot.controller, 0)

@@ -122,9 +122,10 @@ Handler: TypeAlias = Callable[[Request, Peer], Document]
 
 
 class IPCError(Exception):
-    def __init__(self, code: str) -> None:
+    def __init__(self, code: str, cause: OSError | None = None) -> None:
         super().__init__(code)
         self.code: str = code
+        self.cause: OSError | None = cause
 
 
 def _pairs(pairs: list[tuple[str, Json]]) -> Document:
@@ -377,5 +378,13 @@ def call(cmd: Document, timeout: float = 5) -> Document:
             connection.connect(str(socket_path()))
             connection.sendall(frame)
             return _document(_frame(connection, deadline))
+    except TimeoutError as exc:
+        raise IPCError("timeout") from exc
+    except PermissionError as exc:
+        raise IPCError("permission denied", exc) from exc
+    except FileNotFoundError as exc:
+        raise IPCError("socket missing", exc) from exc
+    except ConnectionRefusedError as exc:
+        raise IPCError("connection refused", exc) from exc
     except OSError as exc:
-        raise IPCError("timeout" if isinstance(exc, TimeoutError) else "connection error") from exc
+        raise IPCError("connection error", exc) from exc

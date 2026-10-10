@@ -7,20 +7,18 @@ import os
 import tempfile
 import threading
 import unittest
-from dataclasses import dataclass, replace
 from concurrent.futures import Future
+from dataclasses import dataclass, replace
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from sparehash import ipc, status
 from sparehash.__main__ import main
 from sparehash.config import Config
 from sparehash.power import Evidence, PowerSample
-from sparehash.xmrig_config import ApiError, read_token
-
-
 from sparehash.status import decode_json as decode
+from sparehash.xmrig_config import ApiError, read_token
 
 
 class PowerHelper:
@@ -42,10 +40,49 @@ class FixtureProvider:
 
 
 def disconnected() -> ipc.Document:
-    raise ipc.IPCError('disconnected')
+    raise ipc.IPCError('socket missing')
 
 
 class StatusTests(unittest.TestCase):
+    def test_exit_one_when_ipc_error(self) -> None:
+        for error in (ipc.IPCError('permission denied'), ipc.IPCError('timeout'),
+                      ipc.IPCError('invalid JSON'), OSError('connection failure')):
+            # Given
+            provider = status.LiveProvider(controller_reader=Mock(side_effect=error))
+            output = io.StringIO()
+            # When
+            with self.subTest(error=error), contextlib.redirect_stdout(output):
+                code = status.run(True, provider)
+            # Then
+            self.assertEqual(code, 1)
+            data = decode(output.getvalue())
+            self.assertEqual(data['controller'], 'ipc-error')
+            self.assertEqual(data['miner'], 'stopped/unavailable')
+            self.assertIsNone(data['hashrate'])
+
+    def test_exit_three_when_connection_refused(self) -> None:
+        # Given
+        provider = status.LiveProvider(controller_reader=Mock(side_effect=ipc.IPCError('connection refused')))
+        # When
+        with contextlib.redirect_stdout(io.StringIO()):
+            code = status.run(True, provider)
+        # Then
+        self.assertEqual(code, 3)
+
+    def test_ipc_call_when_transport_fails_preserves_error_category(self) -> None:
+        for error, expected in ((TimeoutError(), 'timeout'), (PermissionError(), 'permission denied'),
+                                (FileNotFoundError(), 'socket missing'),
+                                (ConnectionRefusedError(), 'connection refused'), (OSError(), 'connection error')):
+            # Given
+            with self.subTest(expected=expected), patch('sparehash.ipc.socket.socket') as socket:
+                socket.return_value.__enter__.return_value.connect.side_effect = error
+                # When
+                with self.assertRaises(ipc.IPCError) as raised:
+                    _ = ipc.call({'cmd': 'status'})
+                # Then
+                self.assertEqual(raised.exception.code, expected)
+                self.assertIs(raised.exception.cause, None if expected == 'timeout' else error)
+
     def test_exit_three_when_controller_disconnected(self) -> None:
         # Given
         provider = status.LiveProvider(controller_reader=disconnected)
@@ -64,7 +101,7 @@ class StatusTests(unittest.TestCase):
         provider = FixtureProvider(status.StatusSnapshot())
         # When
         with patch('sparehash.status.LiveProvider.snapshot', provider.snapshot), contextlib.redirect_stdout(output):
-            code = main(['status', '--json'])
+            code = main(['status', '--json'], geteuid=lambda: 0)
         # Then
         self.assertEqual(code, 3)
         self.assertEqual(decode(output.getvalue())['controller'], 'unavailable')
