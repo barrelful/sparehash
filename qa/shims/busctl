@@ -1,141 +1,28 @@
 #!/usr/bin/env python3
-"""busctl shim for QA testing.
-
-Emulates org.freedesktop.UPower D-Bus service responses via busctl for QA test suites.
-Supports fixture files to script responses for get-property and PropertiesChanged.
-
-The shim is designed to be prepended to PATH so it takes priority over the
-real busctl binary when QA scripts call busctl.
-"""
+"""Test-only busctl fallback sharing the gdbus UPower fixture."""
 
 from __future__ import annotations
 
-import argparse
 import json
 import os
 import sys
 from pathlib import Path
 
-# Fixture directory relative to the script location
-SCRIPT_DIR = Path(__file__).resolve().parent
-FIXTURES_DIR = SCRIPT_DIR / "fixtures"
-DEFAULT_BUSCTL_FIXTURE = FIXTURES_DIR / "busctl.json"
 
-# Default fixture: battery present, on battery
-DEFAULT_BUSCTL = {
-    "org.freedesktop.UPower": {
-        "OnBattery": "b true",
-        "LinePower": "b Battery",
-        "BatteryPercentage": "i 85",
-        "BatteryStatus": "b Discharging",
-        "IsPresent": "b true",
-    },
-    "org.freedesktop.UPower.Device": {
-        "OnBattery": "b true",
-        "LinePower": "b Battery",
-        "BatteryPercentage": "i 85",
-        "BatteryStatus": "b Discharging",
-    },
-}
-
-
-def load_fixture(fixture_path: str | None = None) -> dict:
-    """Load the busctl fixture, falling back to defaults."""
-    if fixture_path:
-        with open(fixture_path, "r") as f:
-            return json.load(f)
-    if DEFAULT_BUSCTL_FIXTURE.exists():
-        with open(DEFAULT_BUSCTL_FIXTURE, "r") as f:
-            return json.load(f)
-    return DEFAULT_BUSCTL
-
-
-def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
-        description="busctl shim for UPower QA testing"
-    )
-    parser.add_argument(
-        "--fixture", type=str, default=None,
-        help="Path to JSON fixture file (overrides default)"
-    )
-    parser.add_argument(
-        "--list", action="store_true",
-        help="List available fixture properties and exit"
-    )
-    return parser.parse_args(argv)
-
-
-def main(argv: list[str] | None = None) -> int:
-    args = parse_args(argv)
-    fixture = load_fixture(args.fixture)
-    if args.list:
-        for obj_name, props in fixture.items():
-            for prop_name in props:
-                print(f"{obj_name}.{prop_name}")
-        return 0
-
-    # If no busctl-style arguments, show usage
-    if len(sys.argv) < 2:
-        print(
-            "Usage: busctl [--fixture FILE] get-property BUS_NAME OBJECT_PATH INTERFACE PROPERTY\n"
-            "  or: busctl [--fixture fixture] list",
-            file=sys.stderr
-        )
+def main() -> int:
+    arguments = [arg for arg in sys.argv[1:] if not arg.startswith("--")]
+    if arguments != ["get-property", "org.freedesktop.UPower", "/org/freedesktop/UPower",
+                     "org.freedesktop.UPower", "OnBattery"]:
         return 1
-
-    # Parse the busctl command
-    args_list = sys.argv[1:]
-    command = args_list[0] if len(args_list) > 0 else ""
-
-    if command == "list":
-        # List available objects/properties
-        for obj_name, props in fixture.items():
-            print(obj_name)
-        return 0
-
-    if command == "get-property":
-        # busctl get-property <bus-name> <object-path> <interface> <property>
-        if len(args_list) < 4:
-            print("busctl get-property: need <bus-name> <object-path> <interface> <property>",
-                  file=sys.stderr)
-            return 1
-
-        bus_name = args_list[1]
-        object_path = args_list[2]
-        interface = args_list[3]
-        property_name = args_list[4] if len(args_list) > 4 else None
-
-        # Look up the property in the fixture
-        result = None
-        for obj_key, props in fixture.items():
-            if obj_key == bus_name or obj_key == object_path:
-                if property_name and property_name in props:
-                    result = props[property_name]
-                elif not property_name:
-                    result = props
-                break
-
-        if result is None:
-            print(f"busctl get-property: {property_name} not found in fixture", file=sys.stderr)
-            return 1
-
-        # Output in the format that real busctl would produce
-        # busctl get-property returns: <type> <value>
-        # Types: b (boolean), i (int32), u (uint32), x (uint64), s (string), o (object path), a{sv} (dict)
-        if isinstance(result, bool):
-            val_str = "true" if result else "false"
-            print(f"b {val_str}")
-        elif isinstance(result, bool) is False and isinstance(result, int):
-            print(f"i {result}")
-        elif isinstance(result, str):
-            print(f"s {result}")
-        else:
-            print(f"i {result}")
-
-        return 0
-
-    print(f"busctl: unknown command '{command}'", file=sys.stderr)
-    return 1
+    path = Path(os.environ.get("SPAREHASH_UPOWER_FIXTURE", "/run/sparehash-qa/upower.json"))
+    data = json.loads(path.read_text(encoding="ascii"))
+    if data.get("available", True) is not True:
+        return 1
+    value = data["org.freedesktop.UPower"]["OnBattery"]
+    if type(value) is not bool:
+        return 1
+    print("b true" if value else "b false")
+    return 0
 
 
 if __name__ == "__main__":
