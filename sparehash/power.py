@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (c) 2026 SpareHash contributors
+
 """Timestamped power evidence; tick/run never wait for UPower property queries."""
 
 from __future__ import annotations
@@ -95,9 +98,9 @@ def read_sysfs(root: Path, now: float) -> tuple[Evidence, Evidence]:
             uncertain |= value not in ("0", "1")
             external_complete &= value in ("0", "1")
     inventory = (True if present else False) if complete else None
-    value = (True if discharging or (complete and external_complete and not online)
-             else (False if complete and online and not uncertain else None))
-    return Evidence(inventory, now), Evidence(value if present else None, now)
+    battery_value = (True if discharging or (complete and external_complete and not online)
+                     else (False if complete and online and not uncertain else None))
+    return Evidence(inventory, now), Evidence(battery_value if present else None, now)
 
 
 class Backend(Protocol):
