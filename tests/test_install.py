@@ -8,82 +8,35 @@ import pwd
 import subprocess
 import sys
 import tempfile
-import unittest
 from dataclasses import replace
 from pathlib import Path
 from typing import final
 from unittest import mock
 
 from sparehash import config, install, systemd, xmrig_config
-from sparehash.deployment import LOAD_JSON, DeploymentError, Tree
+from sparehash.deployment import LOAD_JSON, DeploymentError
 from sparehash.install_manifest import StoreContext, locked_store
 from sparehash.sysdetect import Capabilities
 from sparehash.xmrig_ledger import mapping
 from sparehash.xmrig_manifest import parse_manifest
+from tests.install_fixture import InstallFixture
+from tests.install_fixture import capabilities as capabilities
 from tests.install_runtime import RuntimeTests as RuntimeTests
-
-
-def capabilities() -> Capabilities:
-    return Capabilities("x86_64", True, 257, True, "cgroup2", True, False, False,
-                        (0,), (), 2, 8 * 1024**3, None, None, False)
+from tests.install_startup import StartupTests as StartupTests
 
 
 @final
-class InstallTests(unittest.TestCase):
-    def __init__(self, methodName: str = "runTest") -> None:
-        super().__init__(methodName)
-        self.temp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.temp.cleanup)
-        self.root = Path(self.temp.name)
-        self.tree = Tree(self.root, os.getuid())
-        for name in ("etc/systemd/system", "var/lib", "opt/sparehash/src", "usr/local/bin"):
-            (self.root / name).mkdir(parents=True, mode=0o755)
-        for path in self.root.rglob("*"):
-            if path.is_dir():
-                path.chmod(0o755)
-        self.calls: list[tuple[str, ...]] = []
-        self.cfg = config.Config(wallet="4" + "1" * 94, pool=config.Pool(host="127.0.0.1"),
-                                 gaming=config.Gaming(enabled=False))
-
-    def checked(self, argv: tuple[str, ...], timeout: float = 10) -> str:
-        self.assertTrue(0 < timeout <= 60)
-        self.calls.append(argv)
-        if argv[1] == "is-enabled":
-            return "static" if argv[2] == "sparehash-xmrig.service" else "enabled"
-        return ""
-
-    def execute(self, cfg: config.Config | None = None, verify_error: systemd.UnitError | None = None,
-                *, interactive: bool = True) -> None:
-        original = os.fchown
-        def chown(fd: int, uid: int, gid: int) -> None:
-            _ = uid, gid
-            original(fd, os.getuid(), os.getgid())
-        account = pwd.struct_passwd(("xmrig", "x", 996, os.getgid(), "", "/nonexistent", "/usr/sbin/nologin"))
-        def group(name: str) -> grp.struct_group:
-            return grp.struct_group((name, "x", os.getgid(), []))
-        def choose(cfg: config.Config, caps: Capabilities, consent: bool) -> config.Config:
-            _ = caps, consent
-            return cfg
-        with (mock.patch("sparehash.install.pwd.getpwnam", return_value=account),
-              mock.patch("sparehash.install.grp.getgrnam", side_effect=group),
-              mock.patch("sparehash.install.os.fchown", side_effect=chown),
-              mock.patch.object(install, "choose", side_effect=choose),
-              mock.patch.object(install, "isolated", return_value=(0, "XMRig 6.26.0")),
-              mock.patch.object(systemd, "verify_units", return_value="", side_effect=verify_error),
-              mock.patch.object(xmrig_config, "validate_rendered"),
-              mock.patch.object(install, "checked", side_effect=self.checked)):
-            install.execute(self.tree, capabilities(), cfg or self.cfg, interactive=interactive)
-
+class InstallTests(InstallFixture):
     def test_gaming_consent_when_interactive_retries_and_honors_answer(self) -> None:
         # Given
         cfg = replace(self.cfg, gaming=config.Gaming(True))
         with mock.patch("sparehash.gaming_install.resolve_helper", return_value=None), mock.patch(
-            "builtins.input", side_effect=["perhaps", " NO "]
+            "builtins.input", side_effect=["perhaps", " NO ", "", ""]
         ) as prompt:
             # When
-            self.execute(cfg)
+            self.execute(cfg, interactive=True)
         # Then
-        self.assertEqual(prompt.call_count, 2)
+        self.assertEqual(prompt.call_count, 4)
         self.assertFalse(config.load(self.tree.path("/etc/sparehash/config.toml")).gaming.enabled)
 
     def test_gaming_consent_when_noninteractive_never_reads_stdin(self) -> None:
@@ -104,7 +57,7 @@ class InstallTests(unittest.TestCase):
             "sparehash.gaming_install._run"
         ) as run, mock.patch("builtins.input", return_value=""):
             # When
-            self.execute(cfg)
+            self.execute(cfg, interactive=True)
         # Then
         self.assertEqual(run.call_args.args[0], ("/usr/bin/apt-get", "install", "-y", "gamemode"))
         self.assertTrue(config.load(self.tree.path("/etc/sparehash/config.toml")).gaming.enabled)

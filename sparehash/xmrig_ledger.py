@@ -20,10 +20,10 @@ T = TypeVar("T", bound=str)
 Phase = Literal["installing", "ready"]
 ActionState = Literal["pending", "applied", "reverted"]
 Operation = Literal["create-user", "create-group", "add-membership", "create-directory",
-                    "write-file", "merge-gaming", "daemon-reload", "enable-controller"]
+                    "write-file", "merge-gaming", "daemon-reload", "enable-controller", "disable-controller", "start-controller"]
 OPERATIONS: Final[tuple[Operation, ...]] = (
     "create-user", "create-group", "add-membership", "create-directory",
-    "write-file", "merge-gaming", "daemon-reload", "enable-controller")
+    "write-file", "merge-gaming", "daemon-reload", "enable-controller", "disable-controller", "start-controller")
 DIRECTORIES: Final = frozenset((
     "/opt/sparehash", "/opt/sparehash/src", "/opt/sparehash/src/sparehash",
     "/opt/sparehash/src/systemd", "/etc/sparehash", "/var/lib/sparehash"))

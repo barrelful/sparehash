@@ -166,13 +166,14 @@ def _installer(value: Json) -> Installer:
     for action in actions:
         required = {"create-user": {"user"}, "create-group": {"group"}, "add-membership": {"membership"},
                     "create-directory": {"directory"}, "write-file": {"file"}, "merge-gaming": {"file"},
-                    "daemon-reload": {"file"}, "enable-controller": {"file"}}[action.operation]
+                    "daemon-reload": {"file"}, "enable-controller": {"file"},
+                    "disable-controller": {"file"}, "start-controller": {"file"}}[action.operation]
         target_kind = targets.get(action.target)
         if action.state == "pending" and target_kind is None:
             target_kind = _pending_target(action.target)
         if action.sequence <= previous or target_kind not in required:
             raise ManifestError("action reference or sequence")
-        if action.operation in {"enable-controller", "daemon-reload"} and action.target != "/etc/systemd/system/sparehash.service":
+        if action.operation in {"enable-controller", "disable-controller", "start-controller", "daemon-reload"} and action.target != "/etc/systemd/system/sparehash.service":
             raise ManifestError("systemd action target")
         if action.operation == "merge-gaming" and not action.target.startswith("gaming-ini:"):
             raise ManifestError("gaming action target")

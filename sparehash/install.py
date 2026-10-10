@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (c) 2026 SpareHash contributors
 
-"""Root install orchestration; never start mining during deployment."""
+"""Root install orchestration; only the controller may authorize mining."""
 
 # allow: SIZE_OK — ordered ledger deployment and retirement preflight stay in one installer entrypoint.
 
@@ -20,8 +20,8 @@ from pathlib import Path
 from types import FrameType
 from typing import Final
 
-from . import config, gaming_install, lifecycle, systemd, wizard, xmrig_config
-from .deployment import ENV, DeploymentError, Tree, checked
+from . import config, gaming_install, ipc, lifecycle, systemd, wizard, xmrig_config
+from .deployment import ENV, DeploymentError, Tree, checked, command
 from .install_ledger import Ledger
 from .install_manifest import StoreContext, locked_store
 from .install_xmrig import choose, dry_run, isolated
@@ -144,13 +144,19 @@ def install_units(ledger: Ledger, caps: Capabilities) -> None:
             file(ledger, UNITS + "/" + name, ((stage / name).read_bytes(), 0o644, 0))
 
 
-def post_install(tree: Tree, cfg: config.Config) -> None:
+def post_install(tree: Tree, cfg: config.Config, *, boot: bool = True, now: bool = True) -> None:
     for name in systemd.UNIT_NAMES:
         data = tree.read(UNITS + "/" + name)
         if data is None or not data.startswith((systemd.MARKER + "\n").encode()):
             raise DeploymentError("post-install", "unit marker missing: " + name)
-    if checked(("/usr/bin/systemctl", "is-enabled", "sparehash.service")) != "enabled":
-        raise DeploymentError("post-install", "controller is not enabled")
+    enabled = command(("/usr/bin/systemctl", "is-enabled", "sparehash.service"))
+    expected = "enabled" if boot else "disabled"
+    if enabled.stdout.strip() != expected or enabled.returncode != (0 if boot else 1):
+        raise DeploymentError("post-install", "controller boot startup is not " + expected)
+    active = command(("/usr/bin/systemctl", "is-active", "sparehash.service"))
+    controller_active = active.returncode == 0 and active.stdout.strip() == "active"
+    if now and not controller_active:
+        raise DeploymentError("post-install", "controller is not active")
     if checked(("/usr/bin/systemctl", "is-enabled", "sparehash-xmrig.service")) != "static":
         raise DeploymentError("post-install", "miner must remain static")
     if tree.path(UNITS + "/xmrig.service").exists():
@@ -161,7 +167,17 @@ def post_install(tree: Tree, cfg: config.Config) -> None:
     document = xmrig_config.render_config(cfg, xmrig_config.read_token(tree.path("/etc/sparehash/xmrig.json")), Path(cfg.xmrig.binary), runner=dry_run)
     if document["http"] is None:
         raise DeploymentError("post-install", "missing loopback API")
-    print("post-install: controller enabled (not started); miner static; loopback API configured; idle scheduler configured")
+    mining = "unknown" if controller_active else "yes (controller inactive)"
+    if controller_active:
+        try:
+            status = ipc.call({"cmd": "status"}, timeout=1)
+            blockers = status.get("blockers")
+            if status.get("ok") is True and isinstance(blockers, list) and type(status.get("ready")) is bool:
+                mining = "yes" if blockers or status.get("ready") is False else "no"
+        except ipc.IPCError:
+            mining = "unknown"
+    print(f"post-install: boot startup {expected}; controller {'active' if controller_active else 'inactive'}; "
+          f"mining blocked: {mining}; miner static; loopback API configured; idle scheduler configured")
 
 
 def bootstrap(ledger: Ledger, created: tuple[str, ...]) -> None:
@@ -225,14 +241,24 @@ def execute(tree: Tree, caps: Capabilities, cfg: config.Config, *, use_existing:
     cfg = result.config
     install_config(ledger, cfg, token)
     install_units(ledger, caps)
-    operations: tuple[tuple[Operation, tuple[str, ...], int], ...] = (("daemon-reload", ("/usr/bin/systemctl", "daemon-reload"), 30),
-                                     ("enable-controller", ("/usr/bin/systemctl", "enable", "sparehash.service"), 60))
+    boot = now = True
+    if interactive:
+        prompts = wizard._Prompts(input, print)
+        boot = prompts.boolean("Start SpareHash automatically at boot?", default=True)
+        now = prompts.boolean("Start SpareHash controller now?", default=True)
+    operations: list[tuple[Operation, tuple[str, ...], int]] = [
+        ("daemon-reload", ("/usr/bin/systemctl", "daemon-reload"), 30),
+        ("enable-controller" if boot else "disable-controller",
+         ("/usr/bin/systemctl", "enable" if boot else "disable", "sparehash.service"), 60),
+    ]
+    if now:
+        operations.append(("start-controller", ("/usr/bin/systemctl", "start", "sparehash.service"), 60))
     for operation, argv, timeout in operations:
         def mutate(argv: tuple[str, ...] = argv, timeout: int = timeout) -> tuple[Artifact, ...]:
             _ = checked(argv, timeout)
             return (tree.receipt(UNITS + "/sparehash.service", False),)
         ledger.perform((UNITS + "/sparehash.service", operation), mutate)
-    post_install(tree, cfg)
+    post_install(tree, cfg, boot=boot, now=now)
     ledger.ready()
 
 
