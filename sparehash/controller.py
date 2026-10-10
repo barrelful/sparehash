@@ -1,24 +1,35 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (c) 2026 SpareHash contributors
+
 """Single-owner safety state machine; all external waits belong to injected ports."""
 
 from __future__ import annotations
 
 import logging
+import secrets
+from collections.abc import Callable
 from typing import Final, assert_never, final
 
-from .controller_io import Action, Completion, Generation, Job, LifecycleBusy, Mode, Observation, Operation, Ports, SampleId, SafetyBlocker, dispatch
-from .ipc import Document, Peer, Request, Uid
-from .lifecycle import is_retired
+from .controller_io import (Action, Completion, Generation, Job, LifecycleBusy, Mode, Observation,
+                            Operation, Ports, SampleId, SafetyBlocker, StaleToken, dispatch)
+from .ipc import Document, Outcome, Peer, Request, Uid
+from .lifecycle import is_retired, retire
+from .lifecycle_lease import ActiveLease, LeaseError, LeaseStore, Purpose
 from .state import BlockerState
 
 LOGGER: Final = logging.getLogger(__name__)
+# allow: SIZE_OK — single-owner safety machine; lifecycle transitions share one invariant surface.
 
 
 @final
 class Controller:
     """Mutable safety accumulator; only the selector owner may call these methods."""
 
-    def __init__(self, state: BlockerState, ports: Ports) -> None:
+    def __init__(self, state: BlockerState, ports: Ports, *,
+                 lease_store: LeaseStore | None = None, retire_writer: Callable[[], None] | None = None) -> None:
         self.state, self.ports = state, ports
+        self.store = LeaseStore() if lease_store is None else lease_store
+        self.retire_writer = retire if retire_writer is None else retire_writer
         self.generation = Generation(0)
         self.mode = Mode.MINE
         self.sample = SampleId(0)
@@ -42,6 +53,8 @@ class Controller:
         self.next_mode: Mode | None = None
         self.observed_generation: Generation | None = None
         self.launch_permitted = False
+        self.external: ActiveLease | None = None
+        self.permanent_hold = False
 
     @property
     def operation(self) -> Operation:
@@ -56,6 +69,11 @@ class Controller:
             self.ports.providers.request(self.sample, self.requested_at + 10)
 
     def start(self) -> None:
+        try:
+            _ = self._active_lease()
+        except LeaseError:
+            LOGGER.error("lifecycle lease record unreadable; launch inhibited", exc_info=True)
+            self.excluded = True
         if is_retired():
             LOGGER.info("SpareHash is retired; uninstall has completed. Clear the lifecycle latch to reinstall.")
             self.stopping = True
@@ -220,6 +238,85 @@ class Controller:
         self.invalidate()
         self.refresh()
         return True
+
+    def abort_update(self, token: Generation) -> bool:
+        """Release an update lease without requiring an empty miner cgroup."""
+        if not (self.excluded and token == self.lease):
+            return False
+        self.excluded = False
+        self.lease = None
+        self.invalidate()
+        self.refresh()
+        return True
+
+    def _active_lease(self) -> ActiveLease | None:
+        """Durable record wins; adopting one always restores launch inhibition."""
+        stored = self.store.load()
+        if stored is not None:
+            self.external, self.excluded = stored, True
+        return self.external
+
+    def _lease_barrier(self) -> bool:
+        return self.excluded and self.external is not None and self.empty and self.pending is None
+
+    def _drop_lease(self) -> None:
+        """Durable removal precedes release; a failed write retains the hold."""
+        self.store.clear()
+        self.external, self.excluded, self.lease = None, False, None
+        self.invalidate()
+        self.refresh()
+
+    def _retire_latch(self) -> None:
+        """Latch retirement durably before any acknowledgment; the hold never lifts."""
+        try:
+            self.retire_writer()
+        except OSError as error:
+            raise LeaseError("retirement persistence failed") from error
+        self.permanent_hold = True
+
+    def begin_external(self, purpose: Purpose, request_id: str) -> str:
+        """Persist one active hold before acknowledging; replay never re-invalidates."""
+        lease = self._active_lease()
+        if lease is not None:
+            if lease.purpose != purpose or lease.request_id != request_id:
+                raise LifecycleBusy()
+            return lease.token
+        if self.excluded:
+            raise LifecycleBusy()
+        _ = self.acquire_update()
+        fresh = ActiveLease(secrets.token_hex(16), request_id, purpose)
+        self.store.save(fresh)
+        self.external = fresh
+        return fresh.token
+
+    def status_external(self, token: str) -> bool:
+        """Report readiness from a live empty proof; stale tokens fail closed."""
+        lease = self._active_lease()
+        if lease is None or not secrets.compare_digest(lease.token, token):
+            raise StaleToken()
+        return self._lease_barrier()
+
+    def end_external(self, token: str, outcome: Outcome) -> bool:
+        """Update commits release for fresh observation; uninstall commits retire."""
+        lease = self._active_lease()
+        if lease is None or not secrets.compare_digest(lease.token, token):
+            raise StaleToken()
+        match outcome:
+            case "abort":
+                if self.permanent_hold or is_retired():
+                    return True
+                self._drop_lease()
+                return True
+            case "commit":
+                if not self._lease_barrier():
+                    return False
+                if lease.purpose == "uninstall":
+                    self._retire_latch()
+                    return True
+                self._drop_lease()
+                return True
+            case _:
+                assert_never(outcome)
 
     def benchmark_finished(self, operation: Operation) -> None:
         if operation == self.operation and self.mode is Mode.BENCHMARK:

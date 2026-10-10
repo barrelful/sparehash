@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (c) 2026 SpareHash contributors
+
 """Nonblocking controller ports; adapters own bounded external work, never policy."""
 
 from __future__ import annotations
@@ -9,7 +12,9 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Literal, NewType, Protocol, assert_never
 
-from .ipc import Command, DebugCommand, Document, IPCError, Peer, ROOT_ONLY, Request, Uid, Verb, call
+from .ipc import (Command, DebugCommand, Document, IPCError, LifecycleBegin, LifecycleEnd,
+                    LifecycleStatus, Outcome, Peer, ROOT_ONLY, Request, Uid, Verb, call)
+from .lifecycle_lease import LeaseError, Purpose, is_purpose
 from .state import BLOCKERS, BlockerState, StatePersistenceError
 
 Generation = NewType("Generation", int)
@@ -29,6 +34,10 @@ class Action(StrEnum):
 
 class LifecycleBusy(RuntimeError):
     """An update/operation lease already excludes all competing lifecycle callers."""
+
+
+class StaleToken(RuntimeError):
+    """The presented token names no active external lease."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -169,6 +178,11 @@ class CommandOwner(Protocol):
     def apply(self) -> None: ...
     def refresh(self) -> None: ...
     def acquire_update(self) -> Generation: ...
+    def update_ready(self, token: Generation) -> bool: ...
+    def release_update(self, token: Generation) -> bool: ...
+    def begin_external(self, purpose: Purpose, request_id: str) -> str: ...
+    def status_external(self, token: str) -> bool: ...
+    def end_external(self, token: str, outcome: Outcome) -> bool: ...
     def shutdown(self) -> None: ...
 
 
@@ -188,6 +202,35 @@ def dispatch(owner: CommandOwner, request: Request, peer: Peer) -> Document:
             if changed:
                 owner.invalidate()
             owner.sync()
+        case LifecycleBegin(purpose=purpose, request_id=request_id):
+            if not is_purpose(purpose):
+                return {"ok": False, "error": "invalid purpose"}
+            try:
+                return {"ok": True, "token": owner.begin_external(purpose, request_id)}
+            except LifecycleBusy:
+                return {"ok": False, "error": "lifecycle busy"}
+            except LeaseError:
+                logging.getLogger(__name__).error("lease persistence failed", exc_info=True)
+                return {"ok": False, "error": "lease record unavailable"}
+        case LifecycleStatus(token=token):
+            try:
+                ready = owner.status_external(token)
+            except StaleToken:
+                return {"ok": False, "error": "invalid or stale token"}
+            except LeaseError:
+                logging.getLogger(__name__).error("lease record unreadable", exc_info=True)
+                return {"ok": False, "error": "lease record unavailable"}
+            return {"ok": True, "status": "ready" if ready else "pending"}
+        case LifecycleEnd(token=token, outcome=outcome):
+            try:
+                if owner.end_external(token, outcome):
+                    return {"ok": True}
+                return {"ok": False, "error": "empty barrier not satisfied"}
+            except StaleToken:
+                return {"ok": False, "error": "invalid or stale token"}
+            except LeaseError:
+                logging.getLogger(__name__).error("lease persistence failed", exc_info=True)
+                return {"ok": False, "error": "lease record unavailable"}
         case Command(verb=verb):
             try:
                 match verb:
@@ -226,8 +269,6 @@ def dispatch(owner: CommandOwner, request: Request, peer: Peer) -> Document:
                             return {"ok": False}
                         _ = owner.acquire_update()
                         owner.next_mode = Mode.BENCHMARK
-                    case Verb.DEBUG_SET | Verb.DEBUG_CLEAR:
-                        return {"ok": False}
                     case _:
                         assert_never(verb)
             except StatePersistenceError:
