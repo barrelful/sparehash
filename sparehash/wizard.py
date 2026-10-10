@@ -96,6 +96,7 @@ def _config_shape(data: Mapping[str, TomlValue]) -> TypeGuard[RawConfig]:
         "pool": raw.get("pool", {}), "cpu": raw.get("cpu", {}), "thermal": raw.get("thermal", {}),
         "gaming": raw.get("gaming", {}), "hugepages": raw.get("hugepages", {}), "api": raw.get("api", {}),
         "controller": raw.get("controller", {}), "xmrig": raw.get("xmrig", {}),
+        "power": raw.get("power", {}),
     }
     for key, value in data.items():
         if key not in schema:

@@ -5,32 +5,19 @@
 
 from __future__ import annotations
 
-import json
 import os
-import re
 import tempfile
 import tomllib
 import warnings
 from dataclasses import asdict, dataclass, field
-from json import JSONDecodeError
 from pathlib import Path
-from typing import Final, TypeVar, TypedDict, cast
+from typing import Final, TypedDict, TypeVar, cast
 
+from sparehash.config_checks import custom_json_error as _custom_json_error
+from sparehash.config_checks import valid_pool_host as _is_valid_pool_host
 from sparehash.paths import CONFIG_TOML, XMRIG_CURRENT
 
 T = TypeVar("T")
-_HOSTNAME_LABEL = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?")
-
-
-def _is_valid_pool_host(host: str) -> bool:
-    """Accept empty (unconfigured) or a hostname/IPv4 address without scheme/port/path."""
-    if not host:
-        return True
-    if len(host) > 253 or host.startswith(".") or host.endswith("."):
-        return False
-    if "/" in host or host.startswith("http:") or host.startswith("https:") or ":" in host:
-        return False
-    return all(_HOSTNAME_LABEL.fullmatch(label) is not None for label in host.split("."))
 
 
 class ConfigError(ValueError):
@@ -44,6 +31,7 @@ class RawConfig(TypedDict, total=False):
     pool: dict[str, str | int | bool]
     cpu: dict[str, str | int]
     thermal: dict[str, bool | int]
+    power: dict[str, bool]
     gaming: dict[str, bool | list[str]]
     hugepages: dict[str, bool | int]
     api: dict[str, int]
@@ -82,6 +70,11 @@ class Thermal:
 
 
 @dataclass(frozen=True, slots=True)
+class Power:
+    maintenance_mode: bool = False
+
+
+@dataclass(frozen=True, slots=True)
 class Gaming:
     enabled: bool = True
     users: tuple[str, ...] = ()
@@ -117,6 +110,7 @@ class Config:
     pool: Pool = field(default_factory=Pool)
     cpu: Cpu = field(default_factory=Cpu)
     thermal: Thermal = field(default_factory=Thermal)
+    power: Power = field(default_factory=Power)
     gaming: Gaming = field(default_factory=Gaming)
     hugepages: Hugepages = field(default_factory=Hugepages)
     api: Api = field(default_factory=Api)
@@ -177,7 +171,7 @@ def _unknown(data: dict[str, str | int | bool | list[str] | dict[str, str | int 
 
 
 def _construct(data: RawConfig) -> Config:
-    top = ("version", "wallet", "donate_level", "pool", "cpu", "thermal", "gaming", "hugepages", "api", "controller", "xmrig", "msr")
+    top = ("version", "wallet", "donate_level", "pool", "cpu", "thermal", "power", "gaming", "hugepages", "api", "controller", "xmrig", "msr")
     for key in data.keys() - set(top):
         warnings.warn(f"unknown configuration key {key}", UserWarning, stacklevel=3)
     msr = _table(data, "msr")
@@ -187,6 +181,8 @@ def _construct(data: RawConfig) -> Config:
         warnings.warn("disabled legacy [msr] settings are ignored", UserWarning, stacklevel=3)
     pool, cpu = _table(data, "pool"), _table(data, "cpu")
     thermal, gaming = _table(data, "thermal"), _table(data, "gaming")
+    power = _table(data, "power")
+    _unknown(power, ("maintenance_mode",), "power.")
     hugepages, api = _table(data, "hugepages"), _table(data, "api")
     controller, xmrig = _table(data, "controller"), _table(data, "xmrig")
     sections = ((pool, ("host", "port", "tls", "worker"), "pool."), (cpu, ("mode", "max_threads_percent", "custom_json"), "cpu."), (thermal, ("enabled", "pause_c", "resume_c"), "thermal."), (gaming, ("enabled", "users"), "gaming."), (hugepages, ("enabled", "pages"), "hugepages."), (api, ("port",), "api."), (controller, ("min_dwell_seconds", "reconcile_seconds"), "controller."), (xmrig, ("binary",), "xmrig."))
@@ -208,6 +204,7 @@ def _construct(data: RawConfig) -> Config:
             pool=Pool(host=_field(pool, "host", "", str), port=_field(pool, "port", 3333, int), tls=_field(pool, "tls", False, bool), worker=_field(pool, "worker", "sparehash", str)),
             cpu=Cpu(mode=mode, max_threads_percent=_field(cpu, "max_threads_percent", 75, int), custom_json=custom_json),
             thermal=Thermal(enabled=_field(thermal, "enabled", False, bool), pause_c=_field(thermal, "pause_c", 85, int), resume_c=_field(thermal, "resume_c", 75, int)),
+            power=Power(maintenance_mode=_field(power, "maintenance_mode", False, bool)),
             gaming=Gaming(enabled=_field(gaming, "enabled", True, bool), users=tuple(cast(str, user) for user in users)),
             hugepages=Hugepages(enabled=_field(hugepages, "enabled", False, bool), pages=_field(hugepages, "pages", 1280, int)),
             api=Api(port=_field(api, "port", 38087, int)),
@@ -247,17 +244,6 @@ def _string(value: str) -> str:
     return '"' + "".join(escaped) + '"'
 
 
-def _custom_json_error(value: str) -> str | None:
-    if not value:
-        return "cpu.custom_json is required when cpu.mode is custom"
-    try:
-        if not isinstance(json.loads(value), dict):
-            return "cpu.custom_json must contain a JSON object"
-    except JSONDecodeError:
-        return "cpu.custom_json must be valid JSON"
-    return None
-
-
 def _value(value: str | int | float | bool) -> str:
     if isinstance(value, bool):
         return "true" if value else "false"
@@ -272,6 +258,7 @@ def _serialize(cfg: Config) -> str:
         ("pool", {"host": cfg.pool.host, "port": cfg.pool.port, "tls": cfg.pool.tls, "worker": cfg.pool.worker}),
         ("cpu", {"mode": cfg.cpu.mode, "max_threads_percent": cfg.cpu.max_threads_percent, "custom_json": cfg.cpu.custom_json}),
         ("thermal", {"enabled": cfg.thermal.enabled, "pause_c": cfg.thermal.pause_c, "resume_c": cfg.thermal.resume_c}),
+        ("power", {"maintenance_mode": cfg.power.maintenance_mode}),
         ("gaming", {"enabled": cfg.gaming.enabled, "users": cfg.gaming.users}),
         ("hugepages", {"enabled": cfg.hugepages.enabled, "pages": cfg.hugepages.pages}),
         ("api", {"port": cfg.api.port}),
