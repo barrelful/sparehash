@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (c) 2026 SpareHash contributors
+
 """B6 version-tree and installer-receipt removal; caller must hold the lifecycle lease."""
 
 from __future__ import annotations
@@ -151,13 +154,13 @@ def remove_leaf_receipts(trust: PathTrust) -> tuple[str, ...]:
                 raise CollisionError("receipt", "unrecorded content under " + directory + "; nothing removed")
         removed: list[str] = []
         for directory in LEAF_DIRS:
-            fd = roots.get(directory)
-            if fd is None:
+            _fd: int | None = roots.get(directory)
+            if _fd is None:
                 continue
             for path in sorted(path for path in leaves if str(Path(path).parent) == directory):
-                os.unlink(Path(path).name, dir_fd=fd)
+                os.unlink(Path(path).name, dir_fd=_fd)
                 removed.append(path)
-            os.fsync(fd)
+            os.fsync(_fd)
         for directory in sorted(directories, key=lambda item: item.count("/"), reverse=True):
             parent = roots.get(str(Path(directory).parent))
             if parent is None:
