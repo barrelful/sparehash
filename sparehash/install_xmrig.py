@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (c) 2026 SpareHash contributors
+
 """Installer-only isolated binary probes and verified upstream release selection."""
 
 from __future__ import annotations
