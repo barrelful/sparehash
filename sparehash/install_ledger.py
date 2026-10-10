@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (c) 2026 SpareHash contributors
+
 """Write-ahead installer receipts on the single canonical, directory-locked store."""
 
 from __future__ import annotations
