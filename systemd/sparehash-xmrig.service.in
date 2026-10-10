@@ -29,6 +29,7 @@ PrivateDevices=yes
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 RestrictNamespaces=yes
 LockPersonality=yes
+Environment=PYTHONDONTWRITEBYTECODE=1
 KillMode=control-group
 TimeoutStopSec=3s
 SendSIGKILL=yes

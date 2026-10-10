@@ -61,7 +61,8 @@ class UnitTests(unittest.TestCase):
             "ExecStart": "/usr/local/bin/sparehash __controller__",
             "ExecStopPost": "/usr/local/bin/sparehash __cleanup__", "Restart": "on-failure", "RestartSec": "5s",
             "StateDirectory": "sparehash", "RuntimeDirectory": "sparehash sparehash-miner",
-            "RuntimeDirectoryMode": "0750", "NoNewPrivileges": "yes", "ProtectSystem": "strict",
+            "RuntimeDirectoryMode": "0750", "Environment": "PYTHONDONTWRITEBYTECODE=1",
+            "NoNewPrivileges": "yes", "ProtectSystem": "strict",
             "ProtectHome": "read-only", "PrivateTmp": "yes", "RestrictAddressFamilies": "AF_UNIX AF_INET AF_INET6"}.items()})
         self.assertEqual(dict(unit["Install"]), {"wantedby": "multi-user.target"})
 
@@ -79,10 +80,11 @@ class UnitTests(unittest.TestCase):
             "ExecStart": "/usr/local/bin/sparehash __miner_exec__", "Restart": "on-failure", "RestartSec": "30s",
             "Nice": "19", "CPUSchedulingPolicy": "idle", "IOSchedulingClass": "idle", "CPUWeight": "idle",
             "IOWeight": "1", "LoadCredential": "xmrig.json:/etc/sparehash/xmrig.json", "OOMScoreAdjust": "500",
-            "NoNewPrivileges": "yes", "ProtectSystem": "strict", "ProtectHome": "yes", "PrivateTmp": "yes",
-            "PrivateDevices": "yes", "RestrictAddressFamilies": "AF_UNIX AF_INET AF_INET6",
-            "RestrictNamespaces": "yes", "LockPersonality": "yes", "KillMode": "control-group",
-            "TimeoutStopSec": "3s", "SendSIGKILL": "yes"}.items()})
+            "Environment": "PYTHONDONTWRITEBYTECODE=1", "NoNewPrivileges": "yes", "ProtectSystem": "strict",
+            "ProtectHome": "yes", "PrivateTmp": "yes", "PrivateDevices": "yes",
+            "RestrictAddressFamilies": "AF_UNIX AF_INET AF_INET6", "RestrictNamespaces": "yes",
+            "LockPersonality": "yes", "KillMode": "control-group", "TimeoutStopSec": "3s",
+            "SendSIGKILL": "yes"}.items()})
         self.assertEqual(unit.sections(), ["Unit", "Service"])
 
     def test_foreign_units_when_marker_is_missing_or_not_first(self) -> None:

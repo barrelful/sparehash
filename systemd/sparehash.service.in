@@ -17,6 +17,7 @@ RestartSec=5s
 StateDirectory=sparehash
 RuntimeDirectory=sparehash sparehash-miner
 RuntimeDirectoryMode=0750
+Environment=PYTHONDONTWRITEBYTECODE=1
 NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=read-only

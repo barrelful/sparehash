@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (c) 2026 SpareHash contributors
+
 """Two-unit deployment contract; manager mutation is installer-only and explicit."""
 
 from __future__ import annotations
