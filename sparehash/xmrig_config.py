@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (c) 2026 SpareHash contributors
+
 """XMRig configuration boundary and loopback-only summary client."""
 
 from __future__ import annotations
