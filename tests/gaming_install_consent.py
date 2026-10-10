@@ -9,10 +9,11 @@ from pathlib import Path
 from typing import final
 from unittest.mock import Mock, patch
 
+from sparehash import gaming
 from sparehash import gaming_install as install
 from sparehash.config import Config, Gaming
 from sparehash.gaming import User
-from sparehash.sysdetect import Capabilities, FIXED_PATH
+from sparehash.sysdetect import FIXED_PATH, Capabilities
 
 
 @final
@@ -31,7 +32,8 @@ class ConsentTests(unittest.TestCase):
         self.runner = Mock(return_value=subprocess.CompletedProcess((), 0, ""))
     def accounts(self) -> None:
         for patcher in (patch.object(pwd, "getpwnam", return_value=self.account),
-                        patch.object(grp, "getgrnam", return_value=self.group)):
+                        patch.object(grp, "getgrnam", return_value=self.group),
+                        patch.object(gaming.Probe, "query", return_value=False)):
             _ = patcher.start()
             self.addCleanup(patcher.stop)
 
@@ -67,6 +69,7 @@ class ConsentTests(unittest.TestCase):
             with patch.object(install, "resolve_helper", side_effect=resolve):
                 result = install.configure(self.cfg, self.caps, lambda _: True, runner=runner)
             self.assertTrue(result.available)
+            self.assertTrue(result.config.gaming.enabled)
             runner.assert_called_once_with((f"/usr/bin/{manager}", *args), timeout=300, check=False,
                                            capture_output=True, text=True, env={"PATH": FIXED_PATH, "LC_ALL": "C"})
 
@@ -149,6 +152,47 @@ class ConsentTests(unittest.TestCase):
         # Then
         self.assertTrue(result.available)
         self.assertEqual(self.runner.call_args.args[0], ("/usr/bin/usermod", "-aG", "sparehash", "gamer"))
+        self.assertTrue(any("log out and back in" in warning and "sg sparehash" in warning
+                            for warning in result.warnings))
+
+    def test_configure_when_noninteractive_disables_without_prompting(self) -> None:
+        # Given
+        with patch.object(install, "resolve_helper", return_value=None), patch(
+            "builtins.input", side_effect=AssertionError("uncontrolled stdin")
+        ):
+            # When
+            result = install.configure(self.cfg, self.caps, None, runner=self.runner)
+        # Then
+        self.assertFalse(result.config.gaming.enabled)
+        self.assertTrue(any("noninteractive install" in warning for warning in result.warnings))
+        self.runner.assert_not_called()
+
+    def test_configure_when_session_unavailable_warns_after_merging(self) -> None:
+        # Given
+        self.accounts()
+        with patch.object(install, "resolve_helper", return_value="/usr/bin/gamemoded"), patch.object(
+            gaming.Probe, "query", return_value=None
+        ) as query:
+            # When
+            result = install.configure(self.cfg, self.caps, None, runner=self.runner)
+        # Then
+        self.assertTrue(result.config.gaming.enabled)
+        self.assertTrue(any("gamer: D-Bus session bus unavailable" in warning for warning in result.warnings))
+        self.assertTrue((self.home / ".config/gamemode.ini").exists())
+        query.assert_called_once_with(User.from_name("gamer"))
+
+    def test_configure_when_session_active_or_inactive_does_not_warn(self) -> None:
+        # Given
+        self.accounts()
+        for active in (False, True):
+            with self.subTest(active=active), patch.object(
+                install, "resolve_helper", return_value="/usr/bin/gamemoded"
+            ), patch.object(gaming.Probe, "query", return_value=active):
+                # When
+                result = install.configure(self.cfg, self.caps, None, runner=self.runner)
+                # Then
+                self.assertTrue(result.config.gaming.enabled)
+                self.assertEqual(result.warnings, ())
 
     def test_unmerge_when_account_verified_removes_only_owned_file(self) -> None:
         # Given

@@ -7,20 +7,21 @@ from __future__ import annotations
 
 import grp
 import hashlib
-import stat
 import pwd
+import stat
 import subprocess
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Final, TypedDict
 
+from . import gaming
 from .config import Config
 from .gaming import Runner, User, UserError, resolve_helper
 from .gaming_ini import EditReceipt, Home, UnsafePathError, edit
 from .install_ledger import Ledger, Receipt
-from .xmrig_ledger import Artifact, Membership
 from .sysdetect import FIXED_PATH, Capabilities
+from .xmrig_ledger import Artifact, Membership
 
 INSTALL_ARGS: Final = (("apt-get", ("install", "-y", "gamemode")),
                       ("dnf", ("install", "-y", "gamemode")),
@@ -77,7 +78,7 @@ def unmerge(user: User) -> bool:
     return edit(Home(Path(account.pw_dir), account.pw_uid, account.pw_gid), False)
 
 
-def configure(cfg: Config, caps: Capabilities, consent: Callable[[str], bool], *,
+def configure(cfg: Config, caps: Capabilities, consent: Callable[[str], bool] | None, *,
               runner: Runner = subprocess.run, ledger: Ledger | None = None) -> InstallResult:
     """Return immutable enabled/disabled state for Todo18, never persist it here.
 
@@ -90,24 +91,24 @@ def configure(cfg: Config, caps: Capabilities, consent: Callable[[str], bool], *
     receipts: list[Receipt] = []
     available = detect_gaming(caps)["gamemode"] and resolve_helper("gamemoded") is not None
     if not available:
-        notice = "GameMode not found — it is the supported way to pause mining while gaming"
-        print(notice)
-        warnings.append(notice)
-        if not consent(notice + "; install the gamemode package?"):
-            warnings.append("gaming-pause will be UNAVAILABLE; mining will only be deprioritized")
+        if consent is None:
+            warnings.append("GameMode not installed; gaming protection disabled (noninteractive install)")
+        elif not consent("GameMode not found — it is the supported way to pause mining while gaming. "
+                         "Install the gamemode package? [Y/n]: "):
+            warnings.append("GameMode installation declined; gaming protection disabled")
         else:
             command = next(((path, *args) for name, args in INSTALL_ARGS
                             if (path := resolve_helper(name)) is not None), None)
             if command is None:
-                warnings.append("No available apt-get, dnf or pacman; install GameMode manually and rerun setup")
+                warnings.append("No available apt-get, dnf or pacman; gaming protection disabled; install GameMode manually and rerun setup")
             else:
                 try:
                     _run(command, runner)
                     available = resolve_helper("gamemoded") is not None
                     if not available:
-                        warnings.append("Package command completed but gamemoded is unavailable; check GameMode installation")
+                        warnings.append("Package command completed but gamemoded is unavailable; gaming protection disabled; check GameMode installation")
                 except InstallError as exc:
-                    warnings.append(str(exc))
+                    warnings.append(f"{exc}; gaming protection disabled")
     if available:
         for name in cfg.gaming.users:
             try:
@@ -122,6 +123,8 @@ def configure(cfg: Config, caps: Capabilities, consent: Callable[[str], bool], *
                     sequence = ledger.begin(f"membership:{name}:sparehash", "add-membership") if ledger else 0
                     _run((helper, "-aG", "sparehash", name), runner)
                     added = True
+                    warnings.append(f"{name}: added to sparehash group; log out and back in "
+                                    "(or run `sg sparehash -c '...'`) for membership to take effect")
                     if ledger:
                         ledger.applied(sequence, (Membership(name, account.pw_uid, "sparehash", group.gr_gid, True),))
                 membership = Membership(name, account.pw_uid, "sparehash", group.gr_gid, added)
@@ -144,14 +147,15 @@ def configure(cfg: Config, caps: Capabilities, consent: Callable[[str], bool], *
                     _ = merge(user, record=record)
                     ledger.applied(sequence, tuple(captured))
                     receipts.extend(captured)
+                if gaming.Probe(runner=runner).query(user) is None:
+                    warnings.append(f"{name}: D-Bus session bus unavailable; GameMode works only after login")
             except FileNotFoundError:
                 warnings.append(f"Skipping {name}: home or .config missing; gaming integration disabled")
                 available = False
             except (UnsafePathError, UserError, InstallError, KeyError) as exc:
                 warnings.append(f"Skipping {name}: {exc}; gaming integration disabled")
                 available = False
-    gaming = replace(cfg.gaming, enabled=available)
+    configured_gaming = replace(cfg.gaming, enabled=available)
     for warning in warnings:
-        if not warning.startswith("GameMode not found"):
-            print(warning)
-    return InstallResult(replace(cfg, gaming=gaming), available, tuple(warnings), tuple(receipts))
+        print(warning)
+    return InstallResult(replace(cfg, gaming=configured_gaming), available, tuple(warnings), tuple(receipts))
