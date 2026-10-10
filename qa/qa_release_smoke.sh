@@ -92,9 +92,10 @@ sys.path.append(sys.argv[1])
 from sparehash.xmrig_config import ApiError,read_token,summary
 from contention import Workload
 from lifecycle_check import prop,tasks,process_birth
-raw=json.loads(Path("/etc/sparehash/xmrig.json").read_text())
+fixture=Path(sys.argv[4])/"xmrig.zero.json"
+raw=json.loads(fixture.read_text())
 assert raw["http"]["host"] == "127.0.0.1" and raw["http"]["enabled"] is True
-work=Workload(raw["http"]["port"],read_token())
+work=Workload(raw["http"]["port"],raw["http"]["access-token"])
 pid=int(prop("sparehash-xmrig.service","MainPID")); birth=process_birth(pid)
 group=prop("sparehash-xmrig.service","ControlGroup")
 assert pid>0 and birth and group.startswith("/") and group != "/"
@@ -118,7 +119,7 @@ while time.monotonic()<deadline:
     if before is None: before=total
     time.sleep(.5)
 else: raise SystemExit("FAIL: no same-PID hash progress within 120s")
-' "$SCRIPT_DIR" "$CHECKPOINT" "$deadline"
+' "$SCRIPT_DIR" "$CHECKPOINT" "$deadline" "$QA_ROOT"
 }
 blocked() { qa_wait_miner inactive "$2"; life blocked "$1" 1; }
 
