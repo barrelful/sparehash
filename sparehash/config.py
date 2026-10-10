@@ -1,9 +1,13 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (c) 2026 SpareHash contributors
+
 """Typed TOML configuration for Sparehash."""
 
 from __future__ import annotations
 
 import json
 import os
+import re
 import tempfile
 import tomllib
 import warnings
@@ -15,6 +19,18 @@ from typing import Final, TypeVar, TypedDict, cast
 from sparehash.paths import CONFIG_TOML, XMRIG_CURRENT
 
 T = TypeVar("T")
+_HOSTNAME_LABEL = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?")
+
+
+def _is_valid_pool_host(host: str) -> bool:
+    """Accept empty (unconfigured) or a hostname/IPv4 address without scheme/port/path."""
+    if not host:
+        return True
+    if len(host) > 253 or host.startswith(".") or host.endswith("."):
+        return False
+    if "/" in host or host.startswith("http:") or host.startswith("https:") or ":" in host:
+        return False
+    return all(_HOSTNAME_LABEL.fullmatch(label) is not None for label in host.split("."))
 
 
 class ConfigError(ValueError):
@@ -127,6 +143,8 @@ def validate(cfg: Config) -> list[str]:
         errors.append("donate_level must be between 1 and 99")
     if not 1 <= cfg.pool.port <= 65535:
         errors.append("pool.port must be between 1 and 65535")
+    if cfg.pool.host and not _is_valid_pool_host(cfg.pool.host):
+        errors.append("pool.host must be a hostname or IPv4 address without scheme, port or path")
     if cfg.cpu.mode not in ("spare", "spare-capped", "custom"):
         errors.append("cpu.mode must be spare, spare-capped, or custom")
     if cfg.cpu.mode == "custom":
