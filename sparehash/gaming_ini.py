@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (c) 2026 SpareHash contributors
+
 """Lossless GameMode hook edits confined to pinned directory descriptors.
 
 An owner can rename the pinned directory after the final comparison. Publication
@@ -87,14 +90,14 @@ def transform(data: bytes, enabled: bool) -> bytes:
     newline = "\r\n" if "\r\n" in text else "\n"
     _, end, entries = _layout(lines)
     removed: set[int] = set()
-    for n, (start, key) in enumerate(entries):
+    for n, (entry_start, key) in enumerate(entries):
         if key not in HOOKS:
             continue
         stop = entries[n + 1][0] if n + 1 < len(entries) else end
-        entry = re.match(r"^(\s*[^=:]+[=:])(.*?)(\r?\n)?$", lines[start])
+        entry = re.match(r"^(\s*[^=:]+[=:])(.*?)(\r?\n)?$", lines[entry_start])
         if entry and entry[2].strip() == HOOKS[key]:
-            lines[start] = entry[1] + newline
-        removed.update(i for i in range(start + 1, stop) if lines[i].strip() == HOOKS[key])
+            lines[entry_start] = entry[1] + newline
+        removed.update(i for i in range(entry_start + 1, stop) if lines[i].strip() == HOOKS[key])
     cleaned = [line for i, line in enumerate(lines) if i not in removed]
     if not enabled:
         result = "".join(cleaned)
@@ -111,17 +114,17 @@ def transform(data: bytes, enabled: bool) -> bytes:
         end = len(cleaned)
     for key, hook in HOOKS.items():
         _, end, entries = _layout(cleaned)
-        start = next((i for i, name in entries if name == key), None)
+        start_idx: int | None = next((i for i, name in entries if name == key), None)
         insert = end
         indent = "    "
-        if start is None:
+        if start_idx is None:
             if insert and not cleaned[insert - 1].endswith("\n"):
                 cleaned[insert - 1] += newline
             cleaned.insert(insert, key + "=" + newline)
             insert += 1
         else:
-            indent = cleaned[start][:len(cleaned[start]) - len(cleaned[start].lstrip())] + "    "
-            insert = next((i for i, _ in entries if i > start), end)
+            indent = cleaned[start_idx][:len(cleaned[start_idx]) - len(cleaned[start_idx].lstrip())] + "    "
+            insert = next((i for i, _ in entries if i > start_idx), end)
             if not cleaned[insert - 1].endswith("\n"):
                 cleaned[insert - 1] += newline
         cleaned.insert(insert, indent + hook + newline)
