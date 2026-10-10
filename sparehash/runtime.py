@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (c) 2026 SpareHash contributors
+
 """Production controller assembly: safety callbacks outrank IPC/job completions."""
 
 from __future__ import annotations
@@ -13,6 +16,8 @@ from contextlib import ExitStack
 from pathlib import Path
 from queue import Empty, Queue
 from types import FrameType
+import sys
+from functools import partial
 from typing import final
 
 from . import config, gaming, ipc, power, systemd, thermal
@@ -116,6 +121,11 @@ def run() -> int:
         return 1
     _ = os.environ.pop("SPAREHASH_RUN_DIR", None)
     _ = os.environ.pop("SPAREHASH_HWMON_ROOT", None)
+    _ = os.environ.pop("SPAREHASH_STATE_FILE", None)
+    notify_socket = os.environ.get("NOTIFY_SOCKET")
+    if not notify_socket:
+        print("sparehash: controller must be invoked by systemd (NOTIFY_SOCKET missing)", file=sys.stderr)
+        return 1
     cfg = config.load()
     with locked_store(StoreContext(PathTrust())) as store:
         os.fchown(store.fd, 0, grp.getgrnam("sparehash").gr_gid)
@@ -128,7 +138,7 @@ def run() -> int:
     providers = Providers(cfg, messages.put)
     jobs = Jobs(cfg, messages.put)
     state = BlockerState(min_dwell_seconds=cfg.controller.min_dwell_seconds)
-    owner = Controller(state, Ports(providers, jobs, Lifecycle(bound, os.environ["NOTIFY_SOCKET"]), time.monotonic))
+    owner = Controller(state, Ports(providers, jobs, Lifecycle(bound, notify_socket), time.monotonic))
     providers.finish, jobs.finish = owner.observe, owner.complete
     jobs.finished = owner.benchmark_finished
     jobs.authorize = lambda: owner.authorize(consume=False)
@@ -158,7 +168,7 @@ def run() -> int:
         while not stop.is_set():
             hot = providers.temperature()
             if hot != prior:
-                safety.put(lambda hot=hot: owner.safety("thermal", hot))
+                safety.put(partial(owner.safety, "thermal", hot))
                 prior = hot
             messages.put(owner.refresh)
             _ = stop.wait(5)

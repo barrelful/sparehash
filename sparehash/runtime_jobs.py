@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (c) 2026 SpareHash contributors
+
 """Serialized bounded systemd jobs; controller policy stays on its owner thread."""
 
 from __future__ import annotations
@@ -53,7 +56,8 @@ class Jobs:
         while not self.stop.wait(0.25):
             operation = self.watched
             if operation is not None and operation.mode is Mode.BENCHMARK and empty():
-                self.enqueue(lambda operation=operation: self.finished(operation))
+                _op = operation
+                self.enqueue(lambda: self.finished(_op))
 
     def cancel(self) -> None:
         self.epoch += 1
