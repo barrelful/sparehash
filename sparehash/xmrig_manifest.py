@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (c) 2026 SpareHash contributors
+
 """Strict legacy/Option A manifest parsing; no filesystem ownership authority.
 
 Each nested record has exactly its dataclass fields. No API token is accepted.
@@ -156,7 +159,7 @@ def _installer(value: Json) -> Installer:
               [item.id for item in artifacts], [item.path for item in artifacts])
     if any(len(values) != len(set(values)) for values in unique):
         raise ManifestError("duplicate receipt")
-    targets = {item.id: item.kind for item in artifacts}
+    targets: dict[str, str] = {item.id: item.kind for item in artifacts}
     targets.update({f"{item.kind}:{item.name}": item.kind for item in identities})
     targets.update({f"membership:{item.user}:{item.group}": "membership" for item in memberships})
     previous = 0
