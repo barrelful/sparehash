@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (c) 2026 SpareHash contributors
+
 """Descriptor-pinned XMRig path trust and private binary snapshots."""
 
 from __future__ import annotations
