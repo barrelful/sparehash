@@ -74,8 +74,8 @@ sudo sparehash start
 Check status:
 
 ```
-sparehash status
-sparehash status --json
+sudo sparehash status
+sudo sparehash status --json
 ```
 
 Mining does not begin instantly. The controller evaluates every blocker, waits
@@ -90,7 +90,7 @@ Every public command:
 |---|---|---|---|
 | `install` | `--answers FILE`, `--use-existing`, `--clear-lifecycle-latch` | yes | Run the installer |
 | `uninstall` | `--purge` | yes | Remove SpareHash; configuration retained unless `--purge` |
-| `status` | `--json` | no | Show controller, miner, blockers, power, thermal, hugepages, gaming, API |
+| `status` | `--json` | yes | Show controller, miner, blockers, power, thermal, hugepages, gaming, API |
 | `start` | | yes | Enable and start the controller (`systemctl enable --now`) |
 | `stop` | | yes | Stop controller and miner (does not disable; reboot can resume) |
 | `pause` | | no | Manually pause mining via controller IPC |
@@ -403,9 +403,12 @@ before retirement or service changes.
 
 ## Troubleshooting
 
-### `sparehash status` shows `controller: unavailable`
+### `sudo sparehash status` shows `controller: unavailable`
 
-The controller unit is not running. Check:
+Status requires root; use `sudo sparehash status` (or add `--json`). An
+unavailable controller means its socket is missing or refuses connections,
+usually because the controller unit is not running. Other IPC failures report
+`controller: ipc-error` with exit code 1, not a stopped controller. Check:
 
 ```
 systemctl status sparehash.service
@@ -414,7 +417,9 @@ sparehash logs
 
 ### `sparehash pause` or `sparehash gaming-start` says "socket access denied"
 
-Your user must be in the `sparehash` group to use the control socket. The
+Status requires root even if your user belongs to `sparehash`; run
+`sudo sparehash status`. For pause/resume and gaming hooks, your user must be
+root or in the `sparehash` group to use the control socket. The
 installer adds configured gaming users; other users can be added manually:
 
 ```
@@ -425,7 +430,7 @@ Then log out and back in, or use `sg sparehash -c "sparehash ..."`.
 
 ### Mining never starts after `sparehash start`
 
-This is usually expected behavior. Check `sparehash status` for active blockers.
+This is usually expected behavior. Check `sudo sparehash status` for active blockers.
 A fresh install needs:
 
 1. controller to finish startup observations;

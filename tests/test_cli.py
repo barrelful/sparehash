@@ -13,9 +13,9 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from sparehash import cli_config
-from sparehash import cli_lifecycle
+from sparehash import cli_config, cli_lifecycle
 from sparehash.__main__ import main
+from sparehash.status import StatusSnapshot
 
 
 class CliTests(unittest.TestCase):
@@ -73,17 +73,24 @@ class CliTests(unittest.TestCase):
 
     def test_status_reports_disconnected_controller(self) -> None:
         """Given no installed controller, status reports stopped and unavailable."""
-        result = subprocess.run(
-            [sys.executable, "-m", "sparehash", "status"],
-            check=False,
-            capture_output=True,
-            text=True,
-        )
+        output = io.StringIO()
+        with patch("sparehash.status.LiveProvider.snapshot", return_value=StatusSnapshot()), contextlib.redirect_stdout(output):
+            result = main(["status"], geteuid=lambda: 0)
+        self.assertEqual(result, 3)
+        self.assertIn("controller", output.getvalue())
+        self.assertIn("unavailable", output.getvalue())
+        self.assertIn("stopped", output.getvalue())
 
-        self.assertEqual(result.returncode, 3)
-        self.assertIn("controller", result.stdout)
-        self.assertIn("unavailable", result.stdout)
-        self.assertIn("stopped", result.stdout)
+    def test_status_when_nonroot_refuses_before_querying_controller(self) -> None:
+        # Given
+        output = io.StringIO()
+        with patch("sparehash.status.LiveProvider.snapshot") as snapshot, contextlib.redirect_stderr(output):
+            # When
+            result = main(["status"], geteuid=lambda: 1000)
+        # Then
+        self.assertEqual(result, 1)
+        self.assertIn("status requires root; run: sudo sparehash status", output.getvalue())
+        snapshot.assert_not_called()
 
     def test_uninstall_requires_root_when_unprivileged(self) -> None:
         """Given an unprivileged identity, uninstall refuses before any removal."""
@@ -237,22 +244,16 @@ class CliTests(unittest.TestCase):
 
     def test_status_json_requires_valid_json(self) -> None:
         """Given the sparehash CLI, status --json is a typed document whose exit status follows controller state."""
-        result = subprocess.run(
-            [sys.executable, "-m", "sparehash", "status", "--json"],
-            check=False,
-            capture_output=True,
-            text=True,
-        )
-
-        # The renderer accepts exactly two exit statuses: 3 when the controller
-        # is unavailable, 0 for every other reachable state.
-        self.assertIn(result.returncode, (0, 3))
+        output = io.StringIO()
+        with patch("sparehash.status.LiveProvider.snapshot", return_value=StatusSnapshot()), contextlib.redirect_stdout(output):
+            result = main(["status", "--json"], geteuid=lambda: 0)
         try:
-            data = json.loads(result.stdout)
+            data = json.loads(output.getvalue())
         except json.JSONDecodeError:
             self.fail("status --json output is not valid JSON")
         self.assertIsInstance(data["controller"], str)
-        self.assertEqual(result.returncode, 3 if data["controller"] == "unavailable" else 0)
+        self.assertEqual(result, 3)
+        self.assertEqual(data["controller"], "unavailable")
 
         # Required core fields keep their documented types.
         self.assertIsInstance(data["miner"], str)

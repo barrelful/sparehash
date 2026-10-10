@@ -54,7 +54,9 @@ def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="sparehash")
     subparsers = parser.add_subparsers(dest="command", required=True)
     for command in PUBLIC_COMMANDS:
-        command_parser = subparsers.add_parser(command)
+        command_parser = subparsers.add_parser(command, help=(
+            "requires root; show controller/miner/blocker/power state" if command == "status" else None
+        ))
         if command == "install":
             _ = command_parser.add_argument("--answers", metavar="FILE")
         elif command == "uninstall":
@@ -150,6 +152,9 @@ def main(
             "logs": lambda: logs(parsed.follow),
         }[command]()
     if command == "status":
+        if geteuid() != 0:
+            print("sparehash: status requires root; run: sudo sparehash status", file=sys.stderr)
+            return 1
         from sparehash.status import run as status_run
 
         return status_run(parsed.json)
