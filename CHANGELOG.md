@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-10-10
+
 ### Fixed
 
 - Installation now asks separately about boot startup and starting the controller
@@ -31,7 +33,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Deferred public `config edit`, `update`, and `benchmark` in experimental
-  v0.1.0; they exit 2 before workflow effects.
+  v0.1.1; they exit 2 before workflow effects.
 
 ### Added
 
@@ -75,5 +77,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - This is an experimental first release. See `README.md` for v1 limitations.
 
-[Unreleased]: https://github.com/barrelful/sparehash/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/barrelful/sparehash/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/barrelful/sparehash/releases/tag/v0.1.1
 [0.1.0]: https://github.com/barrelful/sparehash/releases/tag/v0.1.0

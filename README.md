@@ -1,6 +1,6 @@
 # SpareHash
 
-> **Experimental v0.1.0 software.** SpareHash is a young system-level project.
+> **Experimental v0.1.1 software.** SpareHash is a young system-level project.
 > It has been tested on a limited set of Linux distributions. Review this
 > README, `SECURITY.md`, and the v1 limitations section before installing on a
 > machine you care about.
@@ -107,10 +107,10 @@ Every public command:
 | `pause` | | no | Manually pause mining via controller IPC |
 | `resume` | | no | Clear manual pause (mining resumes only when all blockers are clear) |
 | `config show` | | no | Print current public configuration as JSON |
-| `config edit` | | yes | Unsupported in experimental v0.1.0; exits 2 without effects |
+| `config edit` | | yes | Unsupported in experimental v0.1.1; exits 2 without effects |
 | `logs` | `-f`, `--follow` | no | Stream the last 100 lines from both unit journals |
-| `benchmark` | | yes | Unsupported in experimental v0.1.0; exits 2 without effects |
-| `update` | | yes | Unsupported in experimental v0.1.0; exits 2 without effects |
+| `benchmark` | | yes | Unsupported in experimental v0.1.1; exits 2 without effects |
+| `update` | | yes | Unsupported in experimental v0.1.1; exits 2 without effects |
 | `gaming-start` | | no | Signal that a configured user started gaming |
 | `gaming-end` | | no | Signal that a configured user stopped gaming |
 | `debug set-blocker` | `NAME` | yes | Force a named blocker active (debugging only) |
@@ -124,7 +124,7 @@ not user-facing.
 
 The public configuration lives at `/etc/sparehash/config.toml`. Use the installer
 wizard or an answers file to configure installation; `config show` is read-only.
-`config edit` is unsupported in v0.1.0. All keys and their defaults:
+`config edit` is unsupported in v0.1.1. All keys and their defaults:
 
 ```toml
 version = 1
@@ -359,7 +359,7 @@ query.
 
 ## Update and uninstall
 
-`update`, `config edit`, and `benchmark` are unsupported in experimental v0.1.0.
+`update`, `config edit`, and `benchmark` are unsupported in experimental v0.1.1.
 They refuse with exit code 2 before workflow effects. The underlying update
 sidecar lease still gates internal update operations and survives controller
 restart; it is not a supported public update workflow in this release.
@@ -416,7 +416,7 @@ before retirement or service changes.
 
 ## Known limitations
 
-- `config edit`, `update`, and `benchmark` are unsupported in v0.1.0.
+- `config edit`, `update`, and `benchmark` are unsupported in v0.1.1.
 - The `systemd-run` isolated version probe has been observed to fail in certain
   VM environments where transient unit creation is restricted. The rest of the
   post-install verification still passes.
@@ -478,7 +478,7 @@ resolver. SpareHash does not change DNS settings.
 
 An internal or older update operation may be holding
 the lease; the public update/config-edit/benchmark commands are unsupported in
-v0.1.0. Let an active operation finish, then retry. If it failed or is stuck,
+v0.1.1. Let an active operation finish, then retry. If it failed or is stuck,
 inspect `sparehash logs` and the lifecycle records before recovery. A controller
 restart doesn't clear an external hold, and the reinstall flag doesn't erase an
 update hold. Don't delete lifecycle files to bypass the safety barrier.

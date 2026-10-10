@@ -7,7 +7,8 @@ SpareHash v1 is the initial public release.
 
 | Version | Supported          |
 | ------- | ------------------ |
-| 0.1.0   | :white_check_mark: |
+| 0.1.1   | :white_check_mark: |
+| 0.1.0   | :x:                |
 | < 0.1.0 | :x:                |
 
 ## Reporting a vulnerability
@@ -51,7 +52,7 @@ SpareHash is designed around these security properties:
   miner cgroup empty, and removes only receipt-owned artifacts. It does not need
   controller IPC or create a lease. Config is retained by default; retirement
   remains after partial failure. The durable sidecar still gates internal updates,
-  but public `update`, `config edit`, and `benchmark` are unsupported in v0.1.0.
+  but public `update`, `config edit`, and `benchmark` are unsupported in v0.1.1.
 
 - **Verified supply chain.** XMRig releases are downloaded from GitHub and
   verified against a pinned GPG fingerprint and SHA-256 checksum before any file

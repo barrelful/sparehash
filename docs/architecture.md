@@ -199,7 +199,7 @@ battery) is allowed to mine.
 ## Deferred optional workflows
 
 Public `config edit`, `update`, and `benchmark` are unsupported in experimental
-v0.1.0: dispatch exits 2 before workflow imports or effects. `config show` remains
+v0.1.1: dispatch exits 2 before workflow imports or effects. `config show` remains
 supported. The internal benchmark mechanism remains, but is not public release
 acceptance. Its controller flow is:
 

@@ -183,7 +183,7 @@ class CliTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0)
 
     def test_config_edit_refused_root_and_nonroot(self) -> None:
-        """sparehash config edit is unsupported in experimental v0.1.0, exit 2, root and nonroot identical."""
+        """sparehash config edit is unsupported in experimental v0.1.1, exit 2, root and nonroot identical."""
         for geteuid_fn, uid in [(os.geteuid, 0), (lambda: 1000, 1000)]:
             with self.subTest(geteuid=uid):
                 captured = io.StringIO()
@@ -194,12 +194,12 @@ class CliTests(unittest.TestCase):
                                 result = main(["config", "edit"], geteuid=geteuid_fn)
                 self.assertEqual(result, 2)
                 self.assertIn(
-                    "sparehash: config edit is unsupported in experimental v0.1.0",
+                    "sparehash: config edit is unsupported in experimental v0.1.1",
                     captured.getvalue(),
                 )
 
     def test_update_refused_root_and_nonroot(self) -> None:
-        """sparehash update is unsupported in experimental v0.1.0, exit 2, root and nonroot identical."""
+        """sparehash update is unsupported in experimental v0.1.1, exit 2, root and nonroot identical."""
         for geteuid_fn, uid in [(os.geteuid, 0), (lambda: 1000, 1000)]:
             with self.subTest(geteuid=uid):
                 captured = io.StringIO()
@@ -207,12 +207,12 @@ class CliTests(unittest.TestCase):
                     result = main(["update"], geteuid=geteuid_fn)
                 self.assertEqual(result, 2)
                 self.assertIn(
-                    "sparehash: update is unsupported in experimental v0.1.0",
+                    "sparehash: update is unsupported in experimental v0.1.1",
                     captured.getvalue(),
                 )
 
     def test_benchmark_refused_root_and_nonroot(self) -> None:
-        """sparehash benchmark is unsupported in experimental v0.1.0, exit 2, root and nonroot identical."""
+        """sparehash benchmark is unsupported in experimental v0.1.1, exit 2, root and nonroot identical."""
         for geteuid_fn, uid in [(os.geteuid, 0), (lambda: 1000, 1000)]:
             with self.subTest(geteuid=uid):
                 captured = io.StringIO()
@@ -220,7 +220,7 @@ class CliTests(unittest.TestCase):
                     result = main(["benchmark"], geteuid=geteuid_fn)
                 self.assertEqual(result, 2)
                 self.assertIn(
-                    "sparehash: benchmark is unsupported in experimental v0.1.0",
+                    "sparehash: benchmark is unsupported in experimental v0.1.1",
                     captured.getvalue(),
                 )
 

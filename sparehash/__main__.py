@@ -125,13 +125,13 @@ def main(
     parsed = _parser().parse_args(arguments, namespace=CliArguments())
     command = parsed.command
     if command == "config" and parsed.config_command == "edit":
-        print("sparehash: config edit is unsupported in experimental v0.1.0", file=sys.stderr)
+        print("sparehash: config edit is unsupported in experimental v0.1.1", file=sys.stderr)
         return 2
     if command == "benchmark":
-        print("sparehash: benchmark is unsupported in experimental v0.1.0", file=sys.stderr)
+        print("sparehash: benchmark is unsupported in experimental v0.1.1", file=sys.stderr)
         return 2
     if command == "update":
-        print("sparehash: update is unsupported in experimental v0.1.0", file=sys.stderr)
+        print("sparehash: update is unsupported in experimental v0.1.1", file=sys.stderr)
         return 2
     if command == "config":
         from sparehash.cli_config import edit, show
