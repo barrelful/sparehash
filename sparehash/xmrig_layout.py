@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (c) 2026 SpareHash contributors
+
 """Descriptor-safe mutations of the manifest-owned /opt/xmrig managed tree."""
 
 from __future__ import annotations
