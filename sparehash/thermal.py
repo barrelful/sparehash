@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (c) 2026 SpareHash contributors
+
 """Read-only credible CPU thermal policy; polling cadence belongs to the caller."""
 
 from __future__ import annotations
@@ -140,6 +143,13 @@ class ThermalGuard:
     def poll(self) -> ThermalResult:
         """Produce one fresh policy result, without touching the blocker registry."""
         if not self.enabled or self.sensor is None:
+            if self.enabled and self.sensor is None:
+                # Fail-safe: enabled but no credible CPU sensor → block mining
+                self._tripped = True
+                if not self._unavailable_logged:
+                    LOGGER.info("thermal guard UNAVAILABLE: no credible CPU sensor")
+                    self._unavailable_logged = True
+                return ThermalResult(ThermalStatus.TRIPPED, None, "Thermal guard unavailable - no credible sensor")
             self._tripped = False
             if self.enabled and not self._unavailable_logged:
                 LOGGER.info("thermal guard UNAVAILABLE: no credible CPU sensor")

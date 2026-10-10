@@ -128,20 +128,29 @@ class ThermalTests(unittest.TestCase):
                 # When
                 result = guard.poll()
                 # Then
-                self.assertEqual(result.status, thermal.ThermalStatus.UNAVAILABLE)
-                self.assertFalse(result.available)
-                self.assertFalse(result.active)
-                self.assertFalse(guard.available)
+                if enabled and sensor is None:
+                    # Enabled + missing sensor → fail-safe block (active=True, result.available=True)
+                    # Guard.available is False because sensor is None, but the result is TRIPPED
+                    self.assertEqual(result.status, thermal.ThermalStatus.TRIPPED)
+                    self.assertTrue(result.available)
+                    self.assertTrue(result.active)
+                    self.assertFalse(guard.available)  # guard.available requires sensor is not None
+                else:
+                    # Disabled or valid sensor → unavailable/inactive
+                    self.assertEqual(result.status, thermal.ThermalStatus.UNAVAILABLE)
+                    self.assertFalse(result.available)
+                    self.assertFalse(result.active)
+                    self.assertFalse(guard.available)
 
     def test_unavailable_is_logged_once_when_polled_repeatedly(self) -> None:
-        # Given
+        # Given: enabled guard with no credible CPU sensor
         guard = thermal.ThermalGuard(enabled=True)
         # When
         with self.assertLogs(thermal.LOGGER, level="INFO") as logs:
             results = [guard.poll() for _ in range(3)]
-        # Then
+        # Then: warning logged once, and guard actively blocks mining (fail-safe)
         self.assertEqual(len(logs.records), 1)
-        self.assertTrue(all(not result.active for result in results))
+        self.assertTrue(all(result.active for result in results))
 
     def test_trip_when_pause_boundary_reached(self) -> None:
         for raw, active in (("84999", False), ("85000", True), ("86000", True)):
@@ -203,6 +212,18 @@ class ThermalTests(unittest.TestCase):
                 # Then
                 self.assertEqual(result.active, active)
 
+    def test_regression_production_seam_no_sensor_block_mining(self) -> None:
+        # Regression: enabled thermal guard with no credible sensor must block mining (fail-safe).
+        # Goes through the production seam: find_sensor → None → ThermalGuard.poll().active must be True.
+        # Uses self.tmp from setUp for temp dir
+        root = Path(self.tmp.name)
+        sensor = thermal.find_sensor(root)  # → None (empty hwmon dir)
+        guard = thermal.ThermalGuard(enabled=True, pause_c=85, resume_c=75, sensor=sensor)
+        result = guard.poll()
+        # Fail-safe: enabled+missing → active block
+        self.assertTrue(result.active, "enabled+missing sensor must block mining (fail-safe)")
+        self.assertTrue(result.available)
+        self.assertEqual(result.status, thermal.ThermalStatus.TRIPPED)
 
 if __name__ == "__main__":
     _ = unittest.main()
