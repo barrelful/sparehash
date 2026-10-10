@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (c) 2026 SpareHash contributors
+
 """Root install orchestration; never start mining during deployment."""
 
 from __future__ import annotations
@@ -15,11 +18,13 @@ from pathlib import Path
 from types import FrameType
 from typing import Final
 
-from . import config, gaming_install, systemd, wizard, xmrig_config
+from . import config, gaming_install, lifecycle, systemd, wizard, xmrig_config
 from .deployment import ENV, DeploymentError, Tree, checked
 from .install_ledger import Ledger
 from .install_manifest import StoreContext, locked_store
 from .install_xmrig import choose, dry_run, isolated
+from .lifecycle import is_retired
+from .lifecycle_lease import LeaseError
 from .sysdetect import Capabilities
 from .xmrig_install import CollisionError, current_binary
 from .xmrig_ledger import Artifact, GroupIdentity, Operation, UserIdentity, bootstrap_target, choice
@@ -31,6 +36,7 @@ BOOTSTRAP_PATHS: Final = ("/opt/sparehash", "/opt/sparehash/src", "/usr/local/bi
 class Arguments(argparse.Namespace):
     answers: Path | None = None
     use_existing: bool = False
+    clear_lifecycle_latch: bool = False
     bootstrap_created: list[str] | None = None
 
 
@@ -233,6 +239,8 @@ def main(argv: Sequence[str] | None = None, *, geteuid: Callable[[], int] = os.g
     parser = argparse.ArgumentParser(prog="sparehash install")
     _ = parser.add_argument("--answers", type=Path)
     _ = parser.add_argument("--use-existing", action="store_true")
+    _ = parser.add_argument("--clear-lifecycle-latch", action="store_true",
+                            help="allow reinstall after a previous uninstall (root only)")
     _ = parser.add_argument("--bootstrap-created", action="append", metavar="PATH", help=argparse.SUPPRESS)
     args = parser.parse_args(argv, namespace=Arguments())
     if geteuid() != 0:
@@ -242,6 +250,19 @@ def main(argv: Sequence[str] | None = None, *, geteuid: Callable[[], int] = os.g
     try:
         if platform.machine() != "x86_64":
             raise DeploymentError("architecture", "x86_64 is required")
+        if is_retired():
+            if args.clear_lifecycle_latch:
+                try:
+                    lifecycle.clear_lifecycle_latch()
+                except (LeaseError, OSError) as error:
+                    print(f"sparehash: install: lifecycle latch retained: {error}; system remains retired", file=sys.stderr)
+                    return 1
+                print("sparehash: lifecycle latch cleared; reinstall permitted")
+            else:
+                print("sparehash: install: this system was previously uninstalled; "
+                      "run with --clear-lifecycle-latch to reinstall, or remove /var/lib/sparehash/lifecycle.json manually",
+                      file=sys.stderr)
+                return 2
         caps = Capabilities.detect(environ=ENV, manager_probe=systemd.probe_cpuweight_idle)
         tree = Tree()
         preflight(tree, caps)

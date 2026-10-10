@@ -5,6 +5,8 @@ from __future__ import annotations
 import grp
 import os
 import pwd
+import subprocess
+import sys
 import tempfile
 import unittest
 from dataclasses import replace
@@ -13,12 +15,11 @@ from typing import final
 from unittest import mock
 
 from sparehash import config, install, systemd, xmrig_config
-from sparehash.deployment import DeploymentError, Tree
+from sparehash.deployment import LOAD_JSON, DeploymentError, Tree
 from sparehash.install_manifest import StoreContext, locked_store
 from sparehash.sysdetect import Capabilities
 from sparehash.xmrig_ledger import mapping
 from sparehash.xmrig_manifest import parse_manifest
-from sparehash.deployment import LOAD_JSON
 from tests.install_runtime import RuntimeTests as RuntimeTests
 
 
@@ -119,6 +120,49 @@ class InstallTests(unittest.TestCase):
             self.execute(verify_error=systemd.UnitError("fixture analyzer failure"))
         self.assertFalse(self.tree.path("/etc/systemd/system/sparehash.service").exists())
         self.assertFalse(any(argv[1] == "enable" for argv in self.calls))
+
+    def test_shim_suppresses_bytecode_when_executed(self) -> None:
+        # Given the exact PYTHON_SHIM block install.sh writes
+        install_sh = Path(__file__).resolve().parents[1] / "install.sh"
+        text = install_sh.read_text()
+        self.assertIn("PYTHONDONTWRITEBYTECODE=1", text)
+        self.assertIn("sys.dont_write_bytecode = True", text)
+        marker = "<<'PYTHON_SHIM'\n"
+        start = text.index(marker) + len(marker)
+        shim = text[start:text.index("\nPYTHON_SHIM", start)]
+        self.assertIn("sys.dont_write_bytecode = True", shim)
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary_path = Path(temporary_directory)
+            package_directory = temporary_path / "sparehash"
+            package_directory.mkdir()
+            _ = (package_directory / "__init__.py").write_text("# sparehash package marker\n")
+            _ = (package_directory / "__main__.py").write_text(
+                "import os, sys\n"
+                "from pathlib import Path\n"
+                "def main() -> int:\n"
+                "    Path(os.environ['SPAREHASH_TEST_MARKER']).write_text(\n"
+                "        f'{sys.dont_write_bytecode}')\n"
+                "    return 0\n"
+            )
+            marker_path = temporary_path / "marker"
+            script = temporary_path / "shim"
+            # When the shim runs as its own child process, twice: once with the
+            # install.sh environment and once with bytecode writing left on.
+            for environment in ({**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
+                                {key: value for key, value in os.environ.items()
+                                 if key != "PYTHONDONTWRITEBYTECODE"}):
+                with self.subTest(dont_write_bytecode=environment.get("PYTHONDONTWRITEBYTECODE")):
+                    script.write_text(shim.replace('"/opt/sparehash/src"', repr(str(temporary_path))))
+                    marker_path.unlink(missing_ok=True)
+                    result = subprocess.run(
+                        [sys.executable, str(script)], capture_output=True, text=True,
+                        env={**environment, "SPAREHASH_TEST_MARKER": str(marker_path)},
+                        check=False, timeout=60)
+                    # Then the shim runs, reports bytecode suppression, and writes nothing but the marker
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual(marker_path.read_text(), "True")
+                    self.assertFalse(list(temporary_path.rglob("__pycache__")))
+                    self.assertFalse(list(temporary_path.rglob("*.pyc")))
 
     def test_refusal_when_root_or_platform_preflight_fails(self) -> None:
         # Given / When / Then

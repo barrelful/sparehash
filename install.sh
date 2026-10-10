@@ -2,6 +2,8 @@
 set -eu
 PATH=/usr/sbin:/usr/bin:/sbin:/bin
 export PATH
+PYTHONDONTWRITEBYTECODE=1
+export PYTHONDONTWRITEBYTECODE
 umask 077
 
 refuse() {
@@ -100,6 +102,7 @@ cat > "$shim_tmp" <<'PYTHON_SHIM'
 #!/usr/bin/python3
 import sys
 
+sys.dont_write_bytecode = True
 sys.path.insert(0, "/opt/sparehash/src")
 
 from sparehash.__main__ import main
