@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (c) 2026 SpareHash contributors
+
 """Sparehash command-line entrypoint and internal dispatch scaffold."""
 
 import argparse
@@ -28,14 +31,11 @@ INTERNAL_COMMANDS: Final = (
     "__miner_exec__",
     "authorize-start",
 )
-ROOT_ONLY_COMMANDS: Final = ("__debug_set__", "__debug_clear__")
 PRIVILEGED_COMMANDS: Final = (
     "__controller__",
     "__cleanup__",
     "__authorize_miner__",
     "authorize-start",
-    "__debug_set__",
-    "__debug_clear__",
 )
 
 
@@ -93,7 +93,7 @@ def main(
 ) -> int:
     """Dispatch approved public and internal command names without fake success."""
     arguments = list(sys.argv[1:] if argv is None else argv)
-    if arguments and arguments[0] in INTERNAL_COMMANDS + ROOT_ONLY_COMMANDS:
+    if arguments and arguments[0] in INTERNAL_COMMANDS:
         command = arguments[0]
         if command in PRIVILEGED_COMMANDS and geteuid() != 0:
             print("sparehash: privileged command requires root", file=sys.stderr)
@@ -122,6 +122,15 @@ def main(
         return install(arguments[1:], geteuid=geteuid)
     parsed = _parser().parse_args(arguments, namespace=CliArguments())
     command = parsed.command
+    if command == "config" and parsed.config_command == "edit":
+        print("sparehash: config edit is unsupported in experimental v0.1.0", file=sys.stderr)
+        return 2
+    if command == "benchmark":
+        print("sparehash: benchmark is unsupported in experimental v0.1.0", file=sys.stderr)
+        return 2
+    if command == "update":
+        print("sparehash: update is unsupported in experimental v0.1.0", file=sys.stderr)
+        return 2
     if command == "config":
         from sparehash.cli_config import edit, show
 
@@ -141,9 +150,9 @@ def main(
             "logs": lambda: logs(parsed.follow),
         }[command]()
     if command == "status":
-        from sparehash.status import run
+        from sparehash.status import run as status_run
 
-        return run(parsed.json)
+        return status_run(parsed.json)
     if command in GAMING_COMMANDS:
         from sparehash.gaming import gaming_end, gaming_start
 

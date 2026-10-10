@@ -4,6 +4,8 @@ import ast
 import contextlib
 import importlib
 import io
+import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -11,6 +13,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from sparehash import cli_config
+from sparehash import cli_lifecycle
 from sparehash.__main__ import main
 
 
@@ -155,6 +159,7 @@ class CliTests(unittest.TestCase):
             temporary_path = Path(temporary_directory)
             package_directory = temporary_path / "sparehash"
             package_directory.mkdir()
+            _ = (package_directory / "__init__.py").write_text("")
             _ = (package_directory / "__main__.py").write_text(
                 "import sys\nraise SystemExit(0 if sys.argv[1:] == ['status', '--fixture'] else 1)\n",
             )
@@ -169,6 +174,99 @@ class CliTests(unittest.TestCase):
             )
 
         self.assertEqual(result.returncode, 0)
+
+    def test_config_edit_refused_root_and_nonroot(self) -> None:
+        """sparehash config edit is unsupported in experimental v0.1.0, exit 2, root and nonroot identical."""
+        for geteuid_fn, uid in [(os.geteuid, 0), (lambda: 1000, 1000)]:
+            with self.subTest(geteuid=uid):
+                captured = io.StringIO()
+                with contextlib.redirect_stderr(captured):
+                    with patch.object(cli_config, "edit", side_effect=AssertionError("edit should not be called")):
+                        with patch.object(cli_config, "benchmark", side_effect=AssertionError("benchmark should not be called")):
+                            with patch.object(cli_lifecycle, "update", side_effect=AssertionError("update should not be called")):
+                                result = main(["config", "edit"], geteuid=geteuid_fn)
+                self.assertEqual(result, 2)
+                self.assertIn(
+                    "sparehash: config edit is unsupported in experimental v0.1.0",
+                    captured.getvalue(),
+                )
+
+    def test_update_refused_root_and_nonroot(self) -> None:
+        """sparehash update is unsupported in experimental v0.1.0, exit 2, root and nonroot identical."""
+        for geteuid_fn, uid in [(os.geteuid, 0), (lambda: 1000, 1000)]:
+            with self.subTest(geteuid=uid):
+                captured = io.StringIO()
+                with contextlib.redirect_stderr(captured):
+                    result = main(["update"], geteuid=geteuid_fn)
+                self.assertEqual(result, 2)
+                self.assertIn(
+                    "sparehash: update is unsupported in experimental v0.1.0",
+                    captured.getvalue(),
+                )
+
+    def test_benchmark_refused_root_and_nonroot(self) -> None:
+        """sparehash benchmark is unsupported in experimental v0.1.0, exit 2, root and nonroot identical."""
+        for geteuid_fn, uid in [(os.geteuid, 0), (lambda: 1000, 1000)]:
+            with self.subTest(geteuid=uid):
+                captured = io.StringIO()
+                with contextlib.redirect_stderr(captured):
+                    result = main(["benchmark"], geteuid=geteuid_fn)
+                self.assertEqual(result, 2)
+                self.assertIn(
+                    "sparehash: benchmark is unsupported in experimental v0.1.0",
+                    captured.getvalue(),
+                )
+
+    def test_config_show_works_root_and_nonroot(self) -> None:
+        """sparehash config show continues working, exit 0, no token leak."""
+        import sparehash.cli_config as cli_config_mod
+        for geteuid_fn, uid in [(os.geteuid, 0), (lambda: 1000, 1000)]:
+            with self.subTest(geteuid=uid):
+                with patch.object(cli_config_mod, "show") as mock_show:
+                    cfg_path = Path("/tmp/sparehash-config-show.toml")
+                    cfg_path.parent.mkdir(parents=True, exist_ok=True)
+                    cfg_path.write_text('version = 1\nwallet = "test"\n')
+                    mock_show.return_value = 0
+                    captured_stdout = io.StringIO()
+                    captured_stderr = io.StringIO()
+                    with contextlib.redirect_stdout(captured_stdout):
+                        with contextlib.redirect_stderr(captured_stderr):
+                            result = main(["config", "show"], geteuid=geteuid_fn)
+                    self.assertEqual(result, 0)
+                    self.assertEqual(captured_stderr.getvalue(), "")
+
+    def test_status_json_requires_valid_json(self) -> None:
+        """Given the sparehash CLI, status --json is a typed document whose exit status follows controller state."""
+        result = subprocess.run(
+            [sys.executable, "-m", "sparehash", "status", "--json"],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+        # The renderer accepts exactly two exit statuses: 3 when the controller
+        # is unavailable, 0 for every other reachable state.
+        self.assertIn(result.returncode, (0, 3))
+        try:
+            data = json.loads(result.stdout)
+        except json.JSONDecodeError:
+            self.fail("status --json output is not valid JSON")
+        self.assertIsInstance(data["controller"], str)
+        self.assertEqual(result.returncode, 3 if data["controller"] == "unavailable" else 0)
+
+        # Required core fields keep their documented types.
+        self.assertIsInstance(data["miner"], str)
+        self.assertIsInstance(data["api"], str)
+        self.assertTrue(data["pool"] is None or isinstance(data["pool"], str))
+        self.assertTrue(data["dns_hint"] is None or isinstance(data["dns_hint"], str))
+        for entry in data["blockers"]:
+            self.assertIsInstance(entry, list)
+            self.assertEqual(len(entry), 2)
+            self.assertTrue(all(isinstance(part, str) for part in entry))
+        for source in ("inventory", "upower", "sysfs"):
+            evidence = data["power"][source]
+            self.assertIn(type(evidence["value"]), (bool, type(None)))
+            self.assertIs(type(evidence["stale"]), bool)
 
 
 if __name__ == "__main__":
