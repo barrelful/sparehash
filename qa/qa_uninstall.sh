@@ -1,179 +1,298 @@
 #!/usr/bin/env bash
 #
-# qa_uninstall.sh - Integration QA for residue-free uninstall
+# qa_uninstall.sh - Integration QA for a residue-free uninstall
 #
-# Tests:
-#   1. Residue-free uninstall: foreign decoy xmrig.service untouched
-#   2. gamemode.ini byte-identical restore
+# Destructive: removes the installation. This suite runs last.
 #
-# This script is designed to run in a disposable systemd VM with the SpareHash
-# installation already present. It verifies that uninstall removes only
-# SpareHash-owned files and leaves foreign configurations untouched.
+#   Phase 1 - pre-action: the CLI, both unit files, the gamemoded shim, a live
+#             controller status document (the lease the uninstall acquires),
+#             and a parseable installer receipt must all be present. A foreign
+#             decoy is written inside /etc/sparehash, which the receipt does
+#             not inventory, so it has to survive the removal. Digests of the
+#             retained configuration and of the decoy are recorded here, and
+#             the miner cgroup path is captured while the unit still exists.
+#   Phase 2 - one `sparehash uninstall` without --purge; the exit status is
+#             checked by qa/auxiliary_check.py and only 0 is accepted.
+#   Phase 3 - receipt-driven removal: every created unit, the CLI shim, the
+#             pruned package tree, the managed XMRig root, and every created
+#             identity are gone; retained configuration and the decoy still
+#             match their recorded digests; foreign accounts are untouched;
+#             the lifecycle latch is retired; the miner cgroup is empty;
+#             nothing is left enabled.
 #
 # Exit code: 0 on success, 1 on failure
-#
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$SCRIPT_DIR")"
-QA_DIR="$REPO_DIR/qa"
-SPAREHASH_DIR="$REPO_DIR/sparehash"
+source "$SCRIPT_DIR/lib/runtime.sh"
 
-# Paths
-CONTROLLER_BIN="/usr/local/bin/sparehash"
-EVIDENCE_DIR="/omo/evidence"
-SYSTEMD_DIR="/etc/systemd/system"
-GAMemode_INI="$HOME/.config/gamemode.ini"
-GAMemode_BAK="$HOME/.config/.sparehash-bak.ini"
+AUX="$SCRIPT_DIR/auxiliary_check.py"
+UNIT_DIR=/etc/systemd/system
+CONTROLLER_UNIT="$UNIT_DIR/sparehash.service"
+MINER_UNIT="$UNIT_DIR/sparehash-xmrig.service"
+SHIM=/usr/local/bin/sparehash
+ETC=/etc/sparehash
+IPC_DOC="$(mktemp "${TMPDIR:-/tmp}/sparehash-uninstall-ipc-XXXXXX")"
+EXPECT="$(mktemp "${TMPDIR:-/tmp}/sparehash-uninstall-expect-XXXXXX")"
+DIGESTS="$(mktemp "${TMPDIR:-/tmp}/sparehash-uninstall-digests-XXXXXX")"
+DECOY="$ETC/nonreceipt-qa-$$.txt"
+MINER_CGROUP=""
 
-# Ensure evidence directory exists
-mkdir -p "$EVIDENCE_DIR" 2>/dev/null || true
+finish() {
+    local result=$?
+    rm -f -- "$IPC_DOC" "$EXPECT" "$DIGESTS" 2>/dev/null || true
+    # The decoy is suite-owned; it is removed only after the retention check.
+    rm -f -- "$DECOY" 2>/dev/null || true
+    trap - EXIT
+    set +e
+    (exit "$result")
+    qa_cleanup
+}
+trap finish EXIT
 
-echo "=== qa_uninstall.sh: Uninstall QA ==="
-
-# -------------------------------------------------------
-# Helper: check if a file/dir is owned by root
-# -------------------------------------------------------
-is_root_owned() {
-    local file=$1
-    if [ -e "$file" ]; then
-        owner=$(stat -c "%U" "$file" 2>/dev/null || echo "unknown")
-        [ "$owner" = "root" ]
-    else
-        return 1
-    fi
+die() {
+    echo "FAIL: $*" >&2
+    exit 1
 }
 
-# -------------------------------------------------------
-# Phase 1: Record pre-uninstall state
-# -------------------------------------------------------
-echo "--- Phase 1: Record pre-uninstall state ---"
+read_ipc() {
+    python3 - "$REPO_DIR" "$IPC_DOC" <<'PY'
+import json
+import sys
+from pathlib import Path
 
-echo "  Checking controller service..."
-if [ -f "$SYSTEMD_DIR/sparehash.service" ]; then
-    ctrl_owner=$(stat -c "%U:%G" "$SYSTEMD_DIR/sparehash.service" 2>/dev/null || echo "unknown")
-    echo "  /etc/systemd/system/sparehash.service: owner=$ctrl_owner"
-else
-    echo "  /etc/systemd/system/sparehash.service: not found"
-fi
+repository = Path(sys.argv[1])
+target = Path(sys.argv[2])
+for candidate in (Path("/opt/sparehash/src"), repository):
+    if (candidate / "sparehash" / "ipc.py").is_file():
+        sys.path.insert(0, str(candidate))
+        break
+from sparehash import ipc
 
-echo "  Checking miner service..."
-if [ -f "$SYSTEMD_DIR/sparehash-xmrig.service" ]; then
-    miner_owner=$(stat -c "%U:%G" "$SYSTEMD_DIR/sparehash-xmrig.service" 2>/dev/null || echo "unknown")
-    echo "  /etc/systemd/system/sparehash-xmrig.service: owner=$miner_owner"
-else
-    echo "  /etc/systemd/system/sparehash-xmrig.service: not found"
-fi
+target.write_text(json.dumps(ipc.call({"cmd": "status"}, timeout=2)), encoding="utf-8")
+PY
+}
 
-echo "  Checking /opt/xmrig..."
-if [ -d "/opt/xmrig" ]; then
-    xmrig_root=$(is_root_owned "/opt/xmrig" && echo "yes" || echo "no")
-    echo "  /opt/xmrig: root-owned=$xmrig_root"
-else
-    echo "  /opt/xmrig: not found"
-fi
+# ------------------------------------------------------------------
+# Phase 1: everything the uninstall consumes must be here first
+# ------------------------------------------------------------------
+phase_before() {
+    echo "--- Phase 1: pre-action state ---"
 
-echo "  Checking /etc/sparehash/xmrig.json..."
-if [ -f "/etc/sparehash/xmrig.json" ]; then
-    xmrig_json_owner=$(stat -c "%U:%G" "/etc/sparehash/xmrig.json" 2>/dev/null || echo "unknown")
-    echo "  /etc/sparehash/xmrig.json: owner=$xmrig_json_owner"
-else
-    echo "  /etc/sparehash/xmrig.json: not found"
-fi
+    [[ -x $SHIM ]] || die "CLI $SHIM is missing or not executable"
+    echo "  CLI present: $SHIM"
+    [[ -f $CONTROLLER_UNIT ]] || die "controller unit $CONTROLLER_UNIT is missing"
+    [[ -f $MINER_UNIT ]] || die "miner unit $MINER_UNIT is missing"
+    echo "  both unit files present"
+    [[ -x $SCRIPT_DIR/shims/gamemoded ]] || die "gaming shim $SCRIPT_DIR/shims/gamemoded is missing"
+    echo "  gamemoded shim present in the suite"
 
-echo "  Checking gamemode.ini backup status..."
-if [ -f "$GAMemode_INI" ]; then
-    echo "  ~/.config/gamemode.ini exists"
-    if [ -f "$GAMemode_BAK" ]; then
-        echo "  ~/.config/.sparehash-bak.ini backup exists"
-        # Check byte identity
-        if diff -q "$GAMemode_INI" "$GAMemode_BAK" >/dev/null 2>&1; then
-            echo "  PASS: gamemode.ini is byte-identical to backup"
-        else
-            echo "  NOTE: gamemode.ini differs from backup"
-        fi
+    read_ipc || die "the controller is not reachable; the live lease cannot be acquired"
+    python3 "$AUX" ipc "$IPC_DOC" || die "the controller status document does not satisfy its contract"
+    echo "  live controller document accepted; uninstall can acquire the lease"
+
+    printf 'sparehash QA foreign content; must survive uninstall\n' > "$DECOY" \
+        || die "cannot write the foreign decoy at $DECOY"
+    MINER_CGROUP=$(systemctl show sparehash-xmrig.service -p ControlGroup --value)
+    [[ $MINER_CGROUP == /* && $MINER_CGROUP != / ]] \
+        || die "miner cgroup path is not observable before uninstall: '$MINER_CGROUP'"
+    echo "  foreign decoy written outside the receipt; miner cgroup path captured"
+
+    python3 - "$REPO_DIR" "$EXPECT" "$DIGESTS" "$DECOY" \
+        "$CONTROLLER_UNIT" "$MINER_UNIT" "$SHIM" <<'PY' \
+        || die "cannot derive removal expectations from the installer receipt (reason above)"
+import hashlib
+import json
+import sys
+from pathlib import Path
+
+repository, target, digests, decoy, controller_unit, miner_unit, shim = sys.argv[1:8]
+for candidate in (Path("/opt/sparehash/src"), Path(repository)):
+    if (candidate / "sparehash" / "xmrig_manifest.py").is_file():
+        sys.path.insert(0, str(candidate))
+        break
+from sparehash import xmrig_manifest
+from sparehash.xmrig_remove import PRUNE_DIRS
+
+manifest_path = Path("/var/lib/sparehash/install-manifest.json")
+if not manifest_path.is_file():
+    raise SystemExit(f"installer receipt {manifest_path} is missing; removal cannot be authoritative")
+manifest = xmrig_manifest.parse_manifest(manifest_path.read_text(encoding="utf-8"))
+if manifest is None or manifest.installer is None:
+    raise SystemExit("installer receipt does not parse; removal cannot be authoritative")
+installer = manifest.installer
+artifacts = list(installer.artifacts)
+recorded = {item.path for item in artifacts}
+if decoy in recorded:
+    raise SystemExit(f"the decoy path {decoy} is inventoried; it cannot prove foreign retention")
+for path in ("/etc/sparehash/config.toml", "/etc/sparehash/xmrig.json"):
+    if path not in recorded:
+        raise SystemExit(f"retained configuration {path} is not in the receipt")
+
+retained = ["/etc/sparehash/config.toml", "/etc/sparehash/xmrig.json", decoy]
+checksums = {path: hashlib.sha256(Path(path).read_bytes()).hexdigest() for path in retained}
+with open(digests, "w", encoding="utf-8") as sink:
+    for path in sorted(checksums):
+        sink.write(f"{checksums[path]}  {path}\n")
+
+created = {item.path for item in artifacts if item.created}
+expectations = {
+    "prune_dirs": sorted(path for path in PRUNE_DIRS if path in created),
+    "created_identities": sorted(
+        [item.kind, item.name] for item in installer.identities if item.created),
+    "units": [controller_unit, miner_unit],
+    "shim": shim,
+    "has_versions": bool(manifest.versions),
+}
+Path(target).write_text(json.dumps(expectations, indent=1, sort_keys=True), encoding="utf-8")
+print(f"  receipt parsed: {len(recorded)} recorded paths, "
+      f"{len(expectations['prune_dirs'])} pruned directories, "
+      f"{len(expectations['created_identities'])} created identities")
+print(f"  retained digests recorded for {len(checksums)} paths (including the decoy)")
+PY
+}
+
+# ------------------------------------------------------------------
+# Phase 2: the uninstall itself
+# ------------------------------------------------------------------
+phase_uninstall() {
+    echo ""
+    echo "--- Phase 2: uninstall ---"
+    local status
+    set +e
+    "$CONTROLLER_BIN" uninstall
+    status=$?
+    set -e
+    python3 "$AUX" action "$status" "sparehash uninstall" 0 \
+        || die "sparehash uninstall did not report success"
+    echo "  sparehash uninstall acknowledged with exit status 0"
+}
+
+# ------------------------------------------------------------------
+# Phase 3: receipt-driven removal and foreign retention
+# ------------------------------------------------------------------
+phase_after() {
+    local group=$1
+    echo ""
+    echo "--- Phase 3: post-uninstall assertions ---"
+
+    [[ ! -e $SHIM ]] || die "CLI $SHIM survived the uninstall although the receipt recorded it"
+    [[ ! -e $CONTROLLER_UNIT ]] || die "controller unit survived the uninstall"
+    [[ ! -e $MINER_UNIT ]] || die "miner unit survived the uninstall"
+    echo "  CLI shim and both unit files removed"
+
+    python3 - "$EXPECT" <<'PY' || die "receipt-owned trees or identities survived the uninstall (reason above)"
+import json
+import subprocess
+import sys
+from pathlib import Path
+
+expectations = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+problems: list[str] = []
+
+for path in expectations["prune_dirs"]:
+    if Path(path).exists():
+        problems.append(f"pruned directory still present: {path}")
+if expectations["has_versions"] and Path("/opt/xmrig").exists():
+    problems.append("managed XMRig root /opt/xmrig still present after version removal")
+if Path(expectations["shim"]).exists():
+    problems.append(f"CLI {expectations['shim']} still present")
+for unit in expectations["units"]:
+    if Path(unit).exists():
+        problems.append(f"unit file still present: {unit}")
+
+for kind, name in expectations["created_identities"]:
+    command = ("getent", "passwd", name) if kind == "user" else ("getent", "group", name)
+    result = subprocess.run(command, text=True, capture_output=True, check=False)
+    if result.returncode == 0 and result.stdout.strip():
+        problems.append(f"created {kind} {name!r} still present: {result.stdout.strip()}")
+
+for name in ("root", "daemon", "nobody"):
+    result = subprocess.run(("getent", "passwd", name), text=True, capture_output=True, check=False)
+    if result.returncode != 0 or not result.stdout.strip():
+        problems.append(f"foreign account {name!r} was removed")
+
+if problems:
+    raise SystemExit("\n".join("  " + problem for problem in problems))
+print(f"  {len(expectations['prune_dirs'])} pruned directories and "
+      f"{len(expectations['created_identities'])} created identities removed; "
+      "managed XMRig root gone; foreign accounts untouched")
+PY
+
+    local digest path
+    while read -r digest path; do
+        [[ -n ${path:-} ]] || continue
+        python3 "$AUX" bytes "$path" "$digest" \
+            || die "retained file changed or disappeared: $path"
+    done < "$DIGESTS"
+    echo "  retained configuration and foreign decoy keep their exact bytes"
+
+    python3 - "$group" <<'PY' || die "lifecycle latch, unit state, or miner cgroup is wrong after uninstall (reason above)"
+import json
+import subprocess
+import sys
+from pathlib import Path
+
+problems: list[str] = []
+
+latch = Path("/var/lib/sparehash/lifecycle.json")
+if not latch.is_file():
+    problems.append("lifecycle latch /var/lib/sparehash/lifecycle.json is missing")
+else:
+    try:
+        document = json.loads(latch.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as error:
+        problems.append(f"lifecycle latch is not JSON: {error}")
+    else:
+        if document.get("retired") is not True:
+            problems.append(f"lifecycle latch is not retired: {document!r}")
+
+for unit in ("sparehash.service", "sparehash-xmrig.service"):
+    result = subprocess.run(("/usr/bin/systemctl", "is-enabled", unit),
+                            text=True, capture_output=True, check=False)
+    state = (result.stdout or result.stderr).strip()
+    if state == "enabled":
+        problems.append(f"{unit} is still enabled")
+
+group = sys.argv[1]
+if group:
+    base = Path("/sys/fs/cgroup") / group.lstrip("/")
+    if base.exists():
+        populated = any(path.read_text().strip() for path in base.rglob("cgroup.procs"))
+        if populated:
+            problems.append(f"miner cgroup {group} is still populated")
+
+if problems:
+    raise SystemExit("\n".join("  " + problem for problem in problems))
+print("  lifecycle latch retired, no service enabled, miner cgroup empty")
+PY
+}
+
+main() {
+    echo "=== qa_uninstall.sh: Uninstall QA ==="
+    [[ -f $AUX ]] || die "auxiliary checker $AUX is missing"
+    [[ -f $ETC/config.toml ]] || die "no installation present; nothing to uninstall"
+
+    if [[ -n ${QA_RUNTIME_OWNER:-} ]]; then
+        qa_attach
     else
-        echo "  NOTE: No .sparehash-bak.ini backup found"
+        qa_setup
     fi
-else
-    echo "  ~/.config/gamemode.ini not found"
+
+    phase_before
+    phase_uninstall
+    phase_after "$MINER_CGROUP"
+
+    echo ""
+    echo "=== qa_uninstall.sh: Complete ==="
+    echo "  Phase 1 (pre-action CLI, units, shim, live controller): PASS"
+    echo "  Phase 2 (acknowledged uninstall): PASS"
+    echo "  Phase 3 (receipt-driven removal, foreign retention): PASS"
+    exit 0
+}
+
+if [[ ${BASH_SOURCE[0]} == "$0" ]]; then
+    main "$@"
 fi
-
-# -------------------------------------------------------
-# Phase 2: Run uninstall
-# -------------------------------------------------------
-echo ""
-echo "--- Phase 2: Running uninstall ---"
-
-echo "  Running sparehash uninstall..."
-$CONTROLLER_BIN uninstall 2>/dev/null || true
-
-# Give systemd time to clean up
-sleep 2
-
-# -------------------------------------------------------
-# Phase 3: Post-uninstall assertions
-# -------------------------------------------------------
-echo ""
-echo "--- Phase 3: Post-uninstall assertions ---"
-
-echo "  Checking controller service removed..."
-if [ -f "$SYSTEMD_DIR/sparehash.service" ]; then
-    echo "  WARNING: /etc/systemd/system/sparehash.service still exists"
-else
-    echo "  PASS: /etc/systemd/system/sparehash.service removed"
-fi
-
-echo "  Checking miner service removed..."
-if [ -f "$SYSTEMD_DIR/sparehash-xmrig.service" ]; then
-    echo "  WARNING: /etc/systemd/system/sparehash-xmrig.service still exists"
-else
-    echo "  PASS: /etc/systemd/system/sparehash-xmrig.service removed"
-fi
-
-echo "  Checking /opt/xmrig state..."
-if [ -d "/opt/xmrig" ]; then
-    echo "  /opt/xmrig still exists (may be foreign install preserved)"
-    foreign_xmrig=$(stat -c "%U:%G" "/opt/xmrig" 2>/dev/null || echo "unknown")
-    echo "  /opt/xmrig owner: $foreign_xmrig"
-    # Check if it's a foreign install (not owned by sparehash)
-    if [ "$foreign_xmrig" != "root:sparehash" ] && [ "$foreign_xmrig" != "root:root" ]; then
-        echo "  PASS: /opt/xmrig appears to be a foreign install (preserved)"
-    fi
-else
-    echo "  /opt/xmrig removed"
-fi
-
-echo "  Checking /etc/sparehash state..."
-if [ -d "/etc/sparehash" ]; then
-    echo "  /etc/sparehash still exists"
-    sparesh_json=$(stat -c "%U:%G" "/etc/sparehash" 2>/dev/null || echo "unknown")
-    echo "  /etc/sparehash owner: $sparesh_json"
-else
-    echo "  /etc/sparehash removed"
-fi
-
-echo "  Checking gamemode.ini restore..."
-if [ -f "$GAMemode_INI" ]; then
-    echo "  ~/.config/gamemode.ini still exists after uninstall"
-    if [ -f "$GAMemode_BAK" ]; then
-        if diff -q "$GAMemode_INI" "$GAMemode_BAK" >/dev/null 2>&1; then
-            echo "  PASS: gamemode.ini byte-identical to backup after uninstall"
-        else
-            echo "  NOTE: gamemode.ini differs from backup after uninstall"
-        fi
-    fi
-else
-    echo "  ~/.config/gamemode.ini removed after uninstall (expected)"
-fi
-
-# -------------------------------------------------------
-# Phase 4: Summary
-# -------------------------------------------------------
-echo ""
-echo "=== qa_uninstall.sh: Complete ==="
-echo "  Phase 1 (pre-uninstall state): Complete"
-echo "  Phase 2 (uninstall executed): Complete"
-echo "  Phase 3 (post-uninstall assertions): Complete"
-exit 0
