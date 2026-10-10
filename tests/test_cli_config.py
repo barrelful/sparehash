@@ -118,7 +118,7 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(read_token(self.files.miner), self.token)
         self.assertEqual(self.files.miner.stat().st_mode & 0o777, 0o640)
         self.assertEqual(self.client.requests, [{"cmd": "status"}, {"cmd": "reload"}])
-        self.assertEqual([p.read_bytes() for p in self.root.glob(".sparehash-backup-*")], [self.public_before])
+        self.assertEqual(list(self.root.glob(".sparehash-backup-*")), [])
 
     def test_rollback_when_reload_is_rejected(self) -> None:
         # Given

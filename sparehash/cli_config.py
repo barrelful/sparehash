@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (c) 2026 SpareHash contributors
+
 """Public config transactions and controller-only benchmark requests."""
 
 from __future__ import annotations
@@ -162,6 +165,7 @@ def edit(files: ConfigFiles | None = None, editor: Callable[[Config], Config] | 
                 os.replace(public_backup, public)
                 os.replace(miner_backup, miner)
                 raise
+            public_backup.unlink()
             miner_backup.unlink()
         print("Configuration saved; controller reload requested (not a mining-start confirmation).")
         return 0
