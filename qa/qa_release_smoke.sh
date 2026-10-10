@@ -8,6 +8,15 @@ fi
 SCRIPT_DIR=$(realpath "$(dirname "${BASH_SOURCE[0]}")")
 REPO=$(dirname "$SCRIPT_DIR")
 source "$SCRIPT_DIR/lib/runtime.sh"
+qa_preflight() {
+    [[ ${SPAREHASH_QA_DISPOSABLE_VM:-} == YES ]] || {
+        echo 'FAIL: set SPAREHASH_QA_DISPOSABLE_VM=YES only inside a disposable VM' >&2
+        return 1
+    }
+    [[ $EUID == 0 ]]
+    [[ $(cat /proc/1/comm) == systemd ]]
+    command -v nsenter >/dev/null
+}
 qa_preflight
 [[ ${CANDIDATE_SHA:-} =~ ^[0-9a-f]{40}$ ]]
 # An extracted sdist needs the independently transferred source identity beside it.
@@ -17,7 +26,6 @@ if [[ -e $REPO/.git ]]; then
 else
     [[ $(cat "$REPO/candidate.sha") == "$CANDIDATE_SHA" ]]
 fi
-[[ -d /opt/sparehash/src/sparehash ]]
 EVIDENCE_DIR=${EVIDENCE_DIR:-/var/tmp/sparehash-v010-evidence}
 mkdir -m 0700 "$EVIDENCE_DIR" # refuse an existing evidence directory
 export EVIDENCE_DIR CANDIDATE_SHA
@@ -144,6 +152,7 @@ PY
 pass
 
 begin BASELINE
+[[ -d /opt/sparehash/src/sparehash && -x $CONTROLLER_BIN ]] || { echo 'FAIL: installed payload missing after install' >&2; exit 1; }
 qa_quiesce; qa_setup; qa_pool_start; qa_fixture_overlays
 python3 - "$QA_ROOT" <<'PY'
 import json, sys
