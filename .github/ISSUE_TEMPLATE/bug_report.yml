@@ -1,0 +1,60 @@
+name: Bug report
+description: Report a problem with SpareHash
+title: "[bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a bug. Please do not include your
+        wallet address, pool password, or API token.
+  - type: input
+    id: version
+    attributes:
+      label: SpareHash version or commit
+      placeholder: e.g., v0.1.0 or commit hash
+    validations:
+      required: true
+  - type: input
+    id: distro
+    attributes:
+      label: Distribution and systemd version
+      placeholder: e.g., Linux Mint 22.3, systemd 255
+    validations:
+      required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      placeholder: Describe the problem clearly.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect to happen?
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Run ...
+        2. Then ...
+        3. See error
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs or status output
+      render: text
+      placeholder: |
+        sparehash status --json
+        journalctl -u sparehash.service -n 100
+  - type: checkboxes
+    id: terms
+    attributes:
+      label: Confirmations
+      options:
+        - label: I have read SECURITY.md and will report security issues privately.
+          required: true
