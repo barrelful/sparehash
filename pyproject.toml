@@ -1,0 +1,96 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (c) 2026 SpareHash contributors
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "sparehash"
+version = "0.1.0"
+description = "Fail-closed XMRig controller for safe CPU-only Monero mining on Linux."
+readme = "README.md"
+license = { text = "GPL-3.0-or-later" }
+requires-python = ">=3.11"
+authors = [
+    { name = "SpareHash contributors" },
+]
+keywords = ["monero", "xmrig", "systemd", "mining", "safety"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: No Input/Output (Daemon)",
+    "Intended Audience :: System Administrators",
+    "License :: OSI Approved :: GNU General Public License v3 or later (GPLv3+)",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: System :: Systems Administration",
+]
+# Runtime is standard-library only. Do not add runtime dependencies here.
+dependencies = []
+
+[project.scripts]
+sparehash = "sparehash.__main__:main"
+
+[project.urls]
+Homepage = "https://github.com/barrelful/sparehash"
+Repository = "https://github.com/barrelful/sparehash"
+Issues = "https://github.com/barrelful/sparehash/issues"
+
+[dependency-groups]
+dev = [
+    "mypy>=1.11",
+    "pytest>=8.3",
+    "ruff>=0.6",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["sparehash"]
+
+[tool.hatch.build.targets.wheel.force-include]
+systemd = "systemd"
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "/sparehash",
+    "/systemd",
+    "/qa",
+    "/docs",
+    "/install.sh",
+    "/README.md",
+    "/LICENSE",
+    "/SECURITY.md",
+    "/CONTRIBUTING.md",
+    "/CHANGELOG.md",
+    "/pyproject.toml",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+
+[tool.mypy]
+python_version = "3.11"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+ignore_missing_imports = true
+exclude = [
+    "^qa/",
+]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W", "N", "UP", "B", "C4", "SIM"]
+ignore = ["E501"]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.uv]
+package = true
