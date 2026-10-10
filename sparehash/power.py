@@ -18,6 +18,9 @@ from pathlib import Path
 from threading import Event
 from typing import Final, Protocol, final
 
+from .power_readings import discharge_rate
+from .power_readings import read as _read
+
 FIXED_PATH: Final = "/usr/sbin:/usr/bin:/sbin:/bin"
 BUS: Final = "org.freedesktop.UPower"
 OBJECT: Final = "/org/freedesktop/UPower"
@@ -43,6 +46,8 @@ class PowerSample:
     inventory: Evidence
     upower_evidence: Evidence
     sysfs_evidence: Evidence
+    ac_online: bool | None = None
+    discharge_rate_w: float | None = None
 
     @property
     def battery_present(self) -> bool | None:
@@ -59,26 +64,35 @@ class PowerSample:
     @property
     def blocked(self) -> bool:
         """Conservative event value for Controller.safety, not a BlockerState."""
-        return self.battery_present is not False and (
-            self.battery_present is None or self.upower is True or self.sysfs is True
-            or (self.upower is not False and self.sysfs is not False))
+        return blocked(self)
 
 
-def _read(path: Path) -> str | None:
-    try:
-        return path.read_text(encoding="ascii").strip()
-    except (OSError, UnicodeError):
-        return None
+def blocked(sample: PowerSample, *, maintenance_mode: bool = False) -> bool:
+    """Fail closed, except for explicitly opted-in AC maintenance discharge."""
+    if sample.battery_present is False:
+        return False
+    if sample.battery_present is None or sample.upower is True:
+        return True
+    if sample.upower is False:
+        if sample.sysfs is False:
+            return False
+        # Typical laptop idle draw is far higher than 1W; firmware maintenance
+        # trickle is usually well under 1W. Never override UPower on-battery.
+        return not (maintenance_mode and sample.sysfs is True and sample.ac_online is True
+                    and sample.discharge_rate_w is not None and sample.discharge_rate_w <= 1.0)
+    return sample.sysfs is not False
 
 
-def read_sysfs(root: Path, now: float) -> tuple[Evidence, Evidence]:
+def read_sysfs(root: Path, now: float) -> tuple[Evidence, Evidence, bool | None, float | None]:
     """A partial inventory cannot prove absence or absence of online mains."""
     try:
         entries = tuple((root / "class/power_supply").iterdir())
     except OSError:
-        return Evidence(None, now), Evidence(None, now)
+        return Evidence(None, now), Evidence(None, now), None, None
     complete, present, discharging, online, uncertain = True, False, False, False, False
     external_complete = True
+    external_present = False
+    rates: list[float | None] = []
     for entry in entries:
         kind = _read(entry / "type")
         if not kind:
@@ -92,15 +106,20 @@ def read_sysfs(root: Path, now: float) -> tuple[Evidence, Evidence]:
                 status = _read(entry / "status")
                 discharging |= status == "Discharging"
                 uncertain |= installed != "1" or status not in ("Discharging", "Charging", "Full", "Not charging")
+                rates.append(discharge_rate(entry))
         if kind in EXTERNAL:
+            external_present = True
             value = _read(entry / "online")
             online |= value == "1"
             uncertain |= value not in ("0", "1")
             external_complete &= value in ("0", "1")
-    inventory = (True if present else False) if complete else None
+    inventory = present if complete else None
     battery_value = (True if discharging or (complete and external_complete and not online)
                      else (False if complete and online and not uncertain else None))
-    return Evidence(inventory, now), Evidence(battery_value if present else None, now)
+    ac_online = True if online else False if external_present and external_complete else None
+    # Aggregate every installed battery; a missing rate cannot prove tiny draw.
+    discharge_rate_w = sum(rate for rate in rates if rate is not None) if rates and None not in rates else None
+    return Evidence(inventory, now), Evidence(battery_value if present else None, now), ac_online, discharge_rate_w
 
 
 class Backend(Protocol):
@@ -219,10 +238,15 @@ class PowerMonitor:
         self.query_at = self.next_sysfs = self.next_query = self.retry_at = 0.0
         self.generation = self.query_generation = 0
         self.connected = False
+        self.ac_online: bool | None = None
+        self.discharge_rate_w: float | None = None
 
     def snapshot(self) -> PowerSample:
         upower = self.upower if self.backend.alive() else Evidence(None, self.upower.at)
-        return PowerSample(self.clock(), self.inventory, upower, self.sysfs)
+        now = self.clock()
+        fresh = 0 <= now - self.sysfs.at <= 10
+        return PowerSample(now, self.inventory, upower, self.sysfs,
+                           self.ac_online if fresh else None, self.discharge_rate_w if fresh else None)
 
     def tick(self) -> PowerSample:
         now = self.clock()
@@ -241,7 +265,7 @@ class PowerMonitor:
             self.generation += 1
             self.upower = Evidence(None, now)
         if event or now >= self.next_sysfs:
-            self.inventory, self.sysfs = read_sysfs(self.root, now)
+            self.inventory, self.sysfs, self.ac_online, self.discharge_rate_w = read_sysfs(self.root, now)
             self.next_sysfs = now + 5
         if self.pending is not None and self.pending.done():
             if self.query_generation == self.generation and self.backend.alive():
@@ -255,11 +279,11 @@ class PowerMonitor:
 
     def run(self, stop: Event, emit: Callable[[PowerSample], None]) -> None:
         """Independent 50ms supervision, emits changes including stale/dead evidence."""
-        previous: tuple[bool | None, bool | None, bool | None] | None = None
+        previous: tuple[bool | None, bool | None, bool | None, bool | None, float | None] | None = None
         try:
             while not stop.is_set():
                 sample = self.tick()
-                values = (sample.battery_present, sample.upower, sample.sysfs)
+                values = (sample.battery_present, sample.upower, sample.sysfs, sample.ac_online, sample.discharge_rate_w)
                 if values != previous:
                     emit(sample)
                     previous = values

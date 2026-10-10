@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import tempfile
 import subprocess
+import tempfile
 import unittest
 from concurrent.futures import Future
 from pathlib import Path
@@ -13,6 +13,7 @@ from unittest.mock import patch
 
 from sparehash.controller_io import Observation, SampleId
 from sparehash.power import Evidence, Helpers, PowerMonitor, PowerSample, read_sysfs
+from tests.power_maintenance import MaintenanceTests as MaintenanceTests
 
 
 @final
@@ -141,7 +142,7 @@ class PowerTests(unittest.TestCase):
         for status in ("Charging", "Full", "Not charging"):
             _ = self.battery(status)
             # When
-            inventory, evidence = read_sysfs(self.root, 1)
+            inventory, evidence, _, _ = read_sysfs(self.root, 1)
             # Then
             self.assertIs(inventory.value, True)
             self.assertIs(evidence.value, True)
@@ -171,7 +172,7 @@ class PowerTests(unittest.TestCase):
         for kind in ("Mains", "USB", "USB_C", "USB_PD"):
             _ = self.supply("AC", (("type", kind), ("online", "1")))
             # When
-            _, evidence = read_sysfs(self.root, 0)
+            _, evidence, _, _ = read_sysfs(self.root, 0)
             # Then
             self.assertIs(evidence.value, False)
 
@@ -326,3 +327,24 @@ class PowerTests(unittest.TestCase):
             result = helper.query().result(timeout=1)
             # Then
             self.assertIsNone(result)
+
+    def test_emits_when_only_discharge_rate_changes(self) -> None:
+        # Given
+        battery = self.battery("Discharging")
+        _ = (battery / "power_now").write_text("179000")
+        self.ac()
+        stop = Event()
+        samples: list[PowerSample] = []
+        def emit(sample: PowerSample) -> None:
+            samples.append(sample)
+            if sample.upower is False and sample.discharge_rate_w == 0.179:
+                _ = (battery / "power_now").write_text("2000000")
+                self.now = 5
+            if sample.discharge_rate_w == 2.0 or len(samples) > 3:
+                stop.set()
+        # When
+        self.monitor.run(stop, emit)
+        # Then
+        self.assertEqual(samples[-1].discharge_rate_w, 2.0)
+        self.assertEqual(samples[-1].sysfs, samples[-2].sysfs)
+        self.assertEqual(samples[-1].ac_online, samples[-2].ac_online)

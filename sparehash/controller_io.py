@@ -16,6 +16,7 @@ from .ipc import (Command, DebugCommand, Document, IPCError, LifecycleBegin, Lif
                     LifecycleStatus, Outcome, Peer, ROOT_ONLY, Request, Uid, Verb, call)
 from .lifecycle_lease import LeaseError, Purpose, is_purpose
 from .state import BLOCKERS, BlockerState, StatePersistenceError
+from .power import Evidence, PowerSample, blocked
 
 Generation = NewType("Generation", int)
 SampleId = NewType("SampleId", int)
@@ -62,12 +63,15 @@ class Observation:
     sysfs: bool | None
     gaming: tuple[tuple[Uid, bool | None], ...]
     thermal: bool | None
+    ac_online: bool | None = None
+    discharge_rate_w: float | None = None
+    maintenance_mode: bool = False
 
     def blockers(self) -> tuple[tuple[str, bool], ...]:
-        battery = self.battery_present is not False and (
-            self.battery_present is None or self.upower is True or self.sysfs is True
-            or (self.upower is not False and self.sysfs is not False)
-        )
+        battery = blocked(PowerSample(self.at, Evidence(self.battery_present, self.at),
+                                      Evidence(self.upower, self.at), Evidence(self.sysfs, self.at),
+                                      self.ac_online, self.discharge_rate_w),
+                          maintenance_mode=self.maintenance_mode)
         return (("battery", battery), ("gaming", any(value is not False for _, value in self.gaming)),
                 ("thermal", self.thermal is not False))
 

@@ -53,7 +53,8 @@ class Providers:
         _ = self.worker.submit(self.collect, sample, deadline)
 
     def collect(self, sample: SampleId, deadline: float) -> None:
-        inventory, sysfs = power.read_sysfs(Path("/sys"), time.monotonic())
+        at = time.monotonic()
+        inventory, sysfs, ac_online, discharge_rate_w = power.read_sysfs(Path("/sys"), at)
         upower_future = self.monitor.backend.query()
         thermal_future = self.queries.submit(self.temperature)
         gaming_futures = tuple((user.uid, self.queries.submit(gaming.DEFAULT_PROBE.query, user)) for user in self.users)
@@ -72,7 +73,12 @@ class Providers:
             except TimeoutError:
                 value = None
             observations.append((uid, value))
-        observation = Observation(sample, time.monotonic(), inventory.value, on_battery, sysfs.value, tuple(observations), hot)
+        now = time.monotonic()
+        fresh = 0 <= now - at <= 10
+        observation = Observation(sample, now, inventory.credible(now), on_battery if fresh else None,
+                                  sysfs.credible(now), tuple(observations), hot,
+                                  ac_online if fresh else None, discharge_rate_w if fresh else None,
+                                  self.cfg.power.maintenance_mode)
         self.enqueue(lambda: self.finish(observation))
 
     def close(self) -> None:
@@ -161,7 +167,7 @@ def run() -> int:
             stop.set()
 
     def emit(sample: power.PowerSample) -> None:
-        safety.put(lambda: owner.safety("battery", sample.blocked))
+        safety.put(lambda: owner.safety("battery", power.blocked(sample, maintenance_mode=cfg.power.maintenance_mode)))
 
     def temperatures() -> None:
         prior: bool | None = None
