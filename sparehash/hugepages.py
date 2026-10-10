@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (c) 2026 SpareHash contributors
+
 """Serialized, best-effort 2MiB leases; trusted adapters own launch exclusion.
 
 Roots and ownership injection are construction-only, never IPC/environment input.
