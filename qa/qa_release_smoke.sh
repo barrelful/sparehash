@@ -87,38 +87,55 @@ hashing() {
     python3 -c '
 import json,os,pwd,subprocess,sys,time
 from pathlib import Path
+dbg=Path(os.environ.get("EVIDENCE_DIR","/var/tmp/sparehash-v010-evidence"))/"hashing-debug.log"
+def log(msg):
+    dbg.parent.mkdir(parents=True, exist_ok=True)
+    with dbg.open("a") as f:
+        f.write(f"[{time.time():.3f}] {msg}\n")
+log(f"START argv={sys.argv} cwd={os.getcwd()}")
 sys.path.insert(0,"/opt/sparehash/src")
 sys.path.append(sys.argv[1])
 from sparehash.xmrig_config import ApiError,read_token,summary
 from contention import Workload
 from lifecycle_check import prop,tasks,process_birth
 fixture=Path(sys.argv[4])/"xmrig.zero.json"
+log(f"fixture={fixture} exists={fixture.exists()}")
 raw=json.loads(fixture.read_text())
 assert raw["http"]["host"] == "127.0.0.1" and raw["http"]["enabled"] is True
 work=Workload(raw["http"]["port"],raw["http"]["access-token"])
+log(f"work port={work.port} token={work.token[:16]}...")
 pid=int(prop("sparehash-xmrig.service","MainPID")); birth=process_birth(pid)
 group=prop("sparehash-xmrig.service","ControlGroup")
+log(f"pid={pid} birth={birth} group={group}")
 assert pid>0 and birth and group.startswith("/") and group != "/"
 assert pid in tasks(Path("/sys/fs/cgroup")/group.lstrip("/"))
 uids=next(line.split()[1:] for line in Path(f"/proc/{pid}/status").read_text().splitlines() if line.startswith("Uid:"))
 assert all(int(uid)==pwd.getpwnam("xmrig").pw_uid and int(uid)>0 for uid in uids)
 listeners=subprocess.check_output(["ss","-ltnp"],text=True)
+log(f"ss-raw:\n{listeners}")
 api=[line.split()[3] for line in listeners.splitlines() if f"pid={pid}," in line]
+log(f"api addresses: {api}")
 assert api and all(address == f"127.0.0.1:{work.port}" for address in api)
-deadline=min(time.monotonic()+120,float(sys.argv[3])); before=None
+deadline=min(time.monotonic()+120,float(sys.argv[3])); before=None; iterations=0
 while time.monotonic()<deadline:
+    iterations+=1
     assert int(prop("sparehash-xmrig.service","MainPID"))==pid and process_birth(pid)==birth
     try:
         total=work.hashes()
-    except ApiError:
+    except Exception as e:
+        if iterations <= 3 or iterations % 10 == 0: log(f"iter={iterations} EXCEPTION {type(e).__name__}: {e}")
         time.sleep(.2); continue
+    if iterations <= 3 or iterations % 10 == 0: log(f"iter={iterations} total={total} before={before}")
     if before is not None and total>before:
+        log(f"PROGRESS {before}->{total}")
         with (Path(os.environ["EVIDENCE_DIR"])/"hashes.jsonl").open("a") as out:
             out.write(json.dumps({"checkpoint":sys.argv[2],"pid":pid,"birth":birth,"before":before,"after":total,"at":time.time(),"cgroup":group})+"\n")
         print(f"hash progress pid={pid} {before}->{total}"); break
     if before is None: before=total
     time.sleep(.5)
-else: raise SystemExit("FAIL: no same-PID hash progress within 120s")
+else:
+    log("FAIL: no same-PID hash progress within 120s")
+    raise SystemExit("FAIL: no same-PID hash progress within 120s")
 ' "$SCRIPT_DIR" "$CHECKPOINT" "$deadline" "$QA_ROOT"
 }
 blocked() { qa_wait_miner inactive "$2"; life blocked "$1" 1; }
