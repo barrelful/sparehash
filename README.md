@@ -1,8 +1,14 @@
 # SpareHash
 
+> **Experimental v0.1.0 software.** SpareHash is a young system-level project.
+> It has been tested on a limited set of Linux distributions. Review this
+> README, `SECURITY.md`, and the v1 limitations section before installing on a
+> machine you care about.
+
 SpareHash is a CPU-only Monero (RandomX) miner manager for Linux x86_64. It runs
-XMRig v1 in the background using spare CPU cycles, pausing automatically when
-games, thermal limits, or power conditions demand the hardware.
+[XMRig](https://xmrig.com/) in the background using spare CPU cycles, and
+pauses automatically when games, thermal limits, or power conditions demand the
+hardware.
 
 SpareHash is CPU-only. There is no GPU mining, no MSR helper, no kernel module,
 and no network or firewall policy change. The miner runs as a dedicated
@@ -10,12 +16,33 @@ unprivileged `xmrig` user, never as root.
 
 Licensed under the GNU General Public License v3.0 (GPLv3). See `LICENSE`.
 
-## Requirements
+## What SpareHash does and does not do
+
+- **Does:** install and manage an unprivileged XMRig service that mines only
+  when every safety blocker is clear.
+- **Does:** pause mining on battery, during GameMode sessions, above a thermal
+  threshold, or when you run `sparehash pause`.
+- **Does:** use kernel idle scheduling (`Nice=19`, `SCHED_IDLE`, cgroup idle
+  weights where supported) so normal foreground work always wins without
+  frequent stop/start cycles.
+- **Does:** verify XMRig downloads against a pinned GPG fingerprint and
+  SHA-256 checksum.
+- **Does:** keep the XMRig HTTP API on `127.0.0.1` only.
+- **Does not:** mine as root.
+- **Does not:** change DNS, firewall, SELinux, AppArmor, sysctl, or bootloader
+  settings.
+- **Does not:** enable MSR optimisation, GPU mining, or 1GiB hugepages in v1.
+- **Does not:** provide public pool presets or calculate mining profitability.
+
+## Supported platforms
 
 - Linux x86_64
-- systemd as PID 1
+- systemd as PID 1 (systemd 248+ recommended for `LoadCredential` support)
 - Python 3.11 or newer
-- No additional packages beyond what the target distribution provides
+- No additional Python packages required at runtime
+
+Primary testing target: recent Debian, Ubuntu, and Linux Mint. Other systemd
+distributions may work but are not guaranteed in v1.
 
 ## Quick start
 
@@ -27,8 +54,9 @@ sudo ./install.sh
 
 The installer walks you through an interactive setup: wallet address, pool
 host/port, CPU mode, thermal guard, hugepages, and gaming users. It creates the
-`xmrig` and `sparehash` system accounts, downloads and verifies XMRig v6.26.0
-from GitHub (pinned GPG fingerprint, SHA-256 checksum), writes configuration to
+`xmrig` and `sparehash` system accounts, selects the latest supported XMRig
+release from GitHub and verifies it (pinned GPG fingerprint, SHA-256 checksum),
+or reuses an already verified managed installation, writes configuration to
 `/etc/sparehash/`, installs two systemd units, and enables the controller.
 
 For unattended installs, supply a TOML answers file:
@@ -50,24 +78,28 @@ sparehash status
 sparehash status --json
 ```
 
+Mining does not begin instantly. The controller evaluates every blocker, waits
+for the configured minimum dwell (default 60 seconds), and only then requests a
+freshly authorized miner start.
+
 ## CLI reference
 
-Every command the CLI exposes:
+Every public command:
 
 | Command | Flags | Requires root | Description |
 |---|---|---|---|
-| `install` | `--answers FILE`, `--use-existing` | yes | Run the installer |
-| `uninstall` | `--purge` | yes | Remove SpareHash (not yet implemented in v1) |
+| `install` | `--answers FILE`, `--use-existing`, `--clear-lifecycle-latch` | yes | Run the installer |
+| `uninstall` | `--purge` | yes | Remove SpareHash; configuration retained unless `--purge` |
 | `status` | `--json` | no | Show controller, miner, blockers, power, thermal, hugepages, gaming, API |
 | `start` | | yes | Enable and start the controller (`systemctl enable --now`) |
 | `stop` | | yes | Stop controller and miner (does not disable; reboot can resume) |
 | `pause` | | no | Manually pause mining via controller IPC |
 | `resume` | | no | Clear manual pause (mining resumes only when all blockers are clear) |
 | `config show` | | no | Print current public configuration as JSON |
-| `config edit` | | yes | Re-run the wizard to update configuration; backs up and validates |
+| `config edit` | | yes | Unsupported in experimental v0.1.0; exits 2 without effects |
 | `logs` | `-f`, `--follow` | no | Stream the last 100 lines from both unit journals |
-| `benchmark` | | yes | Request a fixed 1M-mode benchmark from the controller |
-| `update` | | yes | Update XMRig to a newer verified release (not yet implemented in v1) |
+| `benchmark` | | yes | Unsupported in experimental v0.1.0; exits 2 without effects |
+| `update` | | yes | Unsupported in experimental v0.1.0; exits 2 without effects |
 | `gaming-start` | | no | Signal that a configured user started gaming |
 | `gaming-end` | | no | Signal that a configured user stopped gaming |
 | `debug set-blocker` | `NAME` | yes | Force a named blocker active (debugging only) |
@@ -79,8 +111,9 @@ not user-facing.
 
 ## Configuration
 
-The public configuration lives at `/etc/sparehash/config.toml`. Edit it through
-`sparehash config edit` (recommended) or by hand. All keys and their defaults:
+The public configuration lives at `/etc/sparehash/config.toml`. Use the installer
+wizard or an answers file to configure installation; `config show` is read-only.
+`config edit` is unsupported in v0.1.0. All keys and their defaults:
 
 ```toml
 version = 1
@@ -152,6 +185,24 @@ readiness. The miner unit (`sparehash-xmrig.service`) is `static`; it is started
 only by the controller wrapper, never directly. If the controller dies, the
 miner stops with it.
 
+### Why the miner unit is static
+
+`sparehash-xmrig.service` is `static` (not `enabled`) and has an
+`ExecCondition=+/usr/local/bin/sparehash __authorize_miner__` that runs as root.
+Before systemd ever starts XMRig, this condition asks the controller for a
+fresh, generation-scoped authorization. A direct `systemctl start
+sparehash-xmrig.service` therefore succeeds only when the controller would have
+started mining anyway. If the controller is down or any blocker is active, the
+condition fails and XMRig does not run.
+
+### Controller loss
+
+If the controller process crashes, is killed, or exits, systemd's `BindsTo=`
+relationship stops the miner unit. When the controller restarts, it re-evaluates
+every blocker before requesting any mining start. An active external lifecycle
+lease survives restart and keeps launches inhibited; readiness requires a fresh
+STOP completion with proof that the miner cgroup is empty.
+
 Soft workload contention is handled by kernel idle scheduling (`Nice=19`,
 `SCHED_IDLE`, conditional cgroup idle weights); the miner remains active but
 yields to foreground work. DNS resolution failure is a diagnostic hint shown in
@@ -190,6 +241,13 @@ gamemoderun %command%
 SpareHash does not perform blanket process detection. It checks only the
 configured accounts through the official GameMode socket.
 
+### Active session-bus requirement
+
+The gaming check runs `runuser -u <name> -- env DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/<uid>/bus gamemoded -s`.
+If the configured user is not logged in (no `/run/user/<uid>/bus` socket), the
+query is inconclusive and SpareHash inhibits mining. Add gaming users only if
+they will have an active graphical or session bus while playing.
+
 ### Group membership and `sg`
 
 The installer adds configured gaming users to the `sparehash` group so they can
@@ -220,14 +278,35 @@ Key constraints:
 
 ## Thermal guard
 
-When `thermal.enabled = true`, SpareHash discovers the CPU temperature sensor
+Thermal protection is off by default. When `thermal.enabled = true`, SpareHash discovers the CPU temperature sensor
 automatically. Supported drivers: `coretemp` (Intel), `k10temp` and `zenpower`
 (AMD). The guard uses hysteresis: mining pauses at `pause_c` (default 85 C) and
 resumes at `resume_c` (default 75 C).
 
-If the sensor becomes unreadable, the guard fails safe and blocks mining. The
+If no credible sensor exists or the sensor becomes unreadable, the enabled guard
+fails safe and blocks mining. The
 status output reports `thermal_status: UNAVAILABLE` when no credible sensor is
 found.
+
+## Lifecycle latch (reinstall behavior)
+
+Root uninstall works independently of controller IPC. It durably writes the
+retirement latch at `/var/lib/sparehash/lifecycle.json`, then stops/disables the
+controller, stops the miner, and requires empty-cgroup proof before receipt-owned
+removal. A partial failure after retirement leaves the system retired too.
+An existing uninstall sidecar lease is retained; no lease is required or created
+for offline uninstall. Configuration is retained by default.
+
+If you later want to reinstall after uninstall, opt in explicitly:
+
+```
+sudo ./install.sh --clear-lifecycle-latch
+```
+
+This clears the retained uninstall lease before removing the latch. An active
+update hold or an unreadable lease isn't cleared; a failure leaves the system
+retired. Never delete lifecycle records manually to bypass retirement.
+Inspect and resolve any partial-uninstall failure before opting into reinstall.
 
 ## DNS filtering
 
@@ -238,7 +317,8 @@ fails and a filtered DNS path is available, the status output includes a hint:
 dns_hint: Pool resolution failed; filtered DNS is possible; check resolver/network policy.
 ```
 
-No DNS policy is changed by SpareHash itself.
+No DNS policy is changed by SpareHash itself. If your DNS setup blocks the pool,
+you must add the pool domain to your resolver's allowlist yourself.
 
 ## Logs
 
@@ -255,16 +335,37 @@ query.
 
 ## Update and uninstall
 
-Update and uninstall commands are defined in the CLI but not yet implemented in
-v1. Running them returns exit code 2 with an "unavailable" message.
+`update`, `config edit`, and `benchmark` are unsupported in experimental v0.1.0.
+They refuse with exit code 2 before workflow effects. The underlying update
+sidecar lease still gates internal update operations and survives controller
+restart; it is not a supported public update workflow in this release.
 
-When implemented, `sparehash uninstall --purge` will remove all SpareHash files,
-units, and identities. Without `--purge`, configuration is retained.
+Remove SpareHash:
+
+```
+sudo sparehash uninstall
+```
+
+Configuration is retained by default. Remove everything including configuration
+with:
+
+```
+sudo sparehash uninstall --purge
+```
+
+Uninstall does not require a running controller or a successful IPC reply.
+After protected receipt/sidecar checks, it durably latches retirement, stops and
+disables the controller, stops the miner, and requires fresh empty-cgroup proof.
+It restores any owned hugepage lease,
+and removes only receipt-owned files, units, group memberships, and identities.
+The retained latch (and any existing uninstall lease) keeps the system retired
+if removal partially fails. An update hold or unreadable sidecar refuses removal
+before retirement or service changes.
 
 ## File layout
 
 | Path | Purpose |
-|---|---|
+|---|---|---|
 | `/opt/sparehash/src/` | Installed Python package |
 | `/opt/xmrig/current/` | Symlink to the active verified XMRig binary |
 | `/etc/sparehash/config.toml` | Public configuration (mode 0644) |
@@ -287,28 +388,113 @@ units, and identities. Without `--purge`, configuration is retained.
   XMRig config (both are hardcoded to disabled/zero)
 - No multi-NUMA automatic hugepage reservation
 - No 1GiB hugepage support
+- No profitability or electricity-cost calculation
 
 ## Known limitations
 
+- `config edit`, `update`, and `benchmark` are unsupported in v0.1.0.
 - The `systemd-run` isolated version probe has been observed to fail in certain
   VM environments where transient unit creation is restricted. The rest of the
-  post-install verification (marker, units, controller enabled, miner static,
-  loopback API, idle scheduler) still passes. Probe reliability under restricted
-  systemd managers remains an open TODO.
-- `sparehash update` and `sparehash uninstall` are not yet implemented.
+  post-install verification still passes.
+- Multi-NUMA hugepage allocation is not automatic.
+- Only Linux x86_64 is supported.
+- GameMode detection requires the configured user to have an active D-Bus
+  session bus.
+
+## Troubleshooting
+
+### `sparehash status` shows `controller: unavailable`
+
+The controller unit is not running. Check:
+
+```
+systemctl status sparehash.service
+sparehash logs
+```
+
+### `sparehash pause` or `sparehash gaming-start` says "socket access denied"
+
+Your user must be in the `sparehash` group to use the control socket. The
+installer adds configured gaming users; other users can be added manually:
+
+```
+sudo usermod -aG sparehash $USER
+```
+
+Then log out and back in, or use `sg sparehash -c "sparehash ..."`.
+
+### Mining never starts after `sparehash start`
+
+This is usually expected behavior. Check `sparehash status` for active blockers.
+A fresh install needs:
+
+1. controller to finish startup observations;
+2. the minimum dwell interval (default 60 s) after the last automatic stop;
+3. every blocker to be clear.
+
+A manual `sparehash pause` persists until `sparehash resume`.
+
+### `thermal_status: UNAVAILABLE`
+
+No supported CPU thermal sensor was found. SpareHash supports `coretemp`,
+`k10temp`, and `zenpower`. If thermal guard is disabled, this is informational.
+If enabled, mining is blocked because the sensor is unavailable.
+
+### `dns_hint` appears
+
+The pool hostname could not be resolved. Check connectivity and your DNS
+resolver. SpareHash does not change DNS settings.
+
+### `sparehash uninstall` fails with "lifecycle busy"
+
+An internal or older update operation may be holding
+the lease; the public update/config-edit/benchmark commands are unsupported in
+v0.1.0. Let an active operation finish, then retry. If it failed or is stuck,
+inspect `sparehash logs` and the lifecycle records before recovery. A controller
+restart doesn't clear an external hold, and the reinstall flag doesn't erase an
+update hold. Don't delete lifecycle files to bypass the safety barrier.
+
+### Reinstall says "this system was previously uninstalled"
+
+After resolving any partial-uninstall failure, explicitly opt into reinstall:
+
+```
+sudo ./install.sh --clear-lifecycle-latch
+```
+
+This clears both the retained uninstall lease and the retirement latch. Removing
+`lifecycle.json` alone isn't equivalent and may leave mining inhibited.
+
+## Profitability and electricity
+
+SpareHash does not calculate profitability, electricity cost, or expected
+revenue. CPU mining on many machines costs more in electricity than it earns in
+Monero. Before leaving SpareHash running continuously, estimate your power draw
+and local electricity rate. SpareHash's battery guard helps prevent laptop
+drain, but it does not make mining profitable.
 
 ## QA
 
 The `qa/` directory contains integration test suites and a README explaining
 which tests are destructive and must run only in a disposable VM. See
-`qa/README.md` for details.
+`qa/README.md` for details. **Do not run destructive QA scripts on a production
+machine.**
+
+`qa/qa_release_smoke.sh` is the required disposable-VM acceptance procedure for
+a frozen candidate SHA. It checks eight checkpoints through offline uninstall,
+using only synthetic local hashing on `127.0.0.1:3333` with zero donation.
+Real-pool mining is forbidden during QA. Passing unit tests does not establish
+VM acceptance; see `qa/README.md` for invocation and evidence requirements.
 
 ## Contributing
 
 SpareHash is licensed under the GPLv3. By contributing, you agree to license
-your work under the same license.
+your work under the same license. See `CONTRIBUTING.md` and `docs/architecture.md`
+for development setup and design invariants.
 
 ## Support
 
 SpareHash is experimental software. File issues against the repository. Do not
 contact upstream XMRig for SpareHash-specific problems.
+
+For security issues, see `SECURITY.md`.
