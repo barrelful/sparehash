@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (c) 2026 SpareHash contributors
+
 """Read-only status observations; no lifecycle, cache, or capability inference."""
 
 from __future__ import annotations
