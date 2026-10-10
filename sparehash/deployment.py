@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (c) 2026 SpareHash contributors
+
 """Root-controlled deployment I/O; explicit fixture roots never come from clients."""
 
 from __future__ import annotations
