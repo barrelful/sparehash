@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (c) 2026 SpareHash contributors
+
 """Fixed stack operations; manual state changes belong solely to controller IPC."""
 
 from __future__ import annotations

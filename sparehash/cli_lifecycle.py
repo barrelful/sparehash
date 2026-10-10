@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (c) 2026 SpareHash contributors
+
 """Root-only XMRig update over the controller lifecycle lease; no try-restart bypass."""
 
 from __future__ import annotations
@@ -22,7 +25,7 @@ from .xmrig_paths import PathTrust
 
 LEASE_TIMEOUT: Final = 30.0
 REQUEST_TIMEOUT: Final = 5.0
-POLL_INTERVAL: Final = 0.05
+POLL_INTERVAL: Final = 0.2
 _DEFAULT_TRUST: Final = PathTrust()
 
 
@@ -110,9 +113,13 @@ def update(*, geteuid: Callable[[], int] = os.geteuid, trust: PathTrust = _DEFAU
         if not end_update(client, token, "commit"):
             raise LifecycleError("end-update", "controller could not commit the lifecycle lease")
     except (OperationError, InstallError, DeploymentError, OSError, ValueError) as error:
-        if token is not None:
-            _ = end_update(client, token, "abort")
         print(f"sparehash: update: {error}", file=sys.stderr)
+        if token is not None:
+            try:
+                _ = end_update(client, token, "abort")
+            except LifecycleError as abort_error:
+                print(f"sparehash: update: abort unreachable; the controller retains the hold: {abort_error}",
+                      file=sys.stderr)
         return 1
     print(f"xmrig: updated to {installed.version}; controller re-evaluates before any restart.")
     return 0
