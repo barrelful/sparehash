@@ -7,12 +7,12 @@ import unittest
 import warnings
 from dataclasses import replace
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from sparehash.config import Config, Cpu, Gaming, Hugepages, Pool, Thermal, validate
 from sparehash.sysdetect import Capabilities
 from sparehash.thermal import SensorPath
-from sparehash.wizard import WizardError, load_answers, run_interactive
+from sparehash.wizard import WizardError, _Prompts, load_answers, run_interactive
 
 WALLET = "4" + "A" * 94
 ACCOUNT = pwd.getpwuid(0).pw_name
@@ -35,6 +35,17 @@ def _serialize(cfg: Config) -> str:
 
 
 class WizardTests(unittest.TestCase):
+    def test_boolean_when_enter_pressed_uses_displayed_default(self) -> None:
+        for default, suffix in ((True, "[Y/n]: "), (False, "[y/N]: ")):
+            # Given
+            input_fn = Mock(return_value="")
+            prompts = _Prompts(input_fn, lambda _: None)
+            # When
+            result = prompts.boolean("Choice", default)
+            # Then
+            self.assertEqual(result, default)
+            self.assertTrue(input_fn.call_args.args[0].endswith(suffix))
+
     def scripted(self, replies: list[str], *, caps: Capabilities = CAPS,
                  sensor: SensorPath | None = SENSOR, username: str | None = None) -> Config:
         pending = iter(replies)

@@ -174,7 +174,7 @@ class _Prompts:
                 raise WizardError("choice", "answer yes or no")
             return choices[value.lower()]
 
-        return self.ask(prompt, parse)
+        return self.ask(f"{prompt} {'[Y/n]' if default else '[y/N]'}: ", parse)
 
 
 def run_interactive(caps: Capabilities, input_fn: Callable[[str], str],
@@ -192,7 +192,7 @@ def run_interactive(caps: Capabilities, input_fn: Callable[[str], str],
     wallet = prompts.ask(f"Monero mainnet wallet [{seed.wallet}]: ", lambda v: _wallet(v or seed.wallet))
     host = prompts.ask(f"Custom pool hostname [{seed.pool.host}]: ", lambda v: _hostname(v or seed.pool.host))
     port = prompts.integer(f"Pool port [{seed.pool.port}]: ", (1, 65535, seed.pool.port))
-    tls = prompts.boolean(f"Pool TLS [{seed.pool.tls}]: ", seed.pool.tls)
+    tls = prompts.boolean("Pool TLS", seed.pool.tls)
     worker_default = seed.pool.worker if current else socket.gethostname()
 
     def worker(value: str) -> str:
@@ -230,7 +230,7 @@ def run_interactive(caps: Capabilities, input_fn: Callable[[str], str],
     if sensor is None:
         output_fn("Thermal guard UNAVAILABLE/disabled: no credible CPU sensor detected.")
     else:
-        thermal = replace(thermal, enabled=prompts.boolean("Enable CPU thermal guard: ", thermal.enabled))
+        thermal = replace(thermal, enabled=prompts.boolean("Enable CPU thermal guard", thermal.enabled))
     default_user = " ".join(seed.gaming.users)
     if username and current is None:
         try:
@@ -242,7 +242,7 @@ def run_interactive(caps: Capabilities, input_fn: Callable[[str], str],
     gaming = replace(seed.gaming, enabled=False)
     if dict(caps.helper_paths).get("gamemoded") is None:
         output_fn("GameMode was not detected; gaming pause requires GameMode installation and user-session hooks.")
-    if prompts.boolean("Enable gaming guard: ", seed.gaming.enabled):
+    if prompts.boolean("Enable gaming guard", seed.gaming.enabled):
         users = prompts.ask(f"Gaming account names [{default_user}]: ", lambda v: _users(v or default_user))
         gaming = Gaming(users=users)
     hugepages = seed.hugepages
@@ -253,7 +253,7 @@ def run_interactive(caps: Capabilities, input_fn: Callable[[str], str],
     if caps.numa_nodes is None or len(caps.numa_nodes) != 1:
         output_fn(NUMA_NOTICE)
     else:
-        enabled = prompts.boolean("Enable dynamic 2 MiB hugepages: ", hugepages.enabled)
+        enabled = prompts.boolean("Enable dynamic 2 MiB hugepages", hugepages.enabled)
         pages = prompts.integer(f"2 MiB page count [{hugepages.pages}]: ", (1, 2**31 - 1, hugepages.pages)) if enabled else hugepages.pages
         hugepages = Hugepages(enabled, pages)
     return _checked(replace(seed, wallet=wallet, pool=pool, donate_level=donate,
