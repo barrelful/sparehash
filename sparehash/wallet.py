@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (c) 2026 SpareHash contributors
+
 """Format-only validation for Monero mainnet addresses.
 
 This checks length, prefix, and alphabet only. It does not validate Monero's
