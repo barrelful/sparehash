@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- GameMode setup now asks for explicit consent before installing the package,
+  verifies binaries and user session availability, warns when group membership
+  requires a re-login, and disables gaming protection (with a clear warning)
+  when setup cannot complete or when using a noninteractive `--answers` install.
+- `sparehash status` now requires root; non-root calls show an actionable
+  message and exit nonzero. IPC failures are distinguished from a genuinely
+  stopped controller (`ipc-error` vs `unavailable`).
 - Enabled thermal protection now fails closed when no credible sensor exists.
 - Root uninstall works without controller IPC, retiring before service stops and
   requiring empty-cgroup proof before receipt-owned removal.
