@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Eight sequential acceptance checkpoints. DESTRUCTIVE: disposable systemd VM only.
 set -Eeuo pipefail
+export PYTHONDONTWRITEBYTECODE=1
 if [[ ${SPAREHASH_QA_DISPOSABLE_VM:-} != YES ]]; then
     echo 'FAIL: SPAREHASH_QA_DISPOSABLE_VM=YES is required (disposable VM only)' >&2
     exit 1
@@ -198,16 +199,25 @@ for name in ("xmrig.zero.json", "xmrig.zero.runtime.json"):
     assert data["pools"]
     assert all(p["url"] == "127.0.0.1:3333" and p["tls"] is False for p in data["pools"])
 PY
-qa_restart; hashing; pass
+qa_restart
+CONTROLLER_PID=$(systemctl show sparehash.service -p MainPID --value)
+[[ $CONTROLLER_PID =~ ^[1-9][0-9]*$ ]]
+nsenter --target "$CONTROLLER_PID" --mount -- bash -euc '
+    [[ $(cat /sys/class/power_supply/BAT0/present) == 0 ]]
+    [[ $(cat /sys/class/power_supply/BAT0/status) == Full ]]
+    [[ $(cat /sys/class/power_supply/AC/online) == 1 ]]
+    echo "controller namespace: BAT0/present=0, status=Full, AC/online=1"
+' | tee "$EVIDENCE_DIR/baseline-namespace.log"
+hashing; pass
 
 begin PAUSE/RESUME
 qa_stop_deadline; "$CONTROLLER_BIN" pause; blocked manual 5
 "$CONTROLLER_BIN" resume; hashing; pass
 
 begin BATTERY
-qa_stop_deadline; qa_power_files 0 Discharging; qa_upower true true; blocked battery 5
+qa_stop_deadline; qa_power_files 1 Discharging 0; qa_upower true true; blocked battery 5
 "$CONTROLLER_BIN" pause
-qa_power_files 0 Full; qa_upower false true
+qa_power_files 1 Full 1; qa_upower false true
 python3 -c 'import sys; sys.path.insert(0,"/opt/sparehash/src"); sys.path.append(sys.argv[1]); from lifecycle_check import wait_until,status; wait_until(lambda: "battery" not in status().blockers,10)' "$SCRIPT_DIR"
 life blocked manual 5; life hold manual
 "$CONTROLLER_BIN" resume; hashing; pass
@@ -222,6 +232,16 @@ printf '74000\n' > "$QA_ROOT/hwmon/hwmon0/temp1_input"
 qa_restart; hashing; pass
 
 begin GAMING
+python3 - "$QA_ROOT/config.test.toml" <<'PY'
+import sys
+from pathlib import Path
+path = Path(sys.argv[1])
+data = path.read_text()
+updated = data.replace("[gaming]\nenabled = false", "[gaming]\nenabled = true")
+assert updated != data, "gaming.enabled = false not found in test config"
+path.write_text(updated)
+PY
+qa_restart; hashing
 qa_stop_deadline 20; qa_gamemode_state active; blocked gaming 20
 qa_gamemode_state inactive; hashing
 qa_stop_deadline; "$CONTROLLER_BIN" gaming-start; blocked gaming 5

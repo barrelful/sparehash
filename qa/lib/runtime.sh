@@ -293,9 +293,10 @@ qa_cleanup() {
 
 qa_power_files() {
     # Keep the mounted root and device directory inodes stable across cases.
+    # Optional third argument models AC availability; default preserves callers.
     mkdir -p "$QA_ROOT/power/AC" "$QA_ROOT/power/BAT0"
     printf 'Mains\n' > "$QA_ROOT/power/AC/type"
-    printf '1\n' > "$QA_ROOT/power/AC/online"
+    printf '%s\n' "${3:-1}" > "$QA_ROOT/power/AC/online"
     printf 'Battery\n' > "$QA_ROOT/power/BAT0/type"
     printf '%s\n' "$1" > "$QA_ROOT/power/BAT0/present"
     printf '%s\n' "$2" > "$QA_ROOT/power/BAT0/status"
