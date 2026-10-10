@@ -3,6 +3,8 @@
 
 """Root install orchestration; never start mining during deployment."""
 
+# allow: SIZE_OK — ordered ledger deployment and retirement preflight stay in one installer entrypoint.
+
 from __future__ import annotations
 
 import argparse
@@ -181,7 +183,7 @@ def bootstrap(ledger: Ledger, created: tuple[str, ...]) -> None:
 
 
 def execute(tree: Tree, caps: Capabilities, cfg: config.Config, *, use_existing: bool = False,
-            bootstrap_created: tuple[str, ...] = ()) -> None:
+            bootstrap_created: tuple[str, ...] = (), interactive: bool = True) -> None:
     preflight(tree, caps)
     ledger = Ledger(tree)
     established = tree.path("/etc/sparehash/config.toml").exists()
@@ -212,7 +214,14 @@ def execute(tree: Tree, caps: Capabilities, cfg: config.Config, *, use_existing:
     finally:
         _ = signal.setitimer(signal.ITIMER_REAL, *timer)
         _ = signal.signal(signal.SIGALRM, alarm)
-    result = gaming_install.configure(cfg, caps, lambda _: False, ledger=ledger)
+    def consent(prompt: str) -> bool:
+        choices = {"": True, "y": True, "yes": True, "n": False, "no": False}
+        while True:
+            answer = input(prompt).strip().lower()
+            if answer in choices:
+                return choices[answer]
+            print("Please answer yes or no.")
+    result = gaming_install.configure(cfg, caps, consent if interactive else None, ledger=ledger)
     cfg = result.config
     install_config(ledger, cfg, token)
     install_units(ledger, caps)
@@ -274,7 +283,8 @@ def main(argv: Sequence[str] | None = None, *, geteuid: Callable[[], int] = os.g
             _ = tree.read("/etc/sparehash/config.toml")
             current = wizard.load_answers(existing, caps)
         cfg = wizard.load_answers(args.answers, caps) if args.answers else wizard.run_interactive(caps, input, print, current=current)
-        execute(tree, caps, cfg, use_existing=args.use_existing, bootstrap_created=tuple(args.bootstrap_created or ()))
+        execute(tree, caps, cfg, use_existing=args.use_existing, bootstrap_created=tuple(args.bootstrap_created or ()),
+                interactive=(args.answers is None))
         return 0
     except KeyboardInterrupt:
         print("sparehash: interrupted; pending ledger retained for inspection", file=sys.stderr)

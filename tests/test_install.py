@@ -52,7 +52,8 @@ class InstallTests(unittest.TestCase):
             return "static" if argv[2] == "sparehash-xmrig.service" else "enabled"
         return ""
 
-    def execute(self, cfg: config.Config | None = None, verify_error: systemd.UnitError | None = None) -> None:
+    def execute(self, cfg: config.Config | None = None, verify_error: systemd.UnitError | None = None,
+                *, interactive: bool = True) -> None:
         original = os.fchown
         def chown(fd: int, uid: int, gid: int) -> None:
             _ = uid, gid
@@ -71,7 +72,60 @@ class InstallTests(unittest.TestCase):
               mock.patch.object(systemd, "verify_units", return_value="", side_effect=verify_error),
               mock.patch.object(xmrig_config, "validate_rendered"),
               mock.patch.object(install, "checked", side_effect=self.checked)):
-            install.execute(self.tree, capabilities(), cfg or self.cfg)
+            install.execute(self.tree, capabilities(), cfg or self.cfg, interactive=interactive)
+
+    def test_gaming_consent_when_interactive_retries_and_honors_answer(self) -> None:
+        # Given
+        cfg = replace(self.cfg, gaming=config.Gaming(True))
+        with mock.patch("sparehash.gaming_install.resolve_helper", return_value=None), mock.patch(
+            "builtins.input", side_effect=["perhaps", " NO "]
+        ) as prompt:
+            # When
+            self.execute(cfg)
+        # Then
+        self.assertEqual(prompt.call_count, 2)
+        self.assertFalse(config.load(self.tree.path("/etc/sparehash/config.toml")).gaming.enabled)
+
+    def test_gaming_consent_when_noninteractive_never_reads_stdin(self) -> None:
+        # Given
+        cfg = replace(self.cfg, gaming=config.Gaming(True))
+        with mock.patch("sparehash.gaming_install.resolve_helper", return_value=None), mock.patch(
+            "builtins.input", side_effect=AssertionError("uncontrolled stdin")
+        ):
+            # When
+            self.execute(cfg, interactive=False)
+        # Then
+        self.assertFalse(config.load(self.tree.path("/etc/sparehash/config.toml")).gaming.enabled)
+
+    def test_gaming_consent_when_enter_pressed_accepts_install(self) -> None:
+        # Given
+        cfg = replace(self.cfg, gaming=config.Gaming(True))
+        with mock.patch("sparehash.gaming_install.resolve_helper", side_effect=lambda name: f"/usr/bin/{name}"), mock.patch(
+            "sparehash.gaming_install._run"
+        ) as run, mock.patch("builtins.input", return_value=""):
+            # When
+            self.execute(cfg)
+        # Then
+        self.assertEqual(run.call_args.args[0], ("/usr/bin/apt-get", "install", "-y", "gamemode"))
+        self.assertTrue(config.load(self.tree.path("/etc/sparehash/config.toml")).gaming.enabled)
+
+    def test_main_when_answers_supplied_disables_interactive_consent(self) -> None:
+        for argv, interactive in (([], True), (["--answers", "answers.toml"], False)):
+            # Given
+            with self.subTest(interactive=interactive), mock.patch.object(install, "is_retired", return_value=False), mock.patch.object(
+                install.platform, "machine", return_value="x86_64"
+            ), mock.patch.object(install, "Tree", return_value=self.tree), mock.patch.object(
+                install, "preflight"
+            ), mock.patch.object(Capabilities, "detect", return_value=capabilities()), mock.patch.object(
+                install.wizard, "load_answers", return_value=self.cfg
+            ), mock.patch.object(install.wizard, "run_interactive", return_value=self.cfg), mock.patch.object(
+                install, "execute"
+            ) as execute:
+                # When
+                code = install.main(argv, geteuid=lambda: 0)
+                # Then
+                self.assertEqual(code, 0)
+                self.assertEqual(execute.call_args.kwargs["interactive"], interactive)
 
     def test_ready_install_when_fresh(self) -> None:
         # Given / When
@@ -230,7 +284,7 @@ class InstallTests(unittest.TestCase):
         ledger = Ledger(self.tree)
         with mock.patch("sparehash.gaming_install.grp.getgrnam", return_value=group):
             ledger.initialize()
-            with mock.patch("sparehash.gaming_install.pwd.getpwnam", return_value=account), mock.patch.object(gaming_install, "resolve_helper", return_value="/usr/bin/gamemoded"):
+            with mock.patch("sparehash.gaming_install.pwd.getpwnam", return_value=account), mock.patch.object(gaming_install, "resolve_helper", return_value="/usr/bin/gamemoded"), mock.patch("sparehash.gaming.Probe.query", return_value=False):
                 # When
                 result = gaming_install.configure(cfg, caps, lambda _: False, ledger=ledger)
         # Then
