@@ -1,24 +1,27 @@
-"""Root-only uninstall: lease-held, receipt-authoritative, fail-closed on partial failure."""
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (c) 2026 SpareHash contributors
+
+"""Root-only uninstall: controller-independent, receipt-authoritative, fail-closed."""
 
 from __future__ import annotations
 
 import os
-import secrets
 import sys
 import time
 from collections.abc import Callable
 from contextlib import ExitStack
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Final, assert_never
+from typing import Final
 
 from . import ipc, lifecycle
-from .cli_lifecycle import LifecycleError, acquire, await_ready, end_update
+from .cli_lifecycle import LifecycleError
 from .cli_ops import Client, OperationError
 from .deployment import DeploymentError, Tree, checked
 from .hugepages import LeaseManager
 from .install_manifest import StoreContext, locked_store
 from .lifecycle import retire
+from .lifecycle_lease import LeaseError, LeaseStore
 from .runtime_jobs import empty
 from .xmrig_ledger import Artifact, GroupIdentity, Installer, UserIdentity
 from .xmrig_layout import InstallError
@@ -93,16 +96,22 @@ def _remove_accounts(run: Callable[[tuple[str, ...]], None], installer: Installe
     for membership in installer.memberships:
         if membership.added:
             run(("/usr/bin/gpasswd", "-d", membership.user, membership.group))
+    # Remove users before groups so that a user's primary group can be deleted.
     for identity in installer.identities:
         if not identity.created:
             continue
-        match identity:
-            case UserIdentity():
-                run(("/usr/sbin/userdel", identity.name))
-            case GroupIdentity():
+        if isinstance(identity, UserIdentity):
+            run(("/usr/sbin/userdel", identity.name))
+    for identity in installer.identities:
+        if not identity.created:
+            continue
+        if isinstance(identity, GroupIdentity):
+            try:
                 run(("/usr/sbin/groupdel", identity.name))
-            case _:
-                assert_never(identity)
+            except DeploymentError as error:
+                # userdel removes a user's primary group automatically; exit 6 means already gone.
+                if "exited 6:" not in str(error):
+                    raise
 
 
 def uninstall(*, purge: bool = False, geteuid: Callable[[], int] = os.geteuid, trust: PathTrust = _DEFAULT_TRUST,
@@ -115,14 +124,12 @@ def uninstall(*, purge: bool = False, geteuid: Callable[[], int] = os.geteuid, t
         return 2
     infra = infrastructure or Infrastructure()
     tree = Tree(trust.root, trust.uid)
-    token: str | None = None
     try:
         installer = _receipts(trust)
-        token = acquire(client, request_id or secrets.token_hex(16), purpose="uninstall")
-        await_ready(client, token, clock=clock, pause=pause)
-        if not end_update(client, token, "commit"):
-            raise LifecycleError("end-update", "controller could not retire the lifecycle lease")
-        token = None
+        lease = LeaseStore(lifecycle_path.parent / "lifecycle-lease.json").load()
+        if lease is not None and lease.purpose != "uninstall":
+            raise LeaseError(f"active {lease.purpose} hold retained; uninstall refused")
+        retire(lifecycle_path)
         infra.run(("/usr/bin/systemctl", "disable", "--now", "sparehash.service"))
         infra.run(("/usr/bin/systemctl", "stop", "sparehash-xmrig.service"))
         if not infra.cgroup_empty():
@@ -136,11 +143,8 @@ def uninstall(*, purge: bool = False, geteuid: Callable[[], int] = os.geteuid, t
         _remove_owned_files(tree, installer, purge)
         _remove_accounts(infra.run, installer)
         infra.run(("/usr/bin/systemctl", "daemon-reload"))
-    except (OperationError, LifecycleError, InstallError, DeploymentError, OSError) as error:
-        if token is not None:
-            _ = end_update(client, token, "abort")
+    except (OperationError, LifecycleError, LeaseError, InstallError, DeploymentError, OSError) as error:
         print(f"sparehash: uninstall: {error}", file=sys.stderr)
         return 1
-    retire(lifecycle_path)
     print("SpareHash removed." if purge else "SpareHash removed; configuration retained.")
     return 0
