@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (c) 2026 SpareHash contributors
+
 """GameMode observations; hook identity and state belong to the IPC/controller.
 
 Run observations on provider workers, never the safety selector. Supply the
