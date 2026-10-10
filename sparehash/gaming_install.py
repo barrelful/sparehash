@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (c) 2026 SpareHash contributors
+
 """Installer-only GameMode consent and account integration; no runtime semantics."""
 
 from __future__ import annotations
