@@ -57,7 +57,16 @@ host/port, CPU mode, thermal guard, hugepages, and gaming users. It creates the
 `xmrig` and `sparehash` system accounts, selects the latest supported XMRig
 release from GitHub and verifies it (pinned GPG fingerprint, SHA-256 checksum),
 or reuses an already verified managed installation, writes configuration to
-`/etc/sparehash/`, installs two systemd units, and enables the controller.
+`/etc/sparehash/`, and installs two systemd units. It then asks:
+
+- `Start SpareHash automatically at boot? [Y/n]:`
+- `Start SpareHash controller now? [Y/n]:`
+
+Enter accepts Yes for each. No to boot startup disables the controller unit;
+No to starting now leaves a fresh installation inactive (it does not stop an
+already-running controller on reinstall). The installer never enables or starts
+the miner directly. Its final summary reports boot startup, controller activity,
+and whether mining is blocked (or unknown if controller status is unavailable).
 
 For unattended installs, supply a TOML answers file:
 
@@ -65,7 +74,9 @@ For unattended installs, supply a TOML answers file:
 sudo ./install.sh --answers answers.toml
 ```
 
-After install, the controller is enabled but not started. Start it with:
+In `--answers` mode, both startup choices default to Yes without reading stdin:
+the controller is enabled at boot and started immediately. If you declined
+startup interactively, you can enable and start it later with:
 
 ```
 sudo sparehash start
@@ -135,6 +146,9 @@ custom_json = ""             # required when mode = "custom"; must be a JSON obj
 enabled = false
 pause_c = 85                 # pause mining at or above this temperature
 resume_c = 75                # resume when cooled below this (must be < pause_c)
+
+[power]
+maintenance_mode = false     # opt-in AC maintenance discharge exception, at most 1W
 
 [gaming]
 enabled = true
@@ -224,7 +238,17 @@ Both are consulted independently. The policy is conservative:
   treated as unknown.
 
 The status output reports the current power state, including battery presence,
-UPower and sysfs evidence with freshness indicators, and the UPS guard status.
+UPower and sysfs evidence with freshness indicators, `ac_online`,
+`discharge_rate_w`, and the UPS guard status.
+
+Optional `[power] maintenance_mode = true` allows tiny firmware maintenance
+discharge only when fresh UPower reports **not on battery**, sysfs reports
+Discharging, an external AC supply is online, and the measured total battery
+rate is **at most 1W**. Typical laptop idle draw is far higher; firmware trickle
+is usually well under 1W. Unplugged AC, missing rates, significant discharge,
+UPower on-battery, and unknown/stale inventory still block mining. The default
+is `false`, preserving the conservative policy. This section is also accepted
+in TOML answers files.
 
 ## GameMode and gaming hooks
 
