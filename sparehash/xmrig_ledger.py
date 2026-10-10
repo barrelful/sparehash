@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (c) 2026 SpareHash contributors
+
 """Immutable installer receipt vocabulary and JSON boundary primitives.
 
 Artifact IDs are fixed deployment paths or gaming-{ini,backup,config-directory}:USER.
