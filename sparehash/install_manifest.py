@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (c) 2026 SpareHash contributors
+
 """Pinned canonical-manifest storage; directory flock owns the entire transaction.
 
 Production uses root:sparehash. Explicit temporary-root contexts are test seams,
