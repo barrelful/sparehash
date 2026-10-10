@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Installation now asks separately about boot startup and starting the controller
+  immediately (both default Yes; unattended `--answers` installs use both defaults),
+  verifies the selected states, and summarizes activity and mining blockers.
+  The miner remains static and is never enabled or started by the installer.
+- Added opt-in `[power] maintenance_mode = true` for AC-connected firmware
+  maintenance discharge of at most 1W when UPower confirms AC operation.
+  Conservative defaults and fail-closed unknown/stale evidence are preserved;
+  status includes AC online state and battery discharge rate.
 - GameMode setup now asks for explicit consent before installing the package,
   verifies binaries and user session availability, warns when group membership
   requires a re-login, and disables gaming protection (with a clear warning)
