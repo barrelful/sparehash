@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (c) 2026 SpareHash contributors
+
 """Central pure blocker registry with persisted manual pause state."""
 
 from __future__ import annotations
