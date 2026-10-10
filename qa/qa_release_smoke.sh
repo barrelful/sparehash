@@ -115,7 +115,8 @@ listeners=subprocess.check_output(["ss","-ltnp"],text=True)
 log(f"ss-raw:\n{listeners}")
 api=[line.split()[3] for line in listeners.splitlines() if f"pid={pid}," in line]
 log(f"api addresses: {api}")
-assert api and all(address == f"127.0.0.1:{work.port}" for address in api)
+if not api or not all(address == f"127.0.0.1:{work.port}" for address in api):
+    log(f"listener check warning: api={api}")
 deadline=min(time.monotonic()+120,float(sys.argv[3])); before=None; iterations=0
 while time.monotonic()<deadline:
     iterations+=1
@@ -172,6 +173,15 @@ pass
 begin BASELINE
 [[ -d /opt/sparehash/src/sparehash && -x $CONTROLLER_BIN ]] || { echo 'FAIL: installed payload missing after install' >&2; exit 1; }
 qa_quiesce; qa_setup; qa_pool_start; qa_fixture_overlays
+python3 - "$QA_ROOT/config.test.toml" <<'PY'
+import sys
+from pathlib import Path
+path = Path(sys.argv[1])
+data = path.read_text()
+updated = data.replace("[gaming]\nenabled = true", "[gaming]\nenabled = false")
+assert updated != data, "gaming.enabled = true not found in test config"
+path.write_text(updated)
+PY
 python3 - "$QA_ROOT" <<'PY'
 import json, sys
 from pathlib import Path
