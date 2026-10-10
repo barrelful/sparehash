@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (c) 2026 SpareHash contributors
+
 """Bounded, read-only detection of host capabilities.
 
 All external helpers are resolved from a fixed system PATH and run without a
