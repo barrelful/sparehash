@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (c) 2026 SpareHash contributors
+
 """Bounded HTTPS-only XMRig release transport (stdlib, no artifact execution)."""
 from __future__ import annotations
 
