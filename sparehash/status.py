@@ -19,7 +19,8 @@ from typing import Final, Protocol
 
 from . import ipc, xmrig_config
 from .config import ConfigError, load
-from .paths import XMRIG_JSON
+from .layout import Layout
+from .paths import XMRIG_JSON, physical_path
 from .power import Evidence, Helpers, PowerSample, read_sysfs
 from .thermal import SensorReadError, find_sensor, read_celsius
 
@@ -140,11 +141,17 @@ def miner_summary(port: int, token_reader: Callable[[], str] = xmrig_config.read
         return StatusSnapshot(api='unavailable')
 
 
-def protected_token() -> str:
-    """Pin a regular root-owned non-public credential file before existing parser."""
+def protected_token(layout: Layout | None = None) -> str:
+    """Pin a regular root-owned non-public credential file before existing parser.
+
+    The credential lives outside any redirectable prefix, so the injected layout
+    is honored for the descriptor-anchored open without changing the logical
+    display path.
+    """
     import stat
 
-    fd = os.open(XMRIG_JSON, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    fd = os.open(physical_path(XMRIG_JSON, Path('/'), layout),
+                 os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     with os.fdopen(fd, 'rb') as source:
         info = os.fstat(source.fileno())
         if info.st_uid != 0 or info.st_mode & 0o027 or not stat.S_ISREG(info.st_mode):
@@ -156,6 +163,7 @@ def protected_token() -> str:
 class LiveProvider:
     controller_reader: Callable[[], ipc.Document] = lambda: ipc.call({'cmd': 'status'}, timeout=1)
     resolver: Callable[[str], bool] = resolve_pool
+    layout: Layout | None = None
 
     def snapshot(self) -> StatusSnapshot:
         try:
@@ -215,7 +223,7 @@ class LiveProvider:
             cfg = load()
         except (OSError, ConfigError):
             return result
-        api = miner_summary(cfg.api.port, protected_token) if running else StatusSnapshot()
+        api = miner_summary(cfg.api.port, lambda: protected_token(self.layout)) if running else StatusSnapshot()
         return replace(result, api=api.api, hashrate=api.hashrate, pool=api.pool,
                        miner='running' if running and api.api == 'available' else result.miner,
                        hugepages_target=cfg.hugepages.pages,
@@ -251,7 +259,8 @@ def format_status(snapshot: StatusSnapshot, json_output: bool = False) -> str:
     return '\n'.join(f'{name}: {json.dumps(value)}' for name, value in decode_json(rendered).items()) + '\nMSR: unavailable in v1'
 
 
-def run(json_output: bool = False, provider: Provider | None = None) -> int:
-    snapshot = (provider if provider is not None else LiveProvider()).snapshot()
+def run(json_output: bool = False, provider: Provider | None = None, *,
+        layout: Layout | None = None) -> int:
+    snapshot = (provider if provider is not None else LiveProvider(layout=layout)).snapshot()
     print(format_status(snapshot, json_output))
     return {'unavailable': 3, 'ipc-error': 1}.get(snapshot.controller, 0)

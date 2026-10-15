@@ -16,6 +16,8 @@ from pathlib import Path
 from typing import Callable, Final
 from uuid import uuid4
 
+from .layout import Layout
+from .paths import physical_path, pin_prefix
 from .xmrig_ledger import Artifact, Json, mapping
 from .xmrig_paths import PathTrust
 
@@ -66,12 +68,12 @@ def _read_pinned(fd: int, limit: int) -> bytes:
     return b"".join(chunks)
 
 
-def binary(value: str) -> Path:
+def binary(value: str, *, layout: Layout | None = None) -> Path:
     path = Path(value)
     if not path.is_absolute() or path.name != "xmrig" or ".." in path.parts:
         raise DeploymentError("binary", "expected a protected absolute xmrig path")
     with ExitStack() as stack:
-        parent = Tree().pin(stack, str(path.parent))
+        parent = Tree(layout=layout).pin(stack, str(path.parent))
         fd = os.open(path.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent)
         _ = stack.callback(os.close, fd)
         info = os.fstat(fd)
@@ -84,21 +86,21 @@ def binary(value: str) -> Path:
 class Tree:
     root: Path = Path("/")
     uid: int = 0
+    layout: Layout | None = None
 
     def path(self, name: str) -> Path:
-        return self.root / name.removeprefix("/")
+        return physical_path(self.root / name.removeprefix("/"), self.root, self.layout)
 
     @property
     def trust(self) -> PathTrust:
-        return PathTrust(self.root, self.uid)
+        return PathTrust(self.root, self.uid, self.layout)
 
     def pin(self, stack: ExitStack, name: str) -> int:
         path = Path(name)
         if not path.is_absolute() or ".." in path.parts:
             raise DeploymentError("path", "expected fixed absolute deployment path")
-        fd = os.open(self.root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
-        _ = stack.callback(os.close, fd)
-        for component in (*path.parts[1:], ""):
+        fd, components = pin_prefix(stack, self.root / name.removeprefix("/"), self.root, self.layout)
+        for component in (*components, ""):
             info = os.fstat(fd)
             if info.st_uid != self.uid or info.st_mode & 0o022:
                 raise DeploymentError("ownership", f"unsafe ancestor of {name}")

@@ -8,13 +8,14 @@ from __future__ import annotations
 import os
 from collections.abc import Callable
 from contextlib import ExitStack
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Final, Protocol
 
 from .controller_io import Generation, LifecycleBusy
 from .install_manifest import StoreContext, StoreError, locked_store
+from .layout import Layout, LayoutError
 from .xmrig_manifest import ManifestError, format_manifest
 from .xmrig_archive import ArchiveError, extract_archive, remove_tree
 from .xmrig_layout import (
@@ -211,29 +212,45 @@ def _install(request: InstallRequest, context: InstallContext, *, prune: bool) -
     return _run_gated(context.gate, mutate)
 
 
-def install_release(request: InstallRequest, context: InstallContext = _DEFAULT_CONTEXT) -> Installed:
+def _with_layout(context: InstallContext, layout: Layout | None) -> InstallContext:
+    """Overlay an injected pinned layout onto the context's trust."""
+    if layout is None or context.trust.layout is layout:
+        return context
+    return replace(context, trust=replace(context.trust, layout=layout))
+
+
+def install_release(request: InstallRequest, context: InstallContext = _DEFAULT_CONTEXT, *,
+                    layout: Layout | None = None) -> Installed:
     """Install a signed release into an absent managed root; never prunes."""
-    return _install(request, context, prune=False)
+    return _install(request, _with_layout(context, layout), prune=False)
 
 
-def update_flow(request: InstallRequest, context: InstallContext = _DEFAULT_CONTEXT) -> Installed:
+def update_flow(request: InstallRequest, context: InstallContext = _DEFAULT_CONTEXT, *,
+                layout: Layout | None = None) -> Installed:
     """Install a signed release under an injected lifecycle lease, then prune owned old versions."""
-    return _install(request, context, prune=True)
+    return _install(request, _with_layout(context, layout), prune=True)
 
 
-def current_binary(trust: PathTrust = _DEFAULT_TRUST) -> Path | None:
+def current_binary(trust: PathTrust = _DEFAULT_TRUST, *,
+                   layout: Layout | None = None) -> Path | None:
     """Return the manifest-authorized current binary path, or None when unmanaged."""
-    return trust.authorized_current(trust.marker_path, trust.manifest_path)
+    effective = trust if layout is None else replace(trust, layout=layout)
+    try:
+        return effective.authorized_current(effective.marker_path, effective.manifest_path)
+    except LayoutError:
+        return None
 
 
-def rollback(trust: PathTrust = _DEFAULT_TRUST, *, gate: UpdateGate | None = None) -> Installed:
+def rollback(trust: PathTrust = _DEFAULT_TRUST, *, gate: UpdateGate | None = None,
+             layout: Layout | None = None) -> Installed:
     """Under an injected lease, point current at the previous version and remove the rejected one."""
     if gate is None:
         raise InstallError("gate", "rollback requires an injected lifecycle gate; no files changed")
+    effective = trust if layout is None else replace(trust, layout=layout)
 
     def mutate() -> Installed:
         try:
-            return _rollback(trust)
+            return _rollback(effective)
         except StoreError as error:
             raise CollisionError(error.stage, error.detail) from error
         except ManifestError as error:

@@ -14,6 +14,7 @@ from typing import Final
 
 from .deployment import DeploymentError, Tree
 from .install_manifest import StoreContext, locked_store
+from .layout import Layout
 from .xmrig_archive import remove_tree
 from .xmrig_layout import CollisionError, current_target, open_managed_root, verify_binary
 from .xmrig_ledger import Artifact, Installer, PACKAGE_DIR, TEMPLATE_DIR, fixed_target, leaf_identity
@@ -23,6 +24,13 @@ LEAF_DIRS: Final = (PACKAGE_DIR, TEMPLATE_DIR)
 PRUNE_DIRS: Final = (PACKAGE_DIR, TEMPLATE_DIR, "/opt/sparehash/src", "/opt/sparehash")
 CONTAINER_CHILDREN: Final = {"/opt/sparehash": frozenset(("src",)),
                              "/opt/sparehash/src": frozenset(("sparehash", "systemd"))}
+
+
+def _with_layout(trust: PathTrust, layout: Layout | None) -> PathTrust:
+    """Overlay an injected pinned layout onto the trust used for removal."""
+    if layout is None or trust.layout is layout:
+        return trust
+    return replace(trust, layout=layout)
 
 
 def _validate_tree(fd: int, uid: int) -> None:
@@ -41,24 +49,26 @@ def _validate_tree(fd: int, uid: int) -> None:
                 raise CollisionError("ownership", "version tree contains linked or special content")
 
 
-def remove_owned_versions(trust: PathTrust) -> tuple[str, ...]:
+def remove_owned_versions(trust: PathTrust, *, layout: Layout | None = None) -> tuple[str, ...]:
     """Use the canonical store lock and pinned root; retain all installer receipts."""
+    effective = _with_layout(trust, layout)
     with ExitStack() as stack:
-        store = stack.enter_context(locked_store(StoreContext(trust)))
+        store = stack.enter_context(locked_store(StoreContext(effective)))
         prior = store.read()
         if prior is None:
             raise CollisionError("manifest", "no manifest authority for XMRig removal")
-        root_fd, parent = open_managed_root(trust, stack, create=False)
+        root_fd, parent = open_managed_root(effective, stack, create=False)
         if root_fd is None:
             if prior.manifest.versions:
                 raise CollisionError("root", "manifest references a missing managed root")
             return ()
-        manifest = trust.manifest()
+        manifest = effective.manifest()
         if manifest is None or manifest != prior.manifest:
             raise CollisionError("marker", "valid protected marker and manifest are required")
         names = manifest.names
         target = current_target(root_fd)
-        if target is not None and trust.authorized_current(trust.marker_path, trust.manifest_path) is None:
+        if target is not None and effective.authorized_current(
+                effective.marker_path, effective.manifest_path) is None:
             raise CollisionError("current", "current is not manifest-authorized")
         allowed = {*names, MARKER_NAME}
         if target is not None:
@@ -70,17 +80,17 @@ def remove_owned_versions(trust: PathTrust) -> tuple[str, ...]:
             with ExitStack() as version:
                 _ = version.callback(os.close, child)
                 info = os.fstat(child)
-                if info.st_uid != trust.uid or info.st_mode & 0o022:
+                if info.st_uid != effective.uid or info.st_mode & 0o022:
                     raise CollisionError("ownership", "version directory is foreign or writable")
-                _validate_tree(child, trust.uid)
-                verify_binary(root_fd, name, trust.uid)
+                _validate_tree(child, effective.uid)
+                verify_binary(root_fd, name, effective.uid)
         for name in names:
             remove_tree(root_fd, name)
         if target is not None:
             os.unlink("current", dir_fd=root_fd)
         os.unlink(MARKER_NAME, dir_fd=root_fd)
         os.fsync(root_fd)
-        os.rmdir(trust.managed_root.name, dir_fd=parent)
+        os.rmdir(effective.managed_root.name, dir_fd=parent)
         os.fsync(parent)
         store.write(replace(manifest, versions=()))
         return names
@@ -131,11 +141,12 @@ def _allowed_children(directory: str, leaves: dict[str, Artifact]) -> frozenset[
     return {Path(path).name for path in leaves if str(Path(path).parent) == directory}
 
 
-def remove_leaf_receipts(trust: PathTrust) -> tuple[str, ...]:
+def remove_leaf_receipts(trust: PathTrust, *, layout: Layout | None = None) -> tuple[str, ...]:
     """Remove only created package/template file receipts after a full preflight of every container."""
-    tree = Tree(trust.root, trust.uid)
+    effective = _with_layout(trust, layout)
+    tree = Tree(effective.root, effective.uid, effective.layout)
     with ExitStack() as stack:
-        store = stack.enter_context(locked_store(StoreContext(trust)))
+        store = stack.enter_context(locked_store(StoreContext(effective)))
         prior = store.read()
         if prior is None or prior.manifest.installer is None:
             raise CollisionError("receipt", "no per-file installer receipts; reinstall before removal")

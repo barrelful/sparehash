@@ -8,7 +8,7 @@ from __future__ import annotations
 import os
 import stat
 from contextlib import ExitStack
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Final, assert_never
 from uuid import uuid4
 
@@ -16,6 +16,8 @@ from .xmrig_archive import DIR_MODE, DIRECTORY_FLAGS, remove_tree
 from .xmrig_paths import MANIFEST_ROOT, MARKER_NAME, Manifest, PathTrust
 from .xmrig_manifest import format_manifest as format_manifest
 from .install_manifest import ManifestStore
+from .layout import Layout
+from .paths import pin_prefix
 
 CURRENT_NAME: Final = "current"
 BINARY_NAME: Final = "xmrig"
@@ -44,12 +46,17 @@ def _require_owned(fd: int, uid: int, what: str) -> None:
         raise CollisionError("ownership", f"{what} is not a protected owned directory")
 
 
-def open_managed_root(trust: PathTrust, stack: ExitStack, *, create: bool) -> tuple[int | None, int]:
-    """Pin the managed root and its parent; create only when explicitly allowed."""
-    fd = os.open(trust.root, DIRECTORY_FLAGS)
-    _ = stack.callback(os.close, fd)
+def open_managed_root(trust: PathTrust, stack: ExitStack, *, create: bool,
+                      layout: Layout | None = None) -> tuple[int | None, int]:
+    """Pin the managed root and its parent; create only when explicitly allowed.
+
+    ``layout`` overrides the trust's pinned layout, letting a caller thread one
+    probed layout through every managed-tree operation.
+    """
+    effective = trust if layout is None or layout is trust.layout else replace(trust, layout=layout)
+    fd, parts = pin_prefix(stack, effective.managed_root, effective.root, effective.layout)
     parent_fd = fd
-    for part in trust.managed_root.relative_to(trust.root).parts:
+    for part in parts:
         created = False
         parent_fd = fd
         try:
@@ -63,7 +70,7 @@ def open_managed_root(trust: PathTrust, stack: ExitStack, *, create: bool) -> tu
         except OSError as exc:
             raise CollisionError("root", f"managed root path is unsafe: {exc}") from exc
         _ = stack.callback(os.close, fd)
-        _require_owned(fd, trust.uid, "managed root")
+        _require_owned(fd, effective.uid, "managed root")
         if created:
             os.fchmod(fd, DIR_MODE)
     return fd, parent_fd

@@ -15,6 +15,7 @@ from typing import Final
 
 from . import config
 from .deployment import ENV, LOAD_JSON, DeploymentError, Tree, binary as binary
+from .layout import Layout
 from .xmrig_ledger import integer, keys, mapping, text
 
 DIRECTORY: Final = "/run/sparehash-miner"
@@ -23,22 +24,23 @@ FALLBACK: Final = "/etc/sparehash/xmrig.runtime.json"
 BENCHMARK: Final = DIRECTORY + "/benchmark.json"
 
 
-def publish(cfg: config.Config, generation: int, mode: str) -> None:
+def publish(cfg: config.Config, generation: int, mode: str, *,
+            layout: Layout | None = None) -> None:
     if mode not in {"mine", "benchmark"}:
         raise DeploymentError("operation", "unsupported mode")
     gid = pwd.getpwnam("xmrig").pw_gid
-    tree = Tree()
+    tree = Tree(layout=layout)
     with ExitStack() as stack:
         fd = tree.pin(stack, DIRECTORY)
         os.fchown(fd, 0, gid)
         os.fchmod(fd, 0o750)
     target = FALLBACK if mode == "mine" else BENCHMARK
-    executable = binary(cfg.xmrig.binary)
+    executable = binary(cfg.xmrig.binary, layout=layout)
     if mode == "benchmark":
         from .xmrig_config import render_config, read_token
         from .install_xmrig import dry_run
 
-        document = render_config(cfg, read_token(), executable, runner=dry_run)
+        document = render_config(cfg, read_token(), executable, runner=dry_run, layout=layout)
         document["pools"] = []
         document["http"] = {"enabled": False}
         tree.write(BENCHMARK, ((json.dumps(document) + "\n").encode(), 0o640, gid))
@@ -46,8 +48,8 @@ def publish(cfg: config.Config, generation: int, mode: str) -> None:
     tree.write(SPEC, ((json.dumps(document) + "\n").encode(), 0o640, gid))
 
 
-def protected(name: str, gid: int) -> bytes:
-    tree = Tree()
+def protected(name: str, gid: int, *, layout: Layout | None = None) -> bytes:
+    tree = Tree(layout=layout)
     with ExitStack() as stack:
         parent = tree.pin(stack, str(Path(name).parent))
         info = os.stat(Path(name).name, dir_fd=parent, follow_symlinks=False)
@@ -63,22 +65,22 @@ def protected(name: str, gid: int) -> bytes:
     return data
 
 
-def miner() -> int:
+def miner(*, layout: Layout | None = None) -> int:
     try:
         account = pwd.getpwnam("xmrig")
         if os.geteuid() == 0 or os.geteuid() != account.pw_uid:
             raise DeploymentError("identity", "miner execution requires the unprivileged xmrig identity")
-        document = mapping(LOAD_JSON(protected(SPEC, account.pw_gid)))
+        document = mapping(LOAD_JSON(protected(SPEC, account.pw_gid, layout=layout)))
         keys(document, "generation mode binary config")
         _ = integer(document["generation"])
         mode = text(document["mode"])
         if mode not in {"mine", "benchmark"}:
             raise DeploymentError("operation", "unrecognized mode")
-        cfg_data = Tree().read("/etc/sparehash/config.toml")
+        cfg_data = Tree(layout=layout).read("/etc/sparehash/config.toml")
         if cfg_data is None:
             raise DeploymentError("config", "missing public configuration")
         cfg = config.load()
-        executable = binary(text(document["binary"]))
+        executable = binary(text(document["binary"]), layout=layout)
         if str(executable) != cfg.xmrig.binary:
             raise DeploymentError("operation", "binary differs from the protected configuration")
         target = BENCHMARK if mode == "benchmark" else FALLBACK

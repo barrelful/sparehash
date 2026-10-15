@@ -22,6 +22,7 @@ from urllib.error import HTTPError, URLError
 from urllib.request import HTTPHandler, OpenerDirector, ProxyHandler, Request
 
 from .config import Config, ConfigError, validate
+from .layout import Layout
 from .paths import XMRIG_CURRENT, XMRIG_JSON
 from .xmrig_paths import PathTrust, snapshot
 
@@ -119,11 +120,13 @@ def new_token() -> str:
 
 
 def render_config(cfg: Config, token: str, binary: Path, *,
-                  runner: IsolatedRunner | None = None) -> JsonObject:
+                  runner: IsolatedRunner | None = None,
+                  layout: Layout | None = None) -> JsonObject:
     """Render approved keys; custom mode validates existing binaries in isolation.
 
     The keyword-only runner extends the plan's three-argument interface: a
     present binary without that adapter must fail closed, not run directly.
+    An injected ``layout`` pins the managed-current snapshot to a probed root.
     """
     errors = validate(cfg)
     if errors:
@@ -151,22 +154,22 @@ def render_config(cfg: Config, token: str, binary: Path, *,
                  "access-token": _token(token), "restricted": True},
     }
     if mode is CpuMode.CUSTOM and os.path.lexists(binary):
-        validate_rendered(rendered, binary, runner)
+        validate_rendered(rendered, binary, runner, layout=layout)
     return rendered
 
 
-def validate_rendered(rendered: JsonObject, binary: Path, runner: IsolatedRunner | None) -> None:
+def validate_rendered(rendered: JsonObject, binary: Path, runner: IsolatedRunner | None, *,
+                      layout: Layout | None = None, trust: PathTrust | None = None) -> None:
     """Explicit later-install hook for validating every mode; no direct execution."""
     if runner is None:
         raise RenderError("isolated unprivileged dry-run runner is required")
+    selected = trust if trust is not None else PathTrust(layout=layout)
     with tempfile.TemporaryDirectory(prefix="sparehash-dry-run-") as directory:
         private = Path(directory)
         if binary == XMRIG_CURRENT:
-            trust = PathTrust()
-            copied = trust.current_snapshot(private, Path("/opt/xmrig/.sparehash-managed"),
-                                             Path("/var/lib/sparehash/install-manifest.json"))
+            copied = selected.current_snapshot(private, selected.marker_path, selected.manifest_path)
         else:
-            copied = snapshot(binary, private_dir=private)
+            copied = snapshot(binary, private_dir=private, layout=layout)
         if copied is None:
             raise RenderError("binary could not be safely snapshotted")
         # No real API credential is handed to potentially hostile candidate code.
@@ -193,13 +196,14 @@ def validate_rendered(rendered: JsonObject, binary: Path, runner: IsolatedRunner
 
 
 def write_xmrig_json(cfg: Config, token: str, dest: Path = XMRIG_JSON, *,
-                     runner: IsolatedRunner | None = None) -> None:
+                     runner: IsolatedRunner | None = None,
+                     layout: Layout | None = None) -> None:
     """Atomically publish root:sparehash 0640 or surface permission errors.
 
     No ownership downgrade on unprivileged hosts; injected tests use their own
     identity for fchown only, never a production fallback.
     """
-    rendered = render_config(cfg, token, Path(cfg.xmrig.binary), runner=runner)
+    rendered = render_config(cfg, token, Path(cfg.xmrig.binary), runner=runner, layout=layout)
     gid = grp.getgrnam("sparehash").gr_gid
     temporary: Path | None = None
     try:

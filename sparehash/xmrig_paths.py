@@ -12,6 +12,8 @@ from contextlib import ExitStack
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Final
+from .layout import Layout, LayoutError
+from .paths import physical_path, pin_prefix
 
 from .xmrig_manifest import MANIFEST_ROOT as MANIFEST_ROOT, Manifest as Manifest, VersionRecord as VersionRecord, parse_manifest as parse_manifest
 
@@ -23,11 +25,9 @@ MARKER_NAME: Final = ".sparehash-managed"
 MANIFEST_RELPATH: Final = Path("var/lib/sparehash/install-manifest.json")
 
 
-def _open_path(stack: ExitStack, path: Path, anchor: Path) -> list[int]:
+def _open_path(stack: ExitStack, path: Path, anchor: Path, layout: Layout | None = None) -> list[int]:
     """Pin every component; the anchor is / in production, a fixture root in tests."""
-    parts = path.relative_to(anchor).parts
-    current = os.open(anchor, DIRECTORY_FLAGS)
-    _ = stack.callback(os.close, current)
+    current, parts = pin_prefix(stack, path, anchor, layout)
     descriptors = [current]
     for index, part in enumerate(parts):
         flags = FILE_FLAGS if index == len(parts) - 1 else DIRECTORY_FLAGS
@@ -73,15 +73,15 @@ def _snapshot_fd(source_fd: int, private: Path, parents: list[int]) -> tuple[Pat
         raise
 
 
-def snapshot(path: Path, *, private_dir: Path) -> tuple[Path, bool] | None:
+def snapshot(path: Path, *, private_dir: Path, layout: Layout | None = None) -> tuple[Path, bool] | None:
     """Snapshot an ordinary absolute candidate without following any symlink."""
     if not path.is_absolute() or path == Path("/"):
         return None
     try:
         with ExitStack() as stack:
-            descriptors = _open_path(stack, path, Path("/"))
+            descriptors = _open_path(stack, path, Path("/"), layout)
             return _snapshot_fd(descriptors[-1], private_dir, descriptors[:-1])
-    except OSError:
+    except (OSError, LayoutError):
         return None
 
 
@@ -91,10 +91,16 @@ class PathTrust:
 
     root: Path = Path("/")
     uid: int = 0
+    layout: Layout | None = None
+
+    @property
+    def logical_managed_root(self) -> Path:
+        """The logical (unredirected) managed root used for identity comparison."""
+        return self.root / "opt/xmrig"
 
     @property
     def managed_root(self) -> Path:
-        return self.root / "opt/xmrig"
+        return physical_path(self.logical_managed_root, self.root, self.layout)
 
     @property
     def marker_path(self) -> Path:
@@ -115,14 +121,14 @@ class PathTrust:
                 return None
             manifest_text = self._metadata(self.manifest_path)
             return None if manifest_text is None else parse_manifest(manifest_text)
-        except (OSError, UnicodeError, ValueError):
+        except (OSError, UnicodeError, ValueError, LayoutError):
             return None
 
     def _metadata(self, path: Path, parent_fd: int | None = None) -> str | None:
         """Read only the pinned, fstat-verified regular file and protected parents."""
         with ExitStack() as stack:
             if parent_fd is None:
-                descriptors = _open_path(stack, path, self.root)
+                descriptors = _open_path(stack, path, self.root, self.layout)
             else:
                 file_fd = os.open(path.name, FILE_FLAGS, dir_fd=parent_fd)
                 _ = stack.callback(os.close, file_fd)
@@ -153,16 +159,16 @@ class PathTrust:
             if not recorded or root_fd is not None:
                 return recorded
             with ExitStack() as stack:
-                descriptors = _open_path(stack, path, self.root)
+                descriptors = _open_path(stack, path, self.root, self.layout)
                 infos = tuple(os.fstat(fd) for fd in descriptors)
                 return stat.S_ISREG(infos[-1].st_mode) and all(self._protected(info) for info in infos)
-        except (OSError, UnicodeError, ValueError):
+        except (OSError, UnicodeError, ValueError, LayoutError):
             return False
 
     def _current_handles(self, stack: ExitStack, marker: Path, manifest: Path) -> tuple[
             Path, list[int], int, int, tuple[os.stat_result, ...], os.stat_result, os.stat_result] | None:
         """Pin and authorize the manifest-recorded relative current link and its binary."""
-        descriptors = _open_path(stack, self.managed_root / ".", self.root)
+        descriptors = _open_path(stack, self.managed_root / ".", self.root, self.layout)
         root_fd = descriptors[-1]
         before = tuple(os.fstat(fd) for fd in descriptors)
         if (not stat.S_ISDIR(before[-1].st_mode)
@@ -194,7 +200,7 @@ class PathTrust:
                 if not _unchanged((*before, version_info, file_info), [*descriptors, version_fd, file_fd]):
                     return None
                 return resolved
-        except (OSError, ValueError):
+        except (OSError, ValueError, LayoutError):
             return None
 
     def current_snapshot(self, private: Path, marker: Path, manifest: Path) -> tuple[Path, bool] | None:
@@ -211,5 +217,5 @@ class PathTrust:
                     result[0].unlink(missing_ok=True)
                     return None
                 return (result[0], False) if result is not None else None
-        except (OSError, ValueError):
+        except (OSError, ValueError, LayoutError):
             return None
