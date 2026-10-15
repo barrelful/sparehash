@@ -40,8 +40,8 @@ class Ledger:
             if manifest.installer is None:
                 store.write(replace(manifest, installer=Installer(1, "installing", (), (), (), ())))
 
-    def begin(self, target: str, operation: Operation) -> int:
-        with locked_store(self.context()) as store:
+    def begin(self, target: str, operation: Operation, context: StoreContext | None = None) -> int:
+        with locked_store(self.context() if context is None else context) as store:
             prior = store.read()
             manifest = prior.manifest if prior else Manifest("/opt/xmrig", ())
             installer = manifest.installer or Installer(1, "installing", (), (), (), ())
@@ -56,8 +56,8 @@ class Ledger:
             store.write(updated)
             return sequence
 
-    def applied(self, sequence: int, receipts: tuple[Receipt, ...] = ()) -> None:
-        with locked_store(self.context()) as store:
+    def applied(self, sequence: int, receipts: tuple[Receipt, ...] = (), context: StoreContext | None = None) -> None:
+        with locked_store(self.context() if context is None else context) as store:
             prior = store.read()
             if prior is None or prior.manifest.installer is None:
                 raise DeploymentError("ledger", "write-ahead record disappeared")
@@ -82,9 +82,10 @@ class Ledger:
                               actions=tuple(replace(item, state="applied") if item.sequence == sequence else item for item in installer.actions))
             store.write(replace(prior.manifest, installer=updated))
 
-    def perform(self, action: tuple[str, Operation], mutate: Callable[[], tuple[Receipt, ...]]) -> None:
-        sequence = self.begin(*action)
-        self.applied(sequence, mutate())
+    def perform(self, action: tuple[str, Operation], mutate: Callable[[], tuple[Receipt, ...]],
+                context: StoreContext | None = None) -> None:
+        sequence = self.begin(*action, context=context)
+        self.applied(sequence, mutate(), context=context)
 
     def ready(self) -> None:
         with locked_store(self.context()) as store:

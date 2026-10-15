@@ -68,6 +68,20 @@ already-running controller on reinstall). The installer never enables or starts
 the miner directly. Its final summary reports boot startup, controller activity,
 and whether mining is blocked (or unknown if controller status is unavailable).
 
+Like the interactive installer, `--answers` mode stages the selected local
+release only after it records explicit consent; `--yes` approves those effects
+without prompting. Review proposed effects first without any host change:
+
+```
+sudo ./install.sh --preflight
+sudo ./install.sh --preflight --json
+```
+
+`--preflight` performs no host mutation: no transient probe, directory, account,
+latch, download or source-copy effect. It prints a readiness report (human or
+`--json`) and exits 0 when ready, 2 for an unsupported host and 1 for a refused
+or unsafe host.
+
 For unattended installs, supply a TOML answers file:
 
 ```
@@ -99,7 +113,7 @@ Every public command:
 
 | Command | Flags | Requires root | Description |
 |---|---|---|---|
-| `install` | `--answers FILE`, `--use-existing`, `--clear-lifecycle-latch` | yes | Run the installer |
+| `install` | `--answers FILE`, `--preflight`, `--json`, `--yes`, `--use-existing`, `--clear-lifecycle-latch` | yes | Run the installer |
 | `uninstall` | `--purge` | yes | Remove SpareHash; configuration retained unless `--purge` |
 | `status` | `--json` | yes | Show controller, miner, blockers, power, thermal, hugepages, gaming, API |
 | `start` | | yes | Enable and start the controller (`systemctl enable --now`) |

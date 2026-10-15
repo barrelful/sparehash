@@ -138,12 +138,14 @@ class CliTests(unittest.TestCase):
         dispatch.assert_not_called()
 
     def test_installer_discovers_future_python_modules(self) -> None:
-        """Given a package containing a future module, installer iteration is not frozen."""
-        installer = (Path(__file__).parents[1] / "install.sh").read_text()
+        """Given a package containing a future module, bootstrap discovery is not frozen."""
+        from sparehash import bootstrap
 
-        self.assertIn('for source_file in "$source_package"/*.py; do', installer)
-        self.assertIn("file=${source_file##*/}", installer)
-        self.assertNotIn("for file in __init__.py __main__.py paths.py", installer)
+        source = Path(bootstrap.__file__).read_text(encoding="utf-8")
+        self.assertIn("PACKAGE_LEAF", source)
+        self.assertIn("iterdir", source)
+        self.assertNotIn("for file in __init__.py __main__.py", source)
+        self.assertIsNotNone(bootstrap.PACKAGE_LEAF.fullmatch("power.py"))
         with tempfile.TemporaryDirectory() as temporary_directory:
             package_directory = Path(temporary_directory) / "sparehash"
             package_directory.mkdir()
@@ -155,11 +157,9 @@ class CliTests(unittest.TestCase):
 
     def test_python_shim_forwards_arguments_in_temporary_package(self) -> None:
         """Given an isolated package, generated Python shim forwards argv to main."""
-        installer = (Path(__file__).parents[1] / "install.sh").read_text()
-        marker = "<<'PYTHON_SHIM'\n"
-        shim_start = installer.index(marker) + len(marker)
-        shim_end = installer.index("\nPYTHON_SHIM", shim_start)
-        template = installer[shim_start:shim_end]
+        from sparehash import bootstrap
+
+        template = bootstrap.SHIM_TEMPLATE
         self.assertEqual(template.splitlines()[0], "#!/usr/bin/python3")
 
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -171,7 +171,7 @@ class CliTests(unittest.TestCase):
                 "import sys\nraise SystemExit(0 if sys.argv[1:] == ['status', '--fixture'] else 1)\n",
             )
             shim_path = temporary_path / "sparehash-cli"
-            _ = shim_path.write_text(template.replace("/opt/sparehash/src", temporary_directory))
+            _ = shim_path.write_text(template.format(source=str(temporary_path)))
 
             result = subprocess.run(
                 [sys.executable, str(shim_path), "status", "--fixture"],
