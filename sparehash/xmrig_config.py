@@ -119,11 +119,13 @@ def new_token() -> str:
 
 
 def render_config(cfg: Config, token: str, binary: Path, *,
-                  runner: IsolatedRunner | None = None) -> JsonObject:
+                  runner: IsolatedRunner | None = None, probe_uid: int = 65534) -> JsonObject:
     """Render approved keys; custom mode validates existing binaries in isolation.
 
     The keyword-only runner extends the plan's three-argument interface: a
     present binary without that adapter must fail closed, not run directly.
+    ``probe_uid`` is the resolved non-root probe identity the installer expects;
+    it is threaded into the isolated attestation instead of being guessed here.
     """
     errors = validate(cfg)
     if errors:
@@ -151,11 +153,12 @@ def render_config(cfg: Config, token: str, binary: Path, *,
                  "access-token": _token(token), "restricted": True},
     }
     if mode is CpuMode.CUSTOM and os.path.lexists(binary):
-        validate_rendered(rendered, binary, runner)
+        validate_rendered(rendered, binary, runner, probe_uid=probe_uid)
     return rendered
 
 
-def validate_rendered(rendered: JsonObject, binary: Path, runner: IsolatedRunner | None) -> None:
+def validate_rendered(rendered: JsonObject, binary: Path, runner: IsolatedRunner | None,
+                      *, probe_uid: int = 65534) -> None:
     """Explicit later-install hook for validating every mode; no direct execution."""
     if runner is None:
         raise RenderError("isolated unprivileged dry-run runner is required")
@@ -180,12 +183,12 @@ def validate_rendered(rendered: JsonObject, binary: Path, runner: IsolatedRunner
             os.fchmod(output.fileno(), 0o600)
             _ = output.write(json.dumps(safe, indent=2, allow_nan=False))
         try:
-            result = runner(DryRunRequest(copied[0], config))
+            result = runner(DryRunRequest(copied[0], config, probe_uid))
         except (OSError, subprocess.SubprocessError, TimeoutError):
             raise RenderError("isolated dry-run failed or timed out; no root fallback") from None
-        if (result.effective_uid != 65534 or not result.inputs_readable
+        if (result.effective_uid != probe_uid or not result.inputs_readable
                 or not set(PROPERTIES).issubset(result.properties)):
-            raise RenderError("dry-run did not attest required nonroot isolation/readable inputs")
+            raise RenderError("dry-run did not attest the expected nonroot isolation/readable inputs")
         if result.returncode != 0:
             # Suppress runner-supplied raw exceptions; sanitize bounded stderr too.
             detail = re.sub(r"[0-9a-fA-F]{64}", "[redacted]", result.stderr[:4096])
@@ -193,13 +196,13 @@ def validate_rendered(rendered: JsonObject, binary: Path, runner: IsolatedRunner
 
 
 def write_xmrig_json(cfg: Config, token: str, dest: Path = XMRIG_JSON, *,
-                     runner: IsolatedRunner | None = None) -> None:
+                     runner: IsolatedRunner | None = None, probe_uid: int = 65534) -> None:
     """Atomically publish root:sparehash 0640 or surface permission errors.
 
     No ownership downgrade on unprivileged hosts; injected tests use their own
     identity for fchown only, never a production fallback.
     """
-    rendered = render_config(cfg, token, Path(cfg.xmrig.binary), runner=runner)
+    rendered = render_config(cfg, token, Path(cfg.xmrig.binary), runner=runner, probe_uid=probe_uid)
     gid = grp.getgrnam("sparehash").gr_gid
     temporary: Path | None = None
     try:
