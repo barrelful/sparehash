@@ -68,15 +68,30 @@ already-running controller on reinstall). The installer never enables or starts
 the miner directly. Its final summary reports boot startup, controller activity,
 and whether mining is blocked (or unknown if controller status is unavailable).
 
-For unattended installs, supply a TOML answers file:
+For unattended installs, supply a TOML answers file and explicit `--yes`
+consent for the disclosed effects:
 
 ```
-sudo ./install.sh --answers answers.toml
+sudo ./install.sh --answers answers.toml --yes
 ```
 
-In `--answers` mode, both startup choices default to Yes without reading stdin:
-the controller is enabled at boot and started immediately. If you declined
-startup interactively, you can enable and start it later with:
+`--answers` without `--yes` refuses before any effect is applied. `--no-start`
+and `--no-enable` skip the two startup prompts (defaulting each to No) so QA or
+an operator can stage a service without starting the controller.
+
+A dry, read-only preflight reports support, readiness, and gaming coverage
+without changing the host, in human or `--json` form:
+
+```
+sudo ./install.sh --preflight
+sudo ./install.sh --preflight --json
+```
+
+A `READY` report exits 0; `ACTION_REQUIRED` exits 2; refused or inconclusive
+outcomes exit 1. In `--answers` mode, both startup choices default to Yes
+without reading stdin: the controller is enabled at boot and started
+immediately. If you declined startup interactively, you can enable and start it
+later with:
 
 ```
 sudo sparehash start
@@ -99,7 +114,7 @@ Every public command:
 
 | Command | Flags | Requires root | Description |
 |---|---|---|---|
-| `install` | `--answers FILE`, `--use-existing`, `--clear-lifecycle-latch` | yes | Run the installer |
+| `install` | `--answers FILE`, `--yes`, `--no-start`, `--no-enable`, `--preflight`, `--json`, `--use-existing`, `--clear-lifecycle-latch` | yes | Run the installer, or print a read-only `--preflight` report |
 | `uninstall` | `--purge` | yes | Remove SpareHash; configuration retained unless `--purge` |
 | `status` | `--json` | yes | Show controller, miner, blockers, power, thermal, hugepages, gaming, API |
 | `start` | | yes | Enable and start the controller (`systemctl enable --now`) |

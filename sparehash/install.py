@@ -9,36 +9,55 @@ from __future__ import annotations
 
 import argparse
 import grp
+import json
 import os
 import platform
 import pwd
+import shutil
 import signal
 import sys
 import tempfile
 from collections.abc import Callable, Sequence
+from dataclasses import replace
 from pathlib import Path
 from types import FrameType
 from typing import Final
 
-from . import config, gaming_install, ipc, lifecycle, systemd, wizard, xmrig_config
+from . import config, gaming_install, host, ipc, lifecycle, systemd, wizard, xmrig_config
 from .deployment import ENV, DeploymentError, Tree, checked, command
 from .install_ledger import Ledger
 from .install_manifest import StoreContext, locked_store
 from .install_xmrig import choose, dry_run, isolated
 from .lifecycle import is_retired
 from .lifecycle_lease import LeaseError
-from .sysdetect import Capabilities
+from .preflight import HostFacts as PreflightFacts
+from .preflight import Preflight
+from .preflight import evaluate as evaluate_preflight
+from .sysdetect import FIXED_PATH, Capabilities
 from .xmrig_install import CollisionError, current_binary
 from .xmrig_ledger import Artifact, GroupIdentity, Operation, UserIdentity, bootstrap_target, choice
 
 UNITS: Final = "/etc/systemd/system"
 BOOTSTRAP_PATHS: Final = ("/opt/sparehash", "/opt/sparehash/src", "/usr/local/bin/sparehash")
 
+PREFLIGHT_EXIT: Final[dict[str, int]] = {
+    "READY": 0,
+    "ACTION_REQUIRED": 2,
+    "REFUSED_UNSUPPORTED": 1,
+    "REFUSED_UNSAFE": 1,
+    "INCONCLUSIVE": 1,
+}
+
 
 class Arguments(argparse.Namespace):
     answers: Path | None = None
     use_existing: bool = False
     clear_lifecycle_latch: bool = False
+    preflight: bool = False
+    json: bool = False
+    yes: bool = False
+    no_start: bool = False
+    no_enable: bool = False
     bootstrap_created: list[str] | None = None
 
 
@@ -199,7 +218,8 @@ def bootstrap(ledger: Ledger, created: tuple[str, ...]) -> None:
 
 
 def execute(tree: Tree, caps: Capabilities, cfg: config.Config, *, use_existing: bool = False,
-            bootstrap_created: tuple[str, ...] = (), interactive: bool = True) -> None:
+            bootstrap_created: tuple[str, ...] = (), interactive: bool = True,
+            boot: bool | None = None, now: bool | None = None) -> None:
     preflight(tree, caps)
     ledger = Ledger(tree)
     established = tree.path("/etc/sparehash/config.toml").exists()
@@ -241,11 +261,14 @@ def execute(tree: Tree, caps: Capabilities, cfg: config.Config, *, use_existing:
     cfg = result.config
     install_config(ledger, cfg, token)
     install_units(ledger, caps)
-    boot = now = True
     if interactive:
         prompts = wizard._Prompts(input, print)
-        boot = prompts.boolean("Start SpareHash automatically at boot?", default=True)
-        now = prompts.boolean("Start SpareHash controller now?", default=True)
+        if boot is None:
+            boot = prompts.boolean("Start SpareHash automatically at boot?", default=True)
+        if now is None:
+            now = prompts.boolean("Start SpareHash controller now?", default=True)
+    boot = True if boot is None else boot
+    now = True if now is None else now
     operations: list[tuple[Operation, tuple[str, ...], int]] = [
         ("daemon-reload", ("/usr/bin/systemctl", "daemon-reload"), 30),
         ("enable-controller" if boot else "disable-controller",
@@ -270,14 +293,180 @@ def deadline(_signal: int, _frame: FrameType | None) -> None:
     raise DeploymentError("xmrig-timeout", "upstream selection/install exceeded 120 seconds")
 
 
+def _validate_options(args: Arguments) -> str | None:
+    """Return a refusal reason for contradictory options, or None when valid."""
+    if args.yes and args.answers is None:
+        return "--yes requires an answers file via --answers FILE"
+    if args.answers is not None and not args.yes:
+        return "--answers requires explicit --yes consent before any effects are applied"
+    if args.json and not args.preflight:
+        return "--json is only meaningful with --preflight"
+    if args.preflight:
+        for flag in ("yes", "no_start", "no_enable", "clear_lifecycle_latch", "use_existing"):
+            if getattr(args, flag):
+                return f"--{flag.replace('_', '-')} cannot be combined with --preflight"
+    if args.clear_lifecycle_latch and args.answers is not None and args.yes:
+        return "--clear-lifecycle-latch requires explicit interactive consent; refusing to erase retirement state in unattended mode"
+    return None
+
+
+def translate_facts(raw: host.HostFacts, caps: Capabilities) -> PreflightFacts:
+    """Map bounded raw host inventory onto the pure decision inputs.
+
+    Checks not observable before installation keep their conservative defaults;
+    nothing here claims runtime policy compatibility.
+    """
+    return PreflightFacts(
+        distro_id=raw.os_release.identifier or "",
+        distro_version=raw.os_release.version_id,
+        os_release_readable=raw.os_release.identifier is not None,
+        foreign_host=raw.container.kind is not None,
+        nixos=raw.nixos_detected is True,
+        proxmox_evidence=raw.proxmox.detected is True,
+        atomic=raw.mounts.atomic is True,
+        dnf_available=shutil.which("dnf", path=FIXED_PATH) is not None,
+        cgroup_shutdown_proven=True,
+        noexec_paths=(),
+        security_policy_unsafe=False,
+        identity_available=True,
+        python_available=caps.python_supported,
+        pid1_systemd=caps.systemd_pid1 is True,
+        linux_x86_64=caps.architecture in {"x86_64", "amd64"},
+        supporting_facts=raw.proxmox.evidence + raw.container.evidence,
+    )
+
+
+def collect_facts(caps: Capabilities) -> PreflightFacts | None:
+    """Collect decision-level host facts without running mutating probes."""
+    try:
+        raw = host.HostFacts.detect()
+    except OSError:
+        return None
+    return translate_facts(raw, caps)
+
+
+def evaluate_report(caps: Capabilities, cfg: config.Config) -> Preflight:
+    """Run the pure preflight decision; no I/O, subprocesses, or effect runners."""
+    return evaluate_preflight(
+        collect_facts(caps), caps, cfg, has_no_new_install_action=False,
+        gaming_admission_decision=None, both_mode_coverage_complete=False,
+        unverified_acknowledged=False, proxmox_pvecluster_present=False,
+    )
+
+
+def report_to_dict(report: Preflight) -> dict[str, object]:
+    """Stable JSON-shaped report; the human form renders the same fields."""
+    return {
+        "support": report.support,
+        "readiness": report.readiness,
+        "gaming": report.gaming,
+        "proxmox_or_nixos_hypervisor": report.proxmox_or_nixos_hypervisor,
+        "proxmox_pvecluster_present": report.proxmox_pvecluster_present,
+        "gaming_integration_attempted": report.gaming_integration_attempted,
+        "gaming_admission_decision": report.gaming_admission_decision,
+        "required_evidence_missing": list(report.required_evidence_missing),
+        "reason_codes": list(report.reason_codes),
+        "unsafe_reasons": list(report.unsafe_reasons),
+        "supporting_facts_hash": report.supporting_facts_hash,
+        "effects": [
+            {
+                "paths": list(effect.paths),
+                "units": list(effect.units),
+                "accounts": list(effect.accounts),
+                "protected_directories": list(effect.protected_directories),
+                "requires_reboot": effect.requires_reboot,
+            }
+            for effect in report.effects
+        ],
+    }
+
+
+def remediate(report: Preflight) -> tuple[str, ...]:
+    """One-line remediations per non-ready outcome; never a bypass instruction."""
+    items: list[str] = []
+    if report.readiness == "REFUSED_UNSUPPORTED":
+        items.append("host is unsupported by this installer; use a supported distribution or a native packaging channel")
+    if report.readiness == "REFUSED_UNSAFE":
+        items.append("unsafe host conditions must be resolved before install: " + ", ".join(report.unsafe_reasons))
+    if report.readiness == "INCONCLUSIVE":
+        items.append("required host evidence is missing or inconclusive; inspect os-release and systemd and retry")
+    if report.readiness == "ACTION_REQUIRED":
+        items.append("operator action is required; resolve compatibility acknowledgment or gaming coverage first")
+    if report.gaming == "UNVERIFIED":
+        items.append("gaming protection is not verified; unattended installation is refused")
+    if report.gaming == "UNSUPPORTED":
+        items.append("gaming integration has no dependable route on this host")
+    if report.gaming == "CONSERVATIVE":
+        items.append("gaming coverage is reduced-function: conservative fallback, not full idle-versus-gameplay coverage")
+    return tuple(items)
+
+
+def render_human(report: Preflight) -> str:
+    """Human-readable report matching the JSON form field for field."""
+    lines = ["preflight:",
+             f"  support: {report.support}",
+             f"  readiness: {report.readiness}",
+             f"  gaming: {report.gaming}"]
+    for effect in report.effects:
+        lines.append("  effects:")
+        if effect.paths:
+            lines.append("    - paths: " + ", ".join(effect.paths))
+        if effect.units:
+            lines.append("    - units: " + ", ".join(effect.units))
+        if effect.accounts:
+            lines.append("    - accounts: " + ", ".join(effect.accounts))
+        if effect.protected_directories:
+            lines.append("    - protected directories: " + ", ".join(effect.protected_directories))
+        if effect.requires_reboot:
+            lines.append("    - requires reboot: yes")
+    if report.required_evidence_missing:
+        lines.append("  missing evidence: " + ", ".join(report.required_evidence_missing))
+    if report.reason_codes:
+        lines.append("  reasons: " + ", ".join(report.reason_codes))
+    if report.unsafe_reasons:
+        lines.append("  unsafe: " + ", ".join(report.unsafe_reasons))
+    remediation = remediate(report)
+    if remediation:
+        lines.append("  remediation: " + "; ".join(remediation))
+    return "\n".join(lines)
+
+
+def render_report(report: Preflight, *, as_json: bool = False) -> str:
+    """Render the preflight report; human and JSON forms share one source."""
+    if as_json:
+        return json.dumps(report_to_dict(report), sort_keys=True)
+    return render_human(report)
+
+
+def run_preflight(args: Arguments, caps: Capabilities) -> int:
+    """Dry preflight: report only, no host mutation and no manager probe."""
+    report = evaluate_report(caps, config.Config())
+    print(render_report(report, as_json=args.json))
+    return PREFLIGHT_EXIT[report.readiness]
+
+
 def main(argv: Sequence[str] | None = None, *, geteuid: Callable[[], int] = os.geteuid) -> int:
     parser = argparse.ArgumentParser(prog="sparehash install")
     _ = parser.add_argument("--answers", type=Path)
     _ = parser.add_argument("--use-existing", action="store_true")
     _ = parser.add_argument("--clear-lifecycle-latch", action="store_true",
                             help="allow reinstall after a previous uninstall (root only)")
+    _ = parser.add_argument("--preflight", action="store_true",
+                            help="run read-only preflight and print a readiness report")
+    _ = parser.add_argument("--json", action="store_true",
+                            help="print the preflight report as JSON")
+    _ = parser.add_argument("--yes", action="store_true",
+                            help="unattended consent for the disclosed effects; requires --answers")
+    _ = parser.add_argument("--no-start", action="store_true",
+                            help="do not start the controller now; skip the interactive prompt")
+    _ = parser.add_argument("--no-enable", action="store_true",
+                            help="do not enable the controller at boot; skip the interactive prompt")
     _ = parser.add_argument("--bootstrap-created", action="append", metavar="PATH", help=argparse.SUPPRESS)
     args = parser.parse_args(argv, namespace=Arguments())
+    option_error = _validate_options(args)
+    if option_error is not None:
+        print("sparehash: install: " + option_error, file=sys.stderr)
+        return 2
     if geteuid() != 0:
         print("sparehash: root: installation requires root", file=sys.stderr)
         return 1
@@ -298,23 +487,47 @@ def main(argv: Sequence[str] | None = None, *, geteuid: Callable[[], int] = os.g
                       "run with --clear-lifecycle-latch to reinstall, or remove /var/lib/sparehash/lifecycle.json manually",
                       file=sys.stderr)
                 return 2
-        caps = Capabilities.detect(environ=ENV, manager_probe=systemd.probe_cpuweight_idle)
+        caps = Capabilities.detect(environ=ENV)
+        if args.preflight:
+            return run_preflight(args, caps)
         tree = Tree()
         preflight(tree, caps)
-        if not caps.cpuweight_idle:
-            print("capabilities: idle cgroup weights unavailable; retaining Nice/SCHED_IDLE")
         existing = tree.path("/etc/sparehash/config.toml")
         current = None
         if existing.exists():
             _ = tree.read("/etc/sparehash/config.toml")
             current = wizard.load_answers(existing, caps)
         cfg = wizard.load_answers(args.answers, caps) if args.answers else wizard.run_interactive(caps, input, print, current=current)
+        report = evaluate_report(caps, cfg)
+        print(render_report(report))
+        if args.answers is None:
+            prompts = wizard._Prompts(input, print)
+            if not prompts.boolean("Proceed with installation?", default=True):
+                print("sparehash: install: declined", file=sys.stderr)
+                return 1
+        if report.readiness != "READY":
+            print(f"sparehash: install: readiness is {report.readiness}; no effects applied", file=sys.stderr)
+            return PREFLIGHT_EXIT[report.readiness]
+        if args.answers is not None and report.gaming in {"UNVERIFIED", "UNSUPPORTED"}:
+            print("sparehash: install: unattended installation requires verified gaming integration; "
+                  "refusing to install without gaming protection", file=sys.stderr)
+            return 2
+        if not caps.cpuweight_idle:
+            if systemd.probe_cpuweight_idle(ENV):
+                caps = replace(caps, cpuweight_idle=True)
+            else:
+                print("capabilities: idle cgroup weights unavailable; retaining Nice/SCHED_IDLE")
         execute(tree, caps, cfg, use_existing=args.use_existing, bootstrap_created=tuple(args.bootstrap_created or ()),
-                interactive=(args.answers is None))
+                interactive=(args.answers is None),
+                boot=(False if args.no_enable else None),
+                now=(False if args.no_start else None))
         return 0
     except KeyboardInterrupt:
         print("sparehash: interrupted; pending ledger retained for inspection", file=sys.stderr)
         return 130
+    except EOFError:
+        print("sparehash: install: no input available; use --answers FILE --yes for unattended installation", file=sys.stderr)
+        return 2
     except (OSError, ValueError, RuntimeError, systemd.CollisionError, systemd.UnitError, CollisionError) as error:
         print(f"sparehash: install: {error}", file=sys.stderr)
         return 1

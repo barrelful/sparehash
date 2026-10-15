@@ -28,6 +28,22 @@ NUMA_NOTICE: Final = (
     "Automatic hugepages unavailable: require exactly one credibly detected online "
     "memory-bearing NUMA node; multiple or unknown nodes are unsupported. Mining still works."
 )
+REDUCED_FUNCTION_REASON: Final = (
+    "Gaming protection is reduced-function: conservative whole-session inhibition only, "
+    "not full idle-versus-gameplay coverage."
+)
+
+
+def gaming_integration(cfg: Config) -> str | None:
+    """Return the effective gaming integration mode, or None when unset (legacy)."""
+    return getattr(cfg.gaming, "integration", None)
+
+
+def reduced_function_note(cfg: Config) -> str | None:
+    """Return the reduced-function reason for an explicit conservative integration."""
+    if gaming_integration(cfg) == "conservative":
+        return REDUCED_FUNCTION_REASON
+    return None
 
 
 class WizardError(ConfigError):
@@ -257,6 +273,10 @@ def run_interactive(caps: Capabilities, input_fn: Callable[[str], str],
         enabled = prompts.boolean("Enable dynamic 2 MiB hugepages", hugepages.enabled)
         pages = prompts.integer(f"2 MiB page count [{hugepages.pages}]: ", (1, 2**31 - 1, hugepages.pages)) if enabled else hugepages.pages
         hugepages = Hugepages(enabled, pages)
-    return _checked(replace(seed, wallet=wallet, pool=pool, donate_level=donate,
-                            cpu=Cpu(mode, percent, custom), thermal=thermal,
-                            gaming=gaming, hugepages=hugepages), caps, sensor)
+    result = _checked(replace(seed, wallet=wallet, pool=pool, donate_level=donate,
+                              cpu=Cpu(mode, percent, custom), thermal=thermal,
+                              gaming=gaming, hugepages=hugepages), caps, sensor)
+    note = reduced_function_note(result)
+    if note is not None:
+        output_fn(note)
+    return result
