@@ -99,7 +99,8 @@ Every public command:
 
 | Command | Flags | Requires root | Description |
 |---|---|---|---|
-| `install` | `--answers FILE`, `--use-existing`, `--clear-lifecycle-latch` | yes | Run the installer |
+| `install` | `--answers FILE`, `--use-existing`, `--clear-lifecycle-latch`, `--upgrade`, `--reconfigure` | yes | Run the installer; `--upgrade`/`--reconfigure` preserve token, settings and manual state |
+| `complete-upgrade` | `OPERATION_ID` | yes | Commit a published local upgrade; removes only the migration journal and update hold |
 | `uninstall` | `--purge` | yes | Remove SpareHash; configuration retained unless `--purge` |
 | `status` | `--json` | yes | Show controller, miner, blockers, power, thermal, hugepages, gaming, API |
 | `start` | | yes | Enable and start the controller (`systemctl enable --now`) |
