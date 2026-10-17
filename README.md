@@ -152,7 +152,8 @@ maintenance_mode = false     # opt-in AC maintenance discharge exception, at mos
 
 [gaming]
 enabled = true
-users = []                   # list of Unix account names to monitor for GameMode
+users = []                   # list of Unix account names to monitor for gaming
+integration = "auto"         # auto | conservative | gamemode coverage policy
 
 [hugepages]
 enabled = false
@@ -264,6 +265,26 @@ gamemoderun %command%
 
 SpareHash does not perform blanket process detection. It checks only the
 configured accounts through the official GameMode socket.
+
+### Coverage tiers
+
+`gaming.integration` selects the gaming coverage policy and is reported by
+`sparehash status` as a coverage tier:
+
+- `auto` requests a full idle-versus-gameplay producer (FULL tier). Until an
+  admitted full producer is validated, `auto` reports `UNVERIFIED` and refuses
+  unattended installation rather than silently downgrading protection.
+- `conservative` is the documented reduced-function fallback
+  (`CONSERVATIVE` tier): it inhibits mining for every covered graphical session,
+  including idle Steam UI and KDE, and cannot distinguish idle from gameplay.
+- `gamemode` is the conventional legacy GameMode coverage (`UNSUPPORTED` tier on
+  the cross-mode target). A migrated `enabled=false` gaming section requires
+  explicit operator acknowledgment before unattended Bazzite mining.
+
+Status reports the provider identity, UID, epoch, health and last-observed
+coverage, plus the coverage tier and the reasons a tier is reduced or refused.
+A missing helper or setup error never silently disables or downgrades a
+requested guard.
 
 ### Active session-bus requirement
 

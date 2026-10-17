@@ -11,7 +11,7 @@ from unittest.mock import Mock, patch
 
 from sparehash import gaming
 from sparehash import gaming_install as install
-from sparehash.config import Config, Gaming
+from sparehash.config import Config, Gaming, GamingIntegration
 from sparehash.gaming import User
 from sparehash.sysdetect import FIXED_PATH, Capabilities
 
@@ -26,7 +26,7 @@ class ConsentTests(unittest.TestCase):
         (self.home / ".config").mkdir(parents=True)
         self.account = pwd.struct_passwd(("gamer", "x", os.getuid(), os.getgid(), "", str(self.home), "/bin/sh"))
         self.group = grp.struct_group(("sparehash", "x", os.getgid(), []))
-        self.cfg = replace(Config(), gaming=Gaming(enabled=True, users=("gamer",)))
+        self.cfg = replace(Config(), gaming=Gaming(enabled=True, users=("gamer",), integration=GamingIntegration.GAMEMODE))
         self.caps = Capabilities("x86_64", True, 250, True, "cgroup2", True, True,
                                  False, (0,), (("gamemoded", "/usr/bin/gamemoded"), ("steam", "/usr/games/steam")), 4, 1000, None, None, False)
         self.runner = Mock(return_value=subprocess.CompletedProcess((), 0, ""))

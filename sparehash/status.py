@@ -15,10 +15,10 @@ import time
 from collections.abc import Callable
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
-from typing import Final, Protocol
+from typing import Final, Literal, Protocol
 
 from . import ipc, xmrig_config
-from .config import ConfigError, load
+from .config import ConfigError, GamingIntegration, load
 from .paths import XMRIG_JSON
 from .power import Evidence, Helpers, PowerSample, read_sysfs
 from .thermal import SensorReadError, find_sensor, read_celsius
@@ -53,6 +53,41 @@ class Gaming:
     stale: bool
 
 
+CoverageTier = Literal["FULL", "CONSERVATIVE", "UNVERIFIED", "UNSUPPORTED"]
+
+
+@dataclass(frozen=True, slots=True)
+class GamingCoverage:
+    """One gaming provider sample with its identity, epoch, health and state."""
+
+    provider: str
+    uid: int
+    epoch: int
+    observed_at: float
+    state: Literal["ACTIVE", "INACTIVE", "UNKNOWN"]
+    health: Literal["OK", "STALE", "DISCONNECTED", "MALFORMED", "OVERFLOW"]
+    producer_version: str | None
+
+
+def coverage_tier(integration: GamingIntegration, *,
+                  guard_decision: Literal["BLOCKED", "UNKNOWN", "CLEAR"] = "UNKNOWN",
+                  full_admitted: bool = False) -> CoverageTier:
+    """Map the configured integration to its reported coverage tier.
+
+    ``auto`` requests an admitted FULL cross-mode producer; without one it can
+    never reach FULL and reports UNVERIFIED. ``conservative`` is the documented
+    reduced-function fallback. ``gamemode`` is conventional legacy coverage and
+    is not a supported cross-mode tier, so it reports UNSUPPORTED.
+    """
+    if integration is GamingIntegration.CONSERVATIVE:
+        return "CONSERVATIVE"
+    if integration is GamingIntegration.GAMEMODE:
+        return "UNSUPPORTED"
+    if full_admitted and guard_decision in ("BLOCKED", "CLEAR"):
+        return "FULL"
+    return "UNVERIFIED"
+
+
 @dataclass(frozen=True, slots=True)
 class StatusSnapshot:
     controller: str = 'unavailable'
@@ -60,6 +95,8 @@ class StatusSnapshot:
     blockers: tuple[tuple[str, str], ...] = ()
     power: PowerSample | None = None
     gaming: tuple[Gaming, ...] = ()
+    coverage: GamingCoverage | None = None
+    coverage_tier: CoverageTier = "UNVERIFIED"
     thermal_sensor: str | None = None
     temperature_c: float | None = None
     hugepages_actual: int | None = None
@@ -219,6 +256,7 @@ class LiveProvider:
         return replace(result, api=api.api, hashrate=api.hashrate, pool=api.pool,
                        miner='running' if running and api.api == 'available' else result.miner,
                        hugepages_target=cfg.hugepages.pages,
+                       coverage_tier=coverage_tier(cfg.gaming.integration),
                        dns_hint=None if self.resolver(cfg.pool.host) else DNS_HINT)
 
 
