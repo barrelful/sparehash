@@ -107,10 +107,10 @@ Every public command:
 | `pause` | | no | Manually pause mining via controller IPC |
 | `resume` | | no | Clear manual pause (mining resumes only when all blockers are clear) |
 | `config show` | | no | Print current public configuration as JSON |
-| `config edit` | | yes | Unsupported in experimental v0.1.1; exits 2 without effects |
+| `config edit` | | yes | Unsupported in experimental v0.2.0; exits 2 without effects |
 | `logs` | `-f`, `--follow` | no | Stream the last 100 lines from both unit journals |
-| `benchmark` | | yes | Unsupported in experimental v0.1.1; exits 2 without effects |
-| `update` | | yes | Unsupported in experimental v0.1.1; exits 2 without effects |
+| `benchmark` | | yes | Unsupported in experimental v0.2.0; exits 2 without effects |
+| `update` | | yes | Unsupported in experimental v0.2.0; exits 2 without effects; use `--upgrade` |
 | `gaming-start` | | no | Signal that a configured user started gaming |
 | `gaming-end` | | no | Signal that a configured user stopped gaming |
 | `debug set-blocker` | `NAME` | yes | Force a named blocker active (debugging only) |
@@ -124,7 +124,7 @@ not user-facing.
 
 The public configuration lives at `/etc/sparehash/config.toml`. Use the installer
 wizard or an answers file to configure installation; `config show` is read-only.
-`config edit` is unsupported in v0.1.1. All keys and their defaults:
+`config edit` is unsupported in v0.2.0. All keys and their defaults:
 
 ```toml
 version = 1
@@ -256,6 +256,12 @@ When `gaming.enabled = true` and `gaming.users` lists one or more accounts,
 SpareHash monitors those users for active GameMode sessions. The controller
 queries `gamemoded -s` per user via `runuser` and the user's D-Bus session bus.
 
+**Admission status: conservative fallback only.** SpareHash has NOT been demonstrated for FULL gaming coverage. The system implements conservative session inhibition as a fallback mechanism, not full acceptance. See `docs/gaming-integration-contract.md` for the complete admission decision (`NO_DEPENDABLE_ROUTE`) and exact limitations.
+
+The gaming blocker inhibits mining during covered GameMode sessions but does not
+prove exhaustive negative coverage of all gaming workloads. Fallback-only status
+remains reduced-function NO-GO pending owner decision.
+
 To activate GameMode for a Steam game, add this to the game's launch options:
 
 ```
@@ -263,7 +269,15 @@ gamemoderun %command%
 ```
 
 SpareHash does not perform blanket process detection. It checks only the
-configured accounts through the official GameMode socket.
+configured accounts through the official GameMode socket. Per-game configuration
+and arbitrary game detection are not implemented.
+
+### Latency objectives (not guarantees)
+
+The system targets ≤1 second callback latency and ≤5 second empty proof from
+trigger, including detection and queued job time. These are initial engineering
+objectives subject to feasibility testing, not hard real-time guarantees and not
+zero game-start overlap. Actual values depend on system load and scheduling.
 
 ### Active session-bus requirement
 
@@ -271,6 +285,12 @@ The gaming check runs `runuser -u <name> -- env DBUS_SESSION_BUS_ADDRESS=unix:pa
 If the configured user is not logged in (no `/run/user/<uid>/bus` socket), the
 query is inconclusive and SpareHash inhibits mining. Add gaming users only if
 they will have an active graphical or session bus while playing.
+
+### Manual pause interaction
+
+A manual `sparehash pause` is independent of gaming blockers. Both must clear
+for mining to start. `sparehash resume` clears only the manual pause and cannot
+bypass an active gaming blocker.
 
 ### Group membership and `sg`
 
@@ -359,6 +379,8 @@ query.
 
 ## Update and uninstall
 
+For a complete guide to upgrading from v0.1.1 to v0.2.0, including recovery procedures and troubleshooting, see [`docs/upgrade-v020.md`](docs/upgrade-v020.md).
+
 `update`, `config edit`, and `benchmark` are unsupported in experimental v0.1.1.
 They refuse with exit code 2 before workflow effects. The underlying update
 sidecar lease still gates internal update operations and survives controller
@@ -442,6 +464,15 @@ before retirement or service changes.
 | `/etc/systemd/system/sparehash-xmrig.service` | Miner unit (static) |
 | `/usr/local/bin/sparehash` | CLI entry point |
 
+### Atomic/redirect paths
+
+On Atomic distributions (Fedora Silverblue, Bazzite, Kinoite), the filesystem
+redirects `/opt` to `/var/opt` and `/usr/local` to `/var/usrlocal`. The
+installer recognizes these redirects and operates on the physical paths while
+receipting the logical identities. Configuration at `/etc/sparehash/` is not
+redirected. The installer never creates, modifies, or removes OS-level redirect
+links. See `docs/platforms.md` for details.
+
 ## What SpareHash does not do
 
 - No GPU mining
@@ -457,7 +488,7 @@ before retirement or service changes.
 
 ## Known limitations
 
-- `config edit`, `update`, and `benchmark` are unsupported in v0.1.1.
+- `config edit`, `update`, and `benchmark` are unsupported in v0.2.0.
 - The `systemd-run` isolated version probe has been observed to fail in certain
   VM environments where transient unit creation is restricted. The rest of the
   post-install verification still passes.
@@ -519,7 +550,7 @@ resolver. SpareHash does not change DNS settings.
 
 An internal or older update operation may be holding
 the lease; the public update/config-edit/benchmark commands are unsupported in
-v0.1.1. Let an active operation finish, then retry. If it failed or is stuck,
+v0.2.0. Let an active operation finish, then retry. If it failed or is stuck,
 inspect `sparehash logs` and the lifecycle records before recovery. A controller
 restart doesn't clear an external hold, and the reinstall flag doesn't erase an
 update hold. Don't delete lifecycle files to bypass the safety barrier.

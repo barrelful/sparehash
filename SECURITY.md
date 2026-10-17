@@ -54,6 +54,17 @@ SpareHash is designed around these security properties:
   remains after partial failure. The durable sidecar still gates internal updates,
   but public `update`, `config edit`, and `benchmark` are unsupported in v0.1.1.
 
+- **Separated upgrade hold and migration journal.** Local-release upgrades acquire
+  a compatible update hold in `/var/lib/sparehash/lifecycle-lease.json` before any
+  installed mutation. The migration journal at `/var/lib/sparehash/migration.json`
+  records the operation phase, staged inventory digest, and receipt changes. The
+  hold and journal are independent: the hold gates concurrent operations, the
+  journal enables deterministic recovery. An unrelated hold refuses a new upgrade;
+  a missing or digest-mismatched staging refuses recovery. Neither the hold nor
+  the journal is cleared by manual pause, controller restart, or uninstall. Only
+  explicit `--complete-upgrade` removes both after verifying the published payload
+  and fresh empty proof.
+
 - **Verified supply chain.** XMRig releases are downloaded from GitHub and
   verified against a pinned GPG fingerprint and SHA-256 checksum before any file
   is executed or symlinked into place.
@@ -65,6 +76,15 @@ SpareHash is designed around these security properties:
 - **No privileged optimisation.** MSR access, kernel modules, sysctl drop-ins,
   and 1GiB hugepages are not implemented in v1. The miner runs with standard
   idle scheduling and optional 2MiB hugepages.
+
+- **Gaming coverage is conservative fallback only.** FULL gaming coverage has
+  NOT been demonstrated (Task 2 admission: `NO_DEPENDABLE_ROUTE`). The system
+  implements conservative session inhibition via GameMode queries and explicit
+  hooks, but does not prove exhaustive negative coverage of all gaming
+  workloads. Fallback-only status remains reduced-function NO-GO pending owner
+  decision. See `docs/gaming-integration-contract.md` for exact limitations.
+  The system does not guarantee noninterference with arbitrary gaming workloads
+  or claim FULL gaming safety.
 
 ## What we consider in scope
 
