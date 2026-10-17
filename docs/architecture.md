@@ -185,6 +185,51 @@ the gaming blocker stays active regardless of hook state.
 This design trusts gaming users: a member of the `sparehash` group can block
 mining indefinitely by never sending `gaming-end`. Only add users you trust.
 
+### gaming observation module
+
+`sparehash/gaming.py` implements the gaming observation module with explicit
+filesystem and session inventory seams. The module provides:
+
+- **User validation**: Configured accounts are verified against NSS (Name
+  Service Switch) with strict name grammar. Users are never constructed from
+  hooks; hook identity and state belong to the IPC/controller layer.
+- **Probe query**: Bounded worker queries with explicit timeout (10 seconds),
+  fixed PATH for helper resolution, and root-protected helper ancestry checks.
+  The probe queries `gamemoded -s` via `runuser` over the user's D-Bus session
+  bus.
+- **Reconciliation**: Any active wins; otherwise any unknown inhibits, all
+  inactive clears. Advisory inactive values never clear required evidence.
+- **Fresh complete samples**: No cache or hook-state mutation. Every observation
+  is a fresh per-user sample.
+
+### Gaming admission status
+
+**Task 2 admission: `NO_DEPENDABLE_ROUTE`.** The system has NOT been
+demonstrated for FULL gaming coverage. The implemented mechanism is
+conservative session inhibition (fallback), not full acceptance. FULL coverage
+requires validated producer/version/capability fingerprints, complete
+native/Proton lifetimes, missed-event reconciliation, and recursive empty proof.
+None of these are implemented.
+
+The gaming blocker inhibits mining during covered GameMode sessions but does not
+prove exhaustive negative coverage. Fallback-only status remains reduced-function
+NO-GO pending owner decision. See `docs/gaming-integration-contract.md` for the
+complete admission decision and exact limitations.
+
+### Latency objectives
+
+The system targets ≤1 second callback latency and ≤5 second empty proof from
+trigger, including detection and queued job time. These are initial engineering
+objectives subject to feasibility testing, not hard real-time guarantees. Actual
+values depend on system load, detection queues, and job scheduling.
+
+### Manual pause independence
+
+Manual pause (`sparehash pause`) and gaming blockers are separate. Both must
+clear for mining to start. Manual pause persists across controller restarts via
+state file. `sparehash resume` clears only the manual pause and cannot bypass
+an active gaming blocker.
+
 ## Battery evidence
 
 Power state is observed concurrently from two independent sources:
@@ -212,6 +257,44 @@ acceptance. Its controller flow is:
 
 The benchmark authorization is single-use. A second authorization for the same
 benchmark is denied.
+
+## Runtime and deployer separation
+
+The runtime is deployer-agnostic. It reads protected deployment descriptions and
+configuration from fixed paths, but does not claim ownership of package manager
+files or invoke imperative installers. An externally provisioned deployment
+(future RPM/Nix package) can run the same controller contract without
+`install.sh` or installer receipts.
+
+The runtime entry point (`runtime.run()`) strips test environment variables
+(`SPAREHASH_RUN_DIR`, `SPAREHASH_HWMON_ROOT`, `SPAREHASH_STATE_FILE`) before
+accessing configuration. Protected paths come from fixed locations or explicit
+deployment descriptions, not environment overrides. The runtime does not import
+wizard or install command modules; it uses shared validation interfaces from
+`deployment.py` and `install_manifest.py` for read-only integrity checks.
+
+Runtime reads:
+
+- `/etc/sparehash/config.toml` (public configuration, mode 0644)
+- `/etc/sparehash/xmrig.json` (generated XMRig config with API token, mode 0640)
+- `/etc/sparehash/deployment.json` (schema 1, deployment owner and layout)
+- `/opt/xmrig/current` (managed binary symlink)
+
+Runtime manages:
+
+- `/var/lib/sparehash/` (runtime state, leases, manifests)
+- `/run/sparehash/` (IPC socket, operation spec)
+- systemd unit lifecycle (start/stop/authorize)
+
+Runtime does not:
+
+- Rewrite package manager files
+- Chown package-owned directories
+- Invoke `install.sh` or wizard
+- Claim ownership of `/usr`, `/opt`, `/etc` package content
+
+See `docs/packaging-roadmap.md` for future native packaging boundaries (RPM,
+NixOS, Proxmox, Flatpak).
 
 ## Hugepage lease and restore
 
