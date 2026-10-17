@@ -15,6 +15,7 @@ from typing import Final
 
 from . import config
 from .deployment import ENV, LOAD_JSON, DeploymentError, Tree, binary as binary
+from .xmrig_config import IsolatedRunner
 from .xmrig_ledger import integer, keys, mapping, text
 
 DIRECTORY: Final = "/run/sparehash-miner"
@@ -23,33 +24,34 @@ FALLBACK: Final = "/etc/sparehash/xmrig.runtime.json"
 BENCHMARK: Final = DIRECTORY + "/benchmark.json"
 
 
-def publish(cfg: config.Config, generation: int, mode: str) -> None:
+def publish(cfg: config.Config, generation: int, mode: str, *,
+            tree: Tree | None = None,
+            runner: IsolatedRunner | None = None) -> None:
     if mode not in {"mine", "benchmark"}:
         raise DeploymentError("operation", "unsupported mode")
     gid = pwd.getpwnam("xmrig").pw_gid
-    tree = Tree()
+    anchor = Tree() if tree is None else tree
     with ExitStack() as stack:
-        fd = tree.pin(stack, DIRECTORY)
+        fd = anchor.pin(stack, DIRECTORY)
         os.fchown(fd, 0, gid)
         os.fchmod(fd, 0o750)
     target = FALLBACK if mode == "mine" else BENCHMARK
     executable = binary(cfg.xmrig.binary)
     if mode == "benchmark":
-        from .xmrig_config import render_config, read_token
-        from .install_xmrig import dry_run
+        from .xmrig_config import read_token, render_config
 
-        document = render_config(cfg, read_token(), executable, runner=dry_run)
+        document = render_config(cfg, read_token(), executable, runner=runner)
         document["pools"] = []
         document["http"] = {"enabled": False}
-        tree.write(BENCHMARK, ((json.dumps(document) + "\n").encode(), 0o640, gid))
+        anchor.write(BENCHMARK, ((json.dumps(document) + "\n").encode(), 0o640, gid))
     document = {"generation": generation, "mode": mode, "binary": str(executable), "config": target}
-    tree.write(SPEC, ((json.dumps(document) + "\n").encode(), 0o640, gid))
+    anchor.write(SPEC, ((json.dumps(document) + "\n").encode(), 0o640, gid))
 
 
-def protected(name: str, gid: int) -> bytes:
-    tree = Tree()
+def protected(name: str, gid: int, *, tree: Tree | None = None) -> bytes:
+    anchor = Tree() if tree is None else tree
     with ExitStack() as stack:
-        parent = tree.pin(stack, str(Path(name).parent))
+        parent = anchor.pin(stack, str(Path(name).parent))
         info = os.stat(Path(name).name, dir_fd=parent, follow_symlinks=False)
         if info.st_uid != 0 or info.st_gid != gid or stat.S_IMODE(info.st_mode) != 0o640 or not stat.S_ISREG(info.st_mode):
             raise DeploymentError("operation", "incorrect protected file ownership/mode")
@@ -57,7 +59,7 @@ def protected(name: str, gid: int) -> bytes:
             directory = os.fstat(parent)
             if directory.st_gid != gid or stat.S_IMODE(directory.st_mode) != 0o750:
                 raise DeploymentError("operation", "incorrect protected operation directory")
-    data = tree.read(name)
+    data = anchor.read(name)
     if data is None:
         raise DeploymentError("operation", "missing protected file")
     return data

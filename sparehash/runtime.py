@@ -6,7 +6,6 @@
 from __future__ import annotations
 
 import os
-import grp
 import logging
 import signal
 import threading
@@ -21,20 +20,21 @@ import sys
 from functools import partial
 from typing import Final, final
 
-from . import config, gaming, ipc, power, systemd, thermal
+from . import config, deployment_spec, gaming, ipc, power, systemd, thermal
 from .controller import Controller
 from .controller_io import Generation, Observation, Ports, SampleId
 from .deployment import Tree, checked
+from .deployment_spec import DeploymentSpec, DeploymentSpecError
 from .gaming_session import CgroupwalkProbe, GamingSessionGuard, LogindSessionProbe
 from .hugepages import LeaseManager
-from .install_manifest import StoreContext, locked_store
-from .xmrig_paths import PathTrust
+from .paths import STATE_FILE
 from .runtime_jobs import Jobs, empty
 from .runtime_spec import DIRECTORY, SPEC
 from .state import BlockerState
 
 LOGGER: Final = logging.getLogger(__name__)
 GAMING_POLL_SECONDS: Final = 1.0
+PRODUCTION_ROOT: Final = Path("/")
 
 
 def _discard_gaming(_decision: str, _epoch: int) -> None:
@@ -141,7 +141,28 @@ class Lifecycle:
         systemd.notify_ready(self.notify)
 
 
-def initialize(state: BlockerState, ports: Ports) -> Controller:
+def validate_deployment(spec: DeploymentSpec, cfg: config.Config, root: Path = PRODUCTION_ROOT) -> None:
+    """Refuse a description whose payload drifted or names another miner binary.
+
+    The inventory digest must match the deployed payload and every declared
+    runtime path must agree with the configured miner, so an externally
+    provisioned fixture runs the same controller contract without installer
+    receipts or mutation authority.
+    """
+    deployment_spec.validate(spec, root)
+    declared = spec.runtime_paths.get("xmrig_binary") or spec.runtime_paths.get("binary")
+    if declared is not None and str(declared) != cfg.xmrig.binary:
+        raise DeploymentSpecError("runtime_paths", "configured miner binary differs from the deployment description")
+
+
+def initialize(state: BlockerState, ports: Ports, *,
+               deployment_spec: DeploymentSpec | None = None,
+               cfg: config.Config | None = None,
+               root: Path = PRODUCTION_ROOT) -> Controller:
+    if deployment_spec is not None:
+        if cfg is None:
+            raise DeploymentSpecError("config", "deployment validation requires the loaded configuration")
+        validate_deployment(deployment_spec, cfg, root)
     owner = Controller(state, ports)
     owner.start()
     return owner
@@ -164,7 +185,7 @@ def cleanup() -> int:
     return 1 if result.warning else 0
 
 
-def run() -> int:
+def run(state_path: Path = STATE_FILE) -> int:
     if os.geteuid() != 0:
         return 1
     _ = os.environ.pop("SPAREHASH_RUN_DIR", None)
@@ -175,17 +196,13 @@ def run() -> int:
         print("sparehash: controller must be invoked by systemd (NOTIFY_SOCKET missing)", file=sys.stderr)
         return 1
     cfg = config.load()
-    with locked_store(StoreContext(PathTrust())) as store:
-        os.fchown(store.fd, 0, grp.getgrnam("sparehash").gr_gid)
-        snapshot = store.read()
-        if snapshot is not None:
-            store.write(snapshot.manifest)
     safety: Queue[Callable[[], None]] = Queue()
     messages: Queue[Callable[[], None]] = Queue()
     stop, bound = threading.Event(), threading.Event()
     providers = Providers(cfg, messages.put)
     jobs = Jobs(cfg, messages.put)
-    state = BlockerState(min_dwell_seconds=cfg.controller.min_dwell_seconds)
+    state = BlockerState(Path(os.environ.get("SPAREHASH_STATE_FILE", str(state_path))),
+                         min_dwell_seconds=cfg.controller.min_dwell_seconds)
     owner = Controller(state, Ports(providers, jobs, Lifecycle(bound, notify_socket), time.monotonic))
     providers.finish, jobs.finish = owner.observe, owner.complete
     jobs.finished = owner.benchmark_finished
