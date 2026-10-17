@@ -359,6 +359,8 @@ query.
 
 ## Update and uninstall
 
+For a complete guide to upgrading from v0.1.1 to v0.2.0, including recovery procedures and troubleshooting, see [`docs/upgrade-v020.md`](docs/upgrade-v020.md).
+
 `update`, `config edit`, and `benchmark` are unsupported in experimental v0.1.1.
 They refuse with exit code 2 before workflow effects. The underlying update
 sidecar lease still gates internal update operations and survives controller
