@@ -29,7 +29,7 @@ from tests.install_startup import StartupTests as StartupTests
 class InstallTests(InstallFixture):
     def test_gaming_consent_when_interactive_retries_and_honors_answer(self) -> None:
         # Given
-        cfg = replace(self.cfg, gaming=config.Gaming(True))
+        cfg = replace(self.cfg, gaming=config.Gaming(True, integration=config.GamingIntegration.GAMEMODE))
         with mock.patch("sparehash.gaming_install.resolve_helper", return_value=None), mock.patch(
             "builtins.input", side_effect=["perhaps", " NO ", "", ""]
         ) as prompt:
@@ -41,7 +41,7 @@ class InstallTests(InstallFixture):
 
     def test_gaming_consent_when_noninteractive_never_reads_stdin(self) -> None:
         # Given
-        cfg = replace(self.cfg, gaming=config.Gaming(True))
+        cfg = replace(self.cfg, gaming=config.Gaming(True, integration=config.GamingIntegration.GAMEMODE))
         with mock.patch("sparehash.gaming_install.resolve_helper", return_value=None), mock.patch(
             "builtins.input", side_effect=AssertionError("uncontrolled stdin")
         ):
@@ -52,7 +52,7 @@ class InstallTests(InstallFixture):
 
     def test_gaming_consent_when_enter_pressed_accepts_install(self) -> None:
         # Given
-        cfg = replace(self.cfg, gaming=config.Gaming(True))
+        cfg = replace(self.cfg, gaming=config.Gaming(True, integration=config.GamingIntegration.GAMEMODE))
         with mock.patch("sparehash.gaming_install.resolve_helper", side_effect=lambda name: f"/usr/bin/{name}"), mock.patch(
             "sparehash.gaming_install._run"
         ) as run, mock.patch("builtins.input", return_value=""):
@@ -232,7 +232,7 @@ class InstallTests(InstallFixture):
         _ = ini.write_text("[general]\nrenice=10\n")
         account = pwd.struct_passwd(("gamer", "x", os.getuid(), os.getgid(), "", str(home), "/bin/bash"))
         group = grp.struct_group(("sparehash", "x", os.getgid(), ["gamer"]))
-        cfg = replace(self.cfg, gaming=config.Gaming(True, ("gamer",)))
+        cfg = replace(self.cfg, gaming=config.Gaming(True, ("gamer",), integration=config.GamingIntegration.GAMEMODE))
         caps = replace(capabilities(), helper_paths=(("gamemoded", "/usr/bin/gamemoded"),))
         ledger = Ledger(self.tree)
         with mock.patch("sparehash.gaming_install.grp.getgrnam", return_value=group):

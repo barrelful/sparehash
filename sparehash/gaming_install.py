@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Final, TypedDict
 
 from . import gaming
-from .config import Config
+from .config import Config, GamingIntegration
 from .gaming import Runner, User, UserError, resolve_helper
 from .gaming_ini import EditReceipt, Home, UnsafePathError, edit
 from .install_ledger import Ledger, Receipt
@@ -85,6 +85,15 @@ def configure(cfg: Config, caps: Capabilities, consent: Callable[[str], bool] | 
     Runner is an independent privileged-command test seam, not a config input.
     All production executables are freshly resolved from the protected fixed PATH.
     """
+    if cfg.gaming.integration is not GamingIntegration.GAMEMODE:
+        # auto/conservative coverage is owned by the session guard, never the
+        # GameMode installer: a missing helper or setup error must not silently
+        # downgrade or re-enable the requested coverage.
+        if not cfg.gaming.enabled:
+            reason = ("gaming.enabled=false retained for integration=" + cfg.gaming.integration.value
+                      + "; unattended Bazzite mining requires explicit safety action")
+            return InstallResult(cfg, False, (reason,))
+        return InstallResult(cfg, True)
     if not cfg.gaming.enabled:
         return InstallResult(cfg, False)
     warnings: list[str] = []

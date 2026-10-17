@@ -15,7 +15,17 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Final, TypeGuard, TypeVar
 
-from .config import Config, ConfigError, Cpu, Gaming, Hugepages, Pool, RawConfig, validate
+from .config import (
+    Config,
+    ConfigError,
+    Cpu,
+    Gaming,
+    GamingIntegration,
+    Hugepages,
+    Pool,
+    RawConfig,
+    validate,
+)
 from .gaming import User, UserError
 from .sysdetect import Capabilities
 from .thermal import SensorPath, find_sensor
@@ -27,6 +37,11 @@ MSR_NOTICE: Final = "MSR optimisation is not supported in v1; SpareHash never wr
 NUMA_NOTICE: Final = (
     "Automatic hugepages unavailable: require exactly one credibly detected online "
     "memory-bearing NUMA node; multiple or unknown nodes are unsupported. Mining still works."
+)
+FULL_PRODUCER_ADMITTED: Final = False
+REDUCED_FUNCTION_REASON: Final = (
+    "gaming integration=conservative: reduced-function fallback that inhibits all covered "
+    "graphical sessions and cannot distinguish idle from gameplay"
 )
 
 
@@ -88,6 +103,12 @@ def _checked(cfg: Config, caps: Capabilities, sensor: SensorPath | None) -> Conf
     return cfg
 
 
+def _guard_auto_unattended(cfg: Config) -> None:
+    """Refuse unattended installs requesting auto coverage without an admitted FULL producer."""
+    if cfg.gaming.integration is GamingIntegration.AUTO and not FULL_PRODUCER_ADMITTED:
+        raise WizardError("gaming.integration", "no_full_gaming_contract_admitted")
+
+
 def _config_shape(data: Mapping[str, TomlValue]) -> TypeGuard[RawConfig]:
     defaults = Config()
     raw = defaults.to_dict()
@@ -116,7 +137,8 @@ def _config_shape(data: Mapping[str, TomlValue]) -> TypeGuard[RawConfig]:
 
 
 def load_answers(path: str | Path, caps: Capabilities, *,
-                 sensor_probe: Callable[[], SensorPath | None] = find_sensor) -> Config:
+                 sensor_probe: Callable[[], SensorPath | None] = find_sensor,
+                 unattended: bool = False) -> Config:
     """Parse partial Config TOML with explicit required wallet/pool and safety gates."""
     try:
         with Path(path).open("rb") as source:
@@ -136,7 +158,10 @@ def load_answers(path: str | Path, caps: Capabilities, *,
             cfg = Config.from_dict(parsed)
     except (ConfigError, UserWarning) as error:
         raise WizardError("answers", str(error)) from error
-    return _checked(cfg, caps, sensor_probe())
+    cfg = _checked(cfg, caps, sensor_probe())
+    if unattended:
+        _guard_auto_unattended(cfg)
+    return cfg
 
 
 @dataclass(frozen=True, slots=True)
@@ -245,7 +270,9 @@ def run_interactive(caps: Capabilities, input_fn: Callable[[str], str],
         output_fn("GameMode was not detected; gaming pause requires GameMode installation and user-session hooks.")
     if prompts.boolean("Enable gaming guard", seed.gaming.enabled):
         users = prompts.ask(f"Gaming account names [{default_user}]: ", lambda v: _users(v or default_user))
-        gaming = Gaming(users=users)
+        gaming = Gaming(users=users, integration=seed.gaming.integration)
+    if gaming.integration is GamingIntegration.CONSERVATIVE:
+        output_fn(REDUCED_FUNCTION_REASON)
     hugepages = seed.hugepages
     output_fn("Regular 2 MiB hugepages: 1280 pages reserve 2560 MiB (~2.5 GiB) temporarily while mining; " +
               "released best-effort after stop. Usually 20–30% improvement, possibly greater for RandomX " +

@@ -10,6 +10,7 @@ import tempfile
 import tomllib
 import warnings
 from dataclasses import asdict, dataclass, field
+from enum import StrEnum
 from pathlib import Path
 from typing import Final, TypedDict, TypeVar, cast
 
@@ -32,7 +33,7 @@ class RawConfig(TypedDict, total=False):
     cpu: dict[str, str | int]
     thermal: dict[str, bool | int]
     power: dict[str, bool]
-    gaming: dict[str, bool | list[str]]
+    gaming: dict[str, bool | list[str] | str]
     hugepages: dict[str, bool | int]
     api: dict[str, int]
     controller: dict[str, int]
@@ -74,10 +75,37 @@ class Power:
     maintenance_mode: bool = False
 
 
+class GamingIntegration(StrEnum):
+    """Coverage policy: auto requests admitted FULL on Bazzite; the rest are explicit limits."""
+
+    AUTO = "auto"
+    CONSERVATIVE = "conservative"
+    GAMEMODE = "gamemode"
+
+
+def _integration(value: str) -> GamingIntegration:
+    try:
+        return GamingIntegration(value)
+    except ValueError as exc:
+        raise ConfigError("gaming.integration must be auto, conservative or gamemode") from exc
+
+
 @dataclass(frozen=True, slots=True)
 class Gaming:
     enabled: bool = True
     users: tuple[str, ...] = ()
+    integration: GamingIntegration = GamingIntegration.AUTO
+
+    @property
+    def migration_pending_acknowledgment(self) -> bool:
+        """True when a reduced/disabled legacy coverage state needs explicit operator acknowledgment.
+
+        A v0.1.1 config may have carried ``enabled=False`` from a silent installer
+        downgrade rather than an intentional choice. Conservative coverage combined
+        with a disabled guard therefore cannot drive unattended Bazzite mining until
+        the operator acknowledges the exact reduced-function state.
+        """
+        return self.integration is GamingIntegration.CONSERVATIVE and not self.enabled
 
 
 @dataclass(frozen=True, slots=True)
@@ -122,7 +150,10 @@ class Config:
         return _construct(data)
 
     def to_dict(self) -> RawConfig:
-        return cast(RawConfig, cast(object, {**asdict(self), "gaming": {**asdict(self.gaming), "users": list(self.gaming.users)}}))
+        gaming = asdict(self.gaming)
+        gaming["users"] = list(self.gaming.users)
+        gaming["integration"] = self.gaming.integration.value
+        return cast(RawConfig, cast(object, {**asdict(self), "gaming": gaming}))
 
 
 DEFAULTS: Final = Config()
@@ -185,7 +216,7 @@ def _construct(data: RawConfig) -> Config:
     _unknown(power, ("maintenance_mode",), "power.")
     hugepages, api = _table(data, "hugepages"), _table(data, "api")
     controller, xmrig = _table(data, "controller"), _table(data, "xmrig")
-    sections = ((pool, ("host", "port", "tls", "worker"), "pool."), (cpu, ("mode", "max_threads_percent", "custom_json"), "cpu."), (thermal, ("enabled", "pause_c", "resume_c"), "thermal."), (gaming, ("enabled", "users"), "gaming."), (hugepages, ("enabled", "pages"), "hugepages."), (api, ("port",), "api."), (controller, ("min_dwell_seconds", "reconcile_seconds"), "controller."), (xmrig, ("binary",), "xmrig."))
+    sections = ((pool, ("host", "port", "tls", "worker"), "pool."), (cpu, ("mode", "max_threads_percent", "custom_json"), "cpu."), (thermal, ("enabled", "pause_c", "resume_c"), "thermal."), (gaming, ("enabled", "users", "integration"), "gaming."), (hugepages, ("enabled", "pages"), "hugepages."), (api, ("port",), "api."), (controller, ("min_dwell_seconds", "reconcile_seconds"), "controller."), (xmrig, ("binary",), "xmrig."))
     for section, allowed, prefix in sections:
         _unknown(section, allowed, prefix)
     try:
@@ -205,7 +236,8 @@ def _construct(data: RawConfig) -> Config:
             cpu=Cpu(mode=mode, max_threads_percent=_field(cpu, "max_threads_percent", 75, int), custom_json=custom_json),
             thermal=Thermal(enabled=_field(thermal, "enabled", False, bool), pause_c=_field(thermal, "pause_c", 85, int), resume_c=_field(thermal, "resume_c", 75, int)),
             power=Power(maintenance_mode=_field(power, "maintenance_mode", False, bool)),
-            gaming=Gaming(enabled=_field(gaming, "enabled", True, bool), users=tuple(cast(str, user) for user in users)),
+            gaming=Gaming(enabled=_field(gaming, "enabled", True, bool), users=tuple(cast(str, user) for user in users),
+                          integration=_integration(_field(gaming, "integration", "auto", str))),
             hugepages=Hugepages(enabled=_field(hugepages, "enabled", False, bool), pages=_field(hugepages, "pages", 1280, int)),
             api=Api(port=_field(api, "port", 38087, int)),
             controller=Controller(min_dwell_seconds=_field(controller, "min_dwell_seconds", 60, int), reconcile_seconds=_field(controller, "reconcile_seconds", 30, int)),
@@ -259,7 +291,7 @@ def _serialize(cfg: Config) -> str:
         ("cpu", {"mode": cfg.cpu.mode, "max_threads_percent": cfg.cpu.max_threads_percent, "custom_json": cfg.cpu.custom_json}),
         ("thermal", {"enabled": cfg.thermal.enabled, "pause_c": cfg.thermal.pause_c, "resume_c": cfg.thermal.resume_c}),
         ("power", {"maintenance_mode": cfg.power.maintenance_mode}),
-        ("gaming", {"enabled": cfg.gaming.enabled, "users": cfg.gaming.users}),
+        ("gaming", {"enabled": cfg.gaming.enabled, "users": cfg.gaming.users, "integration": cfg.gaming.integration.value}),
         ("hugepages", {"enabled": cfg.hugepages.enabled, "pages": cfg.hugepages.pages}),
         ("api", {"port": cfg.api.port}),
         ("controller", {"min_dwell_seconds": cfg.controller.min_dwell_seconds, "reconcile_seconds": cfg.controller.reconcile_seconds}),
