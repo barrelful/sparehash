@@ -143,12 +143,13 @@ def detect_installations(
     caps: Capabilities | None = None, *, probe: IsolationProbe | None = None,
     runner: SystemRunner | None = None, marker: Path | None = None,
     manifest: Path | None = None, layout: Layout | None = None,
-    trust: PathTrust | None = None,
+    trust: PathTrust | None = None, uid: int = 65534,
 ) -> list[Install]:
     """Discover configured, fixed-PATH, and approved candidates; absence is normal.
 
     Todo11/Todo18 production seam: inject ``IsolationProbe(snapshot, *, timeout, uid, required_properties)``.
-    The implementation must use systemd-run transient unit as nobody (uid 65534),
+    The implementation must run as the resolved non-root probe identity passed as
+    ``uid`` (defaulting to the conventional nobody UID) using the transient unit
     with ProtectSystem=strict, ProtectHome=yes, PrivateNetwork=yes,
     NoNewPrivileges=yes, PrivateTmp=yes, bounded output/time, and unconditional
     unit cleanup. No default adapter exists; omission means unverified.
@@ -187,7 +188,7 @@ def detect_installations(
             version = None
             if probe is not None:
                 try:
-                    output = probe(private_snapshot, timeout=PROBE_TIMEOUT, uid=65534,
+                    output = probe(private_snapshot, timeout=PROBE_TIMEOUT, uid=uid,
                                    required_properties=("ProtectSystem=strict", "ProtectHome=yes",
                                                        "PrivateNetwork=yes", "NoNewPrivileges=yes", "PrivateTmp=yes"))
                 except (OSError, subprocess.SubprocessError, TimeoutError):
