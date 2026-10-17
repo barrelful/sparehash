@@ -118,7 +118,9 @@ class UninstallTests(unittest.TestCase):
                 raise DeploymentError("helper", f"{argv[0]} exited {groupdel_exit}: groupdel: fixture failure")
 
         infrastructure = cli_uninstall.Infrastructure(run=run, cgroup_empty=fake.cgroup_empty,
-                                                      free_hugepages=fake.free_hugepages, unmerge=fake.unmerge)
+                                                      free_hugepages=fake.free_hugepages, unmerge=fake.unmerge,
+                                                      user_lookup=lambda name: (996, 996) if name == "xmrig" else None,
+                                                      group_lookup=lambda name: 12345 if name == "sparehash" else None)
         result = cli_uninstall.uninstall(purge=purge, geteuid=lambda: root, trust=self.tree.trust,
                                          client=client, infrastructure=infrastructure, request_id=REQUEST,
                                          lifecycle_path=self.root / "lifecycle.json")
