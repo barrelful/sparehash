@@ -1,9 +1,9 @@
 # SpareHash
 
-> **Experimental v0.1.1 software.** SpareHash is a young system-level project.
+> **Experimental v0.2.0 software.** SpareHash is a young system-level project.
 > It has been tested on a limited set of Linux distributions. Review this
-> README, `SECURITY.md`, and the v1 limitations section before installing on a
-> machine you care about.
+> README, `SECURITY.md`, `docs/platforms.md`, and the v1 limitations section
+> before installing on a machine you care about.
 
 SpareHash is a CPU-only Monero (RandomX) miner manager for Linux x86_64. It runs
 [XMRig](https://xmrig.com/) in the background using spare CPU cycles, and
@@ -36,13 +36,42 @@ Licensed under the GNU General Public License v3.0 (GPLv3). See `LICENSE`.
 
 ## Supported platforms
 
+SpareHash classifies every host into one of three support tiers. Run `sudo ./install.sh --preflight` to see the tier before any changes are made. See `docs/platforms.md` for the full support matrix, preflight behavior, and platform-specific guidance.
+
+| Tier | Meaning |
+|---|---|
+| **VALIDATED** | Exact image/version passed disposable-VM acceptance |
+| **UNVERIFIED** | Known distribution family but no VM evidence for this version |
+| **UNSUPPORTED** | Known incompatible; installation refused (NixOS, Proxmox VE) |
+
+**VALIDATED:** Debian 12, Ubuntu 22.04 LTS, Ubuntu 24.04 LTS, Linux Mint 21.x/22.x.
+
+**UNVERIFIED:** Fedora Workstation, Fedora Silverblue/Kinoite, Bazzite-Deck, other Atomic/bootc images, openSUSE, Arch Linux. Technical compatibility is not certified support.
+
+**UNSUPPORTED:** NixOS (imperative installer cannot operate within the Nix store model), Proxmox VE (hypervisor host; scheduling and thermal risks not mitigated).
+
+Requirements:
+
 - Linux x86_64
 - systemd as PID 1 (systemd 248+ recommended for `LoadCredential` support)
 - Python 3.11 or newer
 - No additional Python packages required at runtime
 
-Primary testing target: recent Debian, Ubuntu, and Linux Mint. Other systemd
-distributions may work but are not guaranteed in v1.
+## Preflight check
+
+Before installing, run a read-only preflight to see compatibility, support tier, gaming coverage, and planned effects:
+
+```
+sudo ./install.sh --preflight
+```
+
+The report shows support (VALIDATED/UNVERIFIED/UNSUPPORTED), readiness (READY/ACTION_REQUIRED/REFUSED_UNSUPPORTED/REFUSED_UNSAFE/INCONCLUSIVE), gaming coverage (FULL/CONSERVATIVE/UNVERIFIED/UNSUPPORTED), effects (paths, units, accounts, protected directories), missing evidence, reasons, unsafe conditions, and remediation guidance. Add `--json` for machine-readable output:
+
+```
+sudo ./install.sh --preflight --json
+```
+
+Preflight makes no persistent host changes. It does not bootstrap an installed CLI, create users, start services, or download XMRig. Exit codes: 0 (READY), 1 (ACTION_REQUIRED), 2 (REFUSED), 3 (INCONCLUSIVE). See `docs/platforms.md` for the full preflight contract.
 
 ## Quick start
 
@@ -68,15 +97,23 @@ already-running controller on reinstall). The installer never enables or starts
 the miner directly. Its final summary reports boot startup, controller activity,
 and whether mining is blocked (or unknown if controller status is unavailable).
 
-For unattended installs, supply a TOML answers file:
+For unattended installs, supply a TOML answers file with explicit consent:
 
 ```
-sudo ./install.sh --answers answers.toml
+sudo ./install.sh --answers answers.toml --yes
 ```
 
-In `--answers` mode, both startup choices default to Yes without reading stdin:
-the controller is enabled at boot and started immediately. If you declined
-startup interactively, you can enable and start it later with:
+The `--yes` flag is required with `--answers`. It confirms that you have reviewed the answers file and approve the effects. Without `--yes`, the installer refuses to proceed.
+
+In `--answers --yes` mode, both startup choices default to Yes without reading stdin: the controller is enabled at boot and started immediately. For testing or staged deployment, suppress automatic startup:
+
+```
+sudo ./install.sh --answers answers.toml --yes --no-start --no-enable
+```
+
+`--no-start` installs but does not start the controller now. `--no-enable` installs but does not enable the controller at boot. The installer completes successfully; the controller remains stopped and disabled until you run `sudo sparehash start`.
+
+If you declined startup interactively, you can enable and start it later with:
 
 ```
 sudo sparehash start
@@ -99,18 +136,19 @@ Every public command:
 
 | Command | Flags | Requires root | Description |
 |---|---|---|---|
-| `install` | `--answers FILE`, `--use-existing`, `--clear-lifecycle-latch`, `--upgrade OPERATION_ID`, `--recover OPERATION_ID`, `--complete-upgrade OPERATION_ID`, `--no-start`, `--no-enable` | yes | Run, upgrade or recover an installation |
+| `install` | `--answers FILE`, `--use-existing`, `--clear-lifecycle-latch`, `--preflight`, `--json`, `--yes`, `--no-start`, `--no-enable`, `--upgrade`, `--reconfigure`, `--operation-id ID` | yes | Run the installer; `--preflight` is read-only |
 | `uninstall` | `--purge` | yes | Remove SpareHash; configuration retained unless `--purge` |
+| `complete-upgrade` | `OPERATION_ID` | yes | Complete a held local upgrade after postverify |
 | `status` | `--json` | yes | Show controller, miner, blockers, power, thermal, hugepages, gaming, API |
 | `start` | | yes | Enable and start the controller (`systemctl enable --now`) |
 | `stop` | | yes | Stop controller and miner (does not disable; reboot can resume) |
 | `pause` | | no | Manually pause mining via controller IPC |
 | `resume` | | no | Clear manual pause (mining resumes only when all blockers are clear) |
 | `config show` | | no | Print current public configuration as JSON |
-| `config edit` | | yes | Unsupported in experimental v0.1.1; exits 2 without effects |
+| `config edit` | | yes | Unsupported in experimental v0.2.0; exits 2 without effects |
 | `logs` | `-f`, `--follow` | no | Stream the last 100 lines from both unit journals |
-| `benchmark` | | yes | Unsupported in experimental v0.1.1; exits 2 without effects |
-| `update` | | yes | Unsupported in experimental v0.1.1; exits 2 without effects |
+| `benchmark` | | yes | Unsupported in experimental v0.2.0; exits 2 without effects |
+| `update` | | yes | Unsupported in experimental v0.2.0; exits 2 without effects; use `--upgrade` |
 | `gaming-start` | | no | Signal that a configured user started gaming |
 | `gaming-end` | | no | Signal that a configured user stopped gaming |
 | `debug set-blocker` | `NAME` | yes | Force a named blocker active (debugging only) |
@@ -124,7 +162,7 @@ not user-facing.
 
 The public configuration lives at `/etc/sparehash/config.toml`. Use the installer
 wizard or an answers file to configure installation; `config show` is read-only.
-`config edit` is unsupported in v0.1.1. All keys and their defaults:
+`config edit` is unsupported in v0.2.0. All keys and their defaults:
 
 ```toml
 version = 1
@@ -359,7 +397,7 @@ query.
 
 ## Update and uninstall
 
-`update`, `config edit`, and `benchmark` are unsupported in experimental v0.1.1.
+`update`, `config edit`, and `benchmark` are unsupported in experimental v0.2.0.
 They refuse with exit code 2 before workflow effects. The underlying update
 sidecar lease still gates internal update operations and survives controller
 restart; it is not a supported public update workflow in this release.
@@ -457,7 +495,7 @@ before retirement or service changes.
 
 ## Known limitations
 
-- `config edit`, `update`, and `benchmark` are unsupported in v0.1.1.
+- `config edit`, `update`, and `benchmark` are unsupported in v0.2.0.
 - The `systemd-run` isolated version probe has been observed to fail in certain
   VM environments where transient unit creation is restricted. The rest of the
   post-install verification still passes.
@@ -519,7 +557,7 @@ resolver. SpareHash does not change DNS settings.
 
 An internal or older update operation may be holding
 the lease; the public update/config-edit/benchmark commands are unsupported in
-v0.1.1. Let an active operation finish, then retry. If it failed or is stuck,
+v0.2.0. Let an active operation finish, then retry. If it failed or is stuck,
 inspect `sparehash logs` and the lifecycle records before recovery. A controller
 restart doesn't clear an external hold, and the reinstall flag doesn't erase an
 update hold. Don't delete lifecycle files to bypass the safety barrier.

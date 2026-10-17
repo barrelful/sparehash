@@ -87,6 +87,16 @@ them, it must be discussed explicitly in the issue or pull request.
 - If you add a new CLI command or config key, update the README and run
   `qa/check_readme.py`.
 
+### VM lab workflow
+
+The VM lab (`docs/development/vm-testing.md` when available) provides
+disposable-VM acceptance procedures for cross-distribution testing. Unit tests
+exercise algorithms only; real systemd/cgroup/SELinux and OS persistence require
+VMs or boot media. Before submitting changes that affect installation,
+lifecycle, gaming integration, or platform support, verify behavior in a
+disposable VM matching the target distribution. See `docs/platforms.md` for the
+support matrix and `qa/README.md` for destructive-suite invocation.
+
 ## Pull request workflow
 
 1. Open an issue first for significant changes.
