@@ -42,6 +42,14 @@ USERNAME: Final = re.compile(r"[a-z_][a-z0-9_-]{0,31}")
 HEX64: Final = re.compile(r"[0-9a-f]{64}")
 HEX32: Final = re.compile(r"[0-9a-f]{32}")
 DATE: Final = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?Z")
+# Schema-2 payload identity; a bounded token, never a secret or an arbitrary string.
+PAYLOAD_VERSION: Final = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:+-]{0,63}")
+# Finite physical-root grammar. Logical identities keep /opt and /usr/local; a
+# selected layout may only name one of these two documented physical roots each.
+LOGICAL_OPT: Final = "/opt"
+LOGICAL_LOCAL: Final = "/usr/local"
+OPT_ROOT_CHOICES: Final = ("/opt", "/var/opt")
+LOCAL_ROOT_CHOICES: Final = ("/usr/local", "/var/usrlocal")
 
 
 class ManifestError(ValueError):
@@ -106,7 +114,7 @@ class Action:
 
 @dataclass(frozen=True, slots=True)
 class Installer:
-    schema: Literal[1]
+    schema: int
     phase: Phase
     identities: tuple[UserIdentity | GroupIdentity, ...]
     memberships: tuple[Membership, ...]
@@ -226,3 +234,12 @@ def bootstrap_target(path: str) -> tuple[ArtifactKind, str, int] | None:
     if identity is None:
         return None
     return "file", identity, 0o644
+
+
+def apply_layout(path: str, opt_root: str, local_root: str) -> str:
+    """Map a logical artifact path onto a selected physical root without traversing."""
+    if path == LOGICAL_OPT or path.startswith(LOGICAL_OPT + "/"):
+        return opt_root + path[len(LOGICAL_OPT):]
+    if path == LOGICAL_LOCAL or path.startswith(LOGICAL_LOCAL + "/"):
+        return local_root + path[len(LOGICAL_LOCAL):]
+    return path

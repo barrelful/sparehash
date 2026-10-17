@@ -13,6 +13,7 @@ import fcntl
 import grp
 import os
 import stat
+import threading
 import time
 from collections.abc import Iterator
 from contextlib import ExitStack, contextmanager, suppress
@@ -21,11 +22,14 @@ from pathlib import Path
 from typing import Final
 from uuid import uuid4
 
-from .xmrig_manifest import MAX_METADATA_BYTES, Manifest, format_manifest, parse_manifest
+from .xmrig_manifest import MAX_METADATA_BYTES_V2, Manifest, format_manifest, parse_manifest
 from .xmrig_paths import DIRECTORY_FLAGS, FILE_FLAGS, PathTrust
 
 NAME: Final = "install-manifest.json"
 MODE: Final = 0o640
+
+_HELD: Final[dict[tuple[int, str], tuple[int, int, int, int]]] = {}
+_HELD_GUARD: Final = threading.Lock()
 
 
 class StoreError(RuntimeError):
@@ -86,11 +90,11 @@ class ManifestStore:
             before = os.fstat(source.fileno())
             if (not stat.S_ISREG(before.st_mode) or before.st_uid != self.uid
                     or before.st_mode & 0o022 or before.st_nlink != 1
-                    or not 0 < before.st_size <= MAX_METADATA_BYTES):
+                    or not 0 < before.st_size <= MAX_METADATA_BYTES_V2):
                 raise StoreError("manifest", "metadata is not a bounded protected owned regular file")
-            data = source.read(MAX_METADATA_BYTES + 1)
+            data = source.read(MAX_METADATA_BYTES_V2 + 1)
             after = os.fstat(source.fileno())
-        if (before.st_size != len(data) or len(data) > MAX_METADATA_BYTES
+        if (before.st_size != len(data) or len(data) > MAX_METADATA_BYTES_V2
                 or before.st_mtime_ns != after.st_mtime_ns or before.st_ctime_ns != after.st_ctime_ns):
             raise StoreError("manifest", "metadata changed during read")
         try:
@@ -147,9 +151,33 @@ def _protected_directory(fd: int, uid: int) -> None:
 
 @contextmanager
 def locked_store(context: StoreContext = DEFAULT_CONTEXT) -> Iterator[ManifestStore]:
-    """Pin all ancestors, then acquire LOCK_EX with a bounded nonblocking retry."""
+    """Pin all ancestors, then acquire LOCK_EX with a bounded nonblocking retry.
+
+    A nested call reusing the same directory in the same thread shares the already
+    held descriptor, so callers may pass one store context through several ledger
+    operations without deadlocking on their own flock.
+    """
     if not 0 <= context.timeout <= 60:
         raise StoreError("manifest-lock", "timeout must be between zero and 60 seconds")
+    key = (threading.get_ident(), str(context.trust.manifest_path.parent))
+    with _HELD_GUARD:
+        active = _HELD.get(key)
+        if active is not None:
+            _HELD[key] = (active[0], active[1], active[2], active[3] + 1)
+    if active is not None:
+        lock_fd, held_uid, held_gid, _held_depth = active
+        duplicate = os.dup(lock_fd)
+        try:
+            yield ManifestStore(duplicate, held_uid, held_gid)
+        finally:
+            os.close(duplicate)
+            with _HELD_GUARD:
+                stored_fd, stored_uid, stored_gid, depth = _HELD[key]
+                if depth <= 1:
+                    del _HELD[key]
+                else:
+                    _HELD[key] = (stored_fd, stored_uid, stored_gid, depth - 1)
+        return
     gid = context.group()
     with ExitStack() as stack:
         fd = os.open(context.trust.root, DIRECTORY_FLAGS)
@@ -184,7 +212,11 @@ def locked_store(context: StoreContext = DEFAULT_CONTEXT) -> Iterator[ManifestSt
                 if remaining <= 0:
                     raise StoreError("manifest-lock", "another installer holds the metadata directory lock") from error
                 time.sleep(min(0.02, remaining))
+        with _HELD_GUARD:
+            _HELD[key] = (fd, context.trust.uid, gid, 1)
         try:
             yield ManifestStore(fd, context.trust.uid, gid)
         finally:
+            with _HELD_GUARD:
+                _ = _HELD.pop(key, None)
             fcntl.flock(fd, fcntl.LOCK_UN)

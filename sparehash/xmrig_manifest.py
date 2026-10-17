@@ -9,20 +9,48 @@ The installer section records receipts only; B6 marker checks live in PathTrust.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
+from collections.abc import Iterable
 from dataclasses import asdict, dataclass
 from pathlib import PurePosixPath
 from typing import Callable, Final, Literal, assert_never
 
 from .xmrig_ledger import (
-    HEX32, HEX64, OPERATIONS, USERNAME, Action, Artifact, GroupIdentity,
-    Installer, Json, ManifestError as ManifestError, Membership, UserIdentity,
-    boolean, choice, date, fixed_target, integer, items, keys, mapping, text,
+    HEX32,
+    HEX64,
+    LOCAL_ROOT_CHOICES,
+    OPERATIONS,
+    OPT_ROOT_CHOICES,
+    PAYLOAD_VERSION,
+    USERNAME,
+    Action,
+    Artifact,
+    GroupIdentity,
+    Installer,
+    Json,
+    Membership,
+    UserIdentity,
+    boolean,
+    choice,
+    date,
+    fixed_target,
+    integer,
+    items,
+    keys,
+    mapping,
+    text,
+)
+from .xmrig_ledger import (
+    ManifestError as ManifestError,
 )
 
 MANIFEST_ROOT: Final = "/opt/xmrig"
 MAX_METADATA_BYTES: Final = 64 * 1024
+MAX_METADATA_BYTES_V2: Final = 256 * 1024
+INVENTORY_MODULES: Final = 128
+INVENTORY_PREFIXES: Final = ("sparehash/", "systemd/")
 VERSION_PATTERN: Final = re.compile(r"xmrig-\d+\.\d+\.\d+")
 SOURCE_PATTERN: Final = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,255}")
 _LOAD_JSON: Final[Callable[..., Json]] = json.loads
@@ -43,6 +71,18 @@ class Manifest:
     root: str
     versions: tuple[VersionRecord, ...]
     installer: Installer | None = None
+    schema: int = 2
+    layout: dict[str, str] | None = None
+    payload_version: str | None = None
+    inventory_digest: str | None = None
+
+    def __post_init__(self) -> None:
+        declared = self.installer.schema if self.installer is not None else 1
+        if self.schema != declared:
+            object.__setattr__(self, "schema", declared)
+        if self.schema == 1 and (self.layout is not None or self.payload_version is not None
+                                 or self.inventory_digest is not None):
+            raise ManifestError("schema 1 metadata")
 
     @property
     def names(self) -> tuple[str, ...]:
@@ -144,10 +184,47 @@ def _pending_target(target: str) -> str | None:
     return None
 
 
-def _installer(value: Json) -> Installer:
+def metadata_cap(schema: int) -> int:
+    """The serialized metadata bound for a document of the given ownership schema."""
+    return MAX_METADATA_BYTES_V2 if schema == 2 else MAX_METADATA_BYTES
+
+
+def layout_roots(value: Json) -> dict[str, str]:
+    """Validate the finite {opt_root, local_root} physical mapping."""
+    record = mapping(value)
+    keys(record, "opt_root local_root")
+    return {"opt_root": choice(record["opt_root"], OPT_ROOT_CHOICES),
+            "local_root": choice(record["local_root"], LOCAL_ROOT_CHOICES)}
+
+
+def payload_version_value(value: Json) -> str:
+    result = text(value)
+    if PAYLOAD_VERSION.fullmatch(result) is None:
+        raise ManifestError("payload version")
+    return result
+
+
+def inventory_digest(entries: Iterable[tuple[str, str]]) -> str:
+    """Canonical SHA-256 over the bounded sparehash/ and systemd/ module listing."""
+    listing = sorted(entries)
+    if len(listing) > INVENTORY_MODULES:
+        raise ManifestError("inventory size")
+    digest = hashlib.sha256()
+    for path, sha256 in listing:
+        if (not path.startswith(INVENTORY_PREFIXES) or ".." in PurePosixPath(path).parts
+                or HEX64.fullmatch(sha256) is None):
+            raise ManifestError("inventory entry")
+        digest.update(path.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(sha256.encode("ascii"))
+        digest.update(b"\n")
+    return digest.hexdigest()
+
+
+def _installer(value: Json, schema: int) -> Installer:
     record = mapping(value)
     keys(record, "schema phase identities memberships artifacts actions")
-    if integer(record["schema"]) != 1:
+    if integer(record["schema"]) != schema:
         raise ManifestError("installer schema")
     identities = tuple(_identity(item) for item in items(record["identities"]))
     memberships = tuple(_membership(item) for item in items(record["memberships"]))
@@ -180,18 +257,28 @@ def _installer(value: Json) -> Installer:
         previous = action.sequence
         if phase == "ready" and action.state == "pending":
             raise ManifestError("pending ready action")
-    return Installer(1, phase, identities, memberships, artifacts, actions)
+    return Installer(schema, phase, identities, memberships, artifacts, actions)
 
 
-def parse_manifest(contents: str) -> Manifest | None:
-    """Reject malformed metadata, including duplicate keys at every nesting level."""
+def parse_manifest(contents: str, *, inventory: Iterable[tuple[str, str]] | None = None) -> Manifest | None:
+    """Parse schema-1 and schema-2 metadata; reject malformed or oversized documents.
+
+    ``inventory`` supplies an actual sparehash/ and systemd/ listing; when given, a
+    schema-2 ``inventory_digest`` must match it exactly.
+    """
     try:
-        if len(contents.encode("utf-8")) > MAX_METADATA_BYTES:
+        encoded = contents.encode("utf-8")
+        if len(encoded) > MAX_METADATA_BYTES_V2:
             return None
         document = mapping(_LOAD_JSON(contents, object_pairs_hook=_unique_object))
-        expected = "root versions installer" if "installer" in document else "root versions"
+        has_installer = "installer" in document
+        schema = integer(mapping(document["installer"])["schema"]) if has_installer else 1
+        if schema not in (1, 2):
+            return None
+        expected = ("root versions payload_version inventory_digest layout installer" if schema == 2
+                    else "root versions installer" if has_installer else "root versions")
         keys(document, expected)
-        if document["root"] != MANIFEST_ROOT:
+        if len(encoded) > metadata_cap(schema) or document["root"] != MANIFEST_ROOT:
             return None
         records: list[VersionRecord] = []
         for value in items(document["versions"]):
@@ -203,17 +290,48 @@ def parse_manifest(contents: str) -> Manifest | None:
             records.append(VersionRecord(version, date(record["installed_at"]), source))
         if len({item.version for item in records}) != len(records):
             return None
-        installer = _installer(document["installer"]) if "installer" in document else None
-        return Manifest(MANIFEST_ROOT, tuple(records), installer)
+        layout = payload = digest = None
+        if schema == 2:
+            layout = None if document["layout"] is None else layout_roots(document["layout"])
+            payload = None if document["payload_version"] is None else payload_version_value(document["payload_version"])
+            digest = None if document["inventory_digest"] is None else text(document["inventory_digest"])
+            if digest is not None and HEX64.fullmatch(digest) is None:
+                return None
+            if inventory is not None and digest is not None and inventory_digest(inventory) != digest:
+                return None
+        installer = _installer(document["installer"], schema) if has_installer else None
+        return Manifest(MANIFEST_ROOT, tuple(records), installer, schema, layout, payload, digest)
     except (ValueError, TypeError, KeyError, UnicodeError, RecursionError):
         return None
 
 
-def format_manifest(manifest: Manifest) -> bytes:
-    """Serialize the full canonical document, refusing drift or size overflow."""
+def format_manifest(manifest: Manifest, schema: int = 2) -> bytes:
+    """Serialize the canonical document; the requested schema can only lower it.
+
+    Re-serialization never silently promotes ownership metadata: a schema-1 manifest
+    stays schema 1 unless it was built with schema 2, and a schema-1 request refuses to
+    carry schema-2 layout fields rather than discarding them.
+    """
+    if schema not in (1, 2):
+        raise ManifestError("schema")
+    effective = min(schema, manifest.schema)
+    if effective == 1 and (manifest.layout is not None or manifest.payload_version is not None
+                           or manifest.inventory_digest is not None):
+        raise ManifestError("schema downgrade")
     document = asdict(manifest)
-    if manifest.installer is None:
-        del document["installer"]
+    del document["schema"]
+    if effective == 1:
+        del document["layout"]
+        del document["payload_version"]
+        del document["inventory_digest"]
+        if manifest.installer is None:
+            del document["installer"]
+        else:
+            document["installer"]["schema"] = 1
+    elif manifest.installer is None:
+        raise ManifestError("schema 2 without installer")
+    else:
+        document["installer"]["schema"] = 2
     result = (json.dumps(document, indent=2) + "\n").encode("utf-8")
     if parse_manifest(result.decode("utf-8")) is None:
         raise ManifestError("publication")
