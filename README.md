@@ -99,7 +99,7 @@ Every public command:
 
 | Command | Flags | Requires root | Description |
 |---|---|---|---|
-| `install` | `--answers FILE`, `--use-existing`, `--clear-lifecycle-latch` | yes | Run the installer |
+| `install` | `--answers FILE`, `--use-existing`, `--clear-lifecycle-latch`, `--operation-id ID` | yes | Run the installer |
 | `uninstall` | `--purge` | yes | Remove SpareHash; configuration retained unless `--purge` |
 | `status` | `--json` | yes | Show controller, miner, blockers, power, thermal, hugepages, gaming, API |
 | `start` | | yes | Enable and start the controller (`systemctl enable --now`) |
@@ -321,16 +321,19 @@ removal. A partial failure after retirement leaves the system retired too.
 An existing uninstall sidecar lease is retained; no lease is required or created
 for offline uninstall. Configuration is retained by default.
 
-If you later want to reinstall after uninstall, opt in explicitly:
+If you later want to reinstall after uninstall, opt in explicitly. When the
+retirement record carries an operation id, pass the same id:
 
 ```
-sudo ./install.sh --clear-lifecycle-latch
+sudo ./install.sh --clear-lifecycle-latch --operation-id <ID>
 ```
 
-This clears the retained uninstall lease before removing the latch. An active
-update hold or an unreadable lease isn't cleared; a failure leaves the system
-retired. Never delete lifecycle records manually to bypass retirement.
-Inspect and resolve any partial-uninstall failure before opting into reinstall.
+The installer prints the exact command, including the recorded id, when it
+refuses a retired system. This clears the retained uninstall lease before
+removing the latch. An active update hold, a mismatched operation id, or an
+unreadable lease isn't cleared; a failure leaves the system retired. Never
+delete lifecycle records manually to bypass retirement. Inspect and resolve any
+partial-uninstall failure before opting into reinstall.
 
 ## DNS filtering
 
@@ -485,14 +488,17 @@ update hold. Don't delete lifecycle files to bypass the safety barrier.
 
 ### Reinstall says "this system was previously uninstalled"
 
-After resolving any partial-uninstall failure, explicitly opt into reinstall:
+After resolving any partial-uninstall failure, explicitly opt into reinstall.
+The installer prints the exact command, including the recorded operation id:
 
 ```
-sudo ./install.sh --clear-lifecycle-latch
+sudo ./install.sh --clear-lifecycle-latch --operation-id <ID>
 ```
 
-This clears both the retained uninstall lease and the retirement latch. Removing
-`lifecycle.json` alone isn't equivalent and may leave mining inhibited.
+This clears both the retained uninstall lease and the retirement latch. A
+mismatched or missing operation id, an active update hold, or a corrupt record
+is refused and leaves the system retired. Removing `lifecycle.json` alone isn't
+equivalent and may leave mining inhibited.
 
 ## Profitability and electricity
 
