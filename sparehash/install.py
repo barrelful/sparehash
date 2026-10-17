@@ -20,13 +20,13 @@ from pathlib import Path
 from types import FrameType
 from typing import Final
 
-from . import config, gaming_install, ipc, lifecycle, systemd, wizard, xmrig_config
+from . import config, gaming_install, ipc, lifecycle, systemd, upgrade, wizard, xmrig_config
 from .deployment import ENV, DeploymentError, Tree, checked, command
 from .install_ledger import Ledger
 from .install_manifest import StoreContext, locked_store
 from .install_xmrig import choose, dry_run, isolated
 from .lifecycle import is_retired
-from .lifecycle_lease import LeaseError
+from .lifecycle_lease import LeaseError, LeaseStore
 from .sysdetect import Capabilities
 from .xmrig_install import CollisionError, current_binary
 from .xmrig_ledger import Artifact, GroupIdentity, Operation, UserIdentity, bootstrap_target, choice
@@ -40,6 +40,11 @@ class Arguments(argparse.Namespace):
     use_existing: bool = False
     clear_lifecycle_latch: bool = False
     bootstrap_created: list[str] | None = None
+    upgrade: str | None = None
+    recover: str | None = None
+    complete_upgrade: str | None = None
+    no_start: bool = False
+    no_enable: bool = False
 
 
 def preflight(tree: Tree, caps: Capabilities) -> None:
@@ -198,6 +203,61 @@ def bootstrap(ledger: Ledger, created: tuple[str, ...]) -> None:
         ledger.applied(0, (receipt,))
 
 
+def upgrade_source_root() -> Path:
+    """The running local release selected for --upgrade; never a remote self-updater."""
+    return Path(__file__).resolve().parent.parent
+
+
+def empty_proof() -> bool:
+    """Fresh stopped/empty proof: neither controller nor miner may be active."""
+    for unit in ("sparehash.service", "sparehash-xmrig.service"):
+        result = command(("/usr/bin/systemctl", "is-active", unit))
+        if result.returncode == 0 and result.stdout.strip() == "active":
+            return False
+    return True
+
+
+def _upgrade_context(tree: Tree, operation_id: str, source_root: Path | None) -> upgrade.UpgradeContext:
+    root = source_root if source_root is not None else upgrade_source_root()
+    return upgrade.UpgradeContext(
+        operation_id=operation_id,
+        source_root=root,
+        target_root=tree.root,
+        staging_root=tree.path("/opt/sparehash") / (".upgrade-" + operation_id),
+        preserve_startup_choices=True,
+    )
+
+
+def upgrade_install(tree: Tree, operation_id: str, *, source_root: Path | None = None) -> None:
+    """Acquire the hold, stage and publish the selected local release; completion is explicit."""
+    context = _upgrade_context(tree, operation_id, source_root)
+    lease = upgrade.lease_for(tree.root)
+    _ = upgrade.acquire_compatible_hold(operation_id, lease=lease)
+    _ = upgrade.begin(context)
+    staged = upgrade.stage_source(context, tree)
+    _ = upgrade.verify_pre_publication(context, tree, upgrade.deployment_spec(context, tree, staged))
+    journal = upgrade.read_journal(tree.root, operation_id)
+    _ = upgrade.publish(context, journal, Ledger(tree).context())
+    print(f"upgrade: staged and published under hold; run --complete-upgrade {operation_id} to commit")
+
+
+def recover_install(tree: Tree, operation_id: str) -> None:
+    """Roll a recorded staging forward; refuse when the matching hold or staging is gone."""
+    lease = upgrade.lease_for(tree.root)
+    hold = lease.load()
+    if hold is None or hold.purpose != "update" or hold.request_id != operation_id:
+        raise upgrade.UpgradeError("recover", "matching update hold is absent; refusing recovery")
+    _ = upgrade.recover_from_staging(operation_id, tree.root)
+    print(f"upgrade: staging for {operation_id} rolled forward; hold retained until --complete-upgrade")
+
+
+def complete_install(tree: Tree, operation_id: str, *, proof: Callable[[], bool] | None = None) -> None:
+    """Commit a published upgrade; manual pause and startup choices remain untouched."""
+    _ = upgrade.complete(tree.root, operation_id, lease=upgrade.lease_for(tree.root),
+                         empty_proof=proof if proof is not None else empty_proof)
+    print(f"upgrade: operation {operation_id} committed; startup choices and manual state preserved")
+
+
 def execute(tree: Tree, caps: Capabilities, cfg: config.Config, *, use_existing: bool = False,
             bootstrap_created: tuple[str, ...] = (), interactive: bool = True) -> None:
     preflight(tree, caps)
@@ -277,6 +337,16 @@ def main(argv: Sequence[str] | None = None, *, geteuid: Callable[[], int] = os.g
     _ = parser.add_argument("--clear-lifecycle-latch", action="store_true",
                             help="allow reinstall after a previous uninstall (root only)")
     _ = parser.add_argument("--bootstrap-created", action="append", metavar="PATH", help=argparse.SUPPRESS)
+    _ = parser.add_argument("--upgrade", metavar="OPERATION_ID",
+                            help="stage and publish a selected local release under a compatible hold")
+    _ = parser.add_argument("--recover", metavar="OPERATION_ID",
+                            help="roll a recorded failed publication forward from its private staging")
+    _ = parser.add_argument("--complete-upgrade", metavar="OPERATION_ID",
+                            help="commit a published upgrade after a fresh empty proof")
+    _ = parser.add_argument("--no-start", action="store_true",
+                            help="fresh/reconfigure: leave the controller stopped")
+    _ = parser.add_argument("--no-enable", action="store_true",
+                            help="fresh/reconfigure: leave the controller disabled at boot")
     args = parser.parse_args(argv, namespace=Arguments())
     if geteuid() != 0:
         print("sparehash: root: installation requires root", file=sys.stderr)
@@ -298,8 +368,21 @@ def main(argv: Sequence[str] | None = None, *, geteuid: Callable[[], int] = os.g
                       "run with --clear-lifecycle-latch to reinstall, or remove /var/lib/sparehash/lifecycle.json manually",
                       file=sys.stderr)
                 return 2
-        caps = Capabilities.detect(environ=ENV, manager_probe=systemd.probe_cpuweight_idle)
         tree = Tree()
+        if args.upgrade is not None or args.recover is not None or args.complete_upgrade is not None:
+            selected = [name for name, value in (("--upgrade", args.upgrade), ("--recover", args.recover),
+                                                 ("--complete-upgrade", args.complete_upgrade)) if value is not None]
+            if len(selected) != 1:
+                print("sparehash: install: choose exactly one of --upgrade/--recover/--complete-upgrade", file=sys.stderr)
+                return 2
+            if args.upgrade is not None:
+                upgrade_install(tree, args.upgrade)
+            elif args.recover is not None:
+                recover_install(tree, args.recover)
+            elif args.complete_upgrade is not None:
+                complete_install(tree, args.complete_upgrade)
+            return 0
+        caps = Capabilities.detect(environ=ENV, manager_probe=systemd.probe_cpuweight_idle)
         preflight(tree, caps)
         if not caps.cpuweight_idle:
             print("capabilities: idle cgroup weights unavailable; retaining Nice/SCHED_IDLE")

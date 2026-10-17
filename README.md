@@ -99,7 +99,7 @@ Every public command:
 
 | Command | Flags | Requires root | Description |
 |---|---|---|---|
-| `install` | `--answers FILE`, `--use-existing`, `--clear-lifecycle-latch` | yes | Run the installer |
+| `install` | `--answers FILE`, `--use-existing`, `--clear-lifecycle-latch`, `--upgrade OPERATION_ID`, `--recover OPERATION_ID`, `--complete-upgrade OPERATION_ID`, `--no-start`, `--no-enable` | yes | Run, upgrade or recover an installation |
 | `uninstall` | `--purge` | yes | Remove SpareHash; configuration retained unless `--purge` |
 | `status` | `--json` | yes | Show controller, miner, blockers, power, thermal, hugepages, gaming, API |
 | `start` | | yes | Enable and start the controller (`systemctl enable --now`) |
@@ -363,6 +363,47 @@ query.
 They refuse with exit code 2 before workflow effects. The underlying update
 sidecar lease still gates internal update operations and survives controller
 restart; it is not a supported public update workflow in this release.
+
+### Upgrading a local release
+
+`sparehash install` supports a controlled local-release upgrade from an
+explicitly selected checkout. It never contacts a remote SpareHash updater and
+does not replace XMRig; an unchanged authorized XMRig is reused.
+
+```
+sudo ./install.sh --upgrade OPERATION_ID
+sudo sparehash install --complete-upgrade OPERATION_ID
+```
+
+`--upgrade` acquires the compatible external update hold, stages the selected
+source beside `/opt/sparehash/src`, verifies the complete inventory, then
+publishes source/CLI/units through a single journaled transaction. The old
+startup choices (boot enablement and whether the controller was active) and any
+manual pause are preserved; `--no-start` and `--no-enable` only affect a fresh
+or reconfigure install and never override an established choice during upgrade.
+The controller and miner are held through publication. A multi-object publication
+is a sequence of journaled renames, not one atomic operation.
+
+If publication is interrupted by ENOSPC, an I/O error, a foreign leaf or a
+digest mismatch, the compatible hold and the private staging are retained and
+the operation reports the exact recovery command:
+
+```
+sudo ./install.sh --recover OPERATION_ID
+```
+
+`--recover` rolls the same staged release forward and refuses when the matching
+hold or the recorded staging is missing or has been modified. After post-verify,
+the hold remains until you explicitly complete it:
+
+```
+sudo sparehash install --complete-upgrade OPERATION_ID
+```
+
+Completion revalidates the published payload and requires a fresh empty proof;
+it removes only the migration journal and the matching hold, leaving startup
+choices and manual pause untouched. The private staging is removed only after
+completion.
 
 Remove SpareHash:
 
