@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import os
 import grp
+import logging
 import signal
 import threading
 import time
@@ -18,12 +19,13 @@ from queue import Empty, Queue
 from types import FrameType
 import sys
 from functools import partial
-from typing import final
+from typing import Final, final
 
 from . import config, gaming, ipc, power, systemd, thermal
 from .controller import Controller
-from .controller_io import Observation, Ports, SampleId
+from .controller_io import Generation, Observation, Ports, SampleId
 from .deployment import Tree, checked
+from .gaming_session import CgroupwalkProbe, GamingSessionGuard, LogindSessionProbe
 from .hugepages import LeaseManager
 from .install_manifest import StoreContext, locked_store
 from .xmrig_paths import PathTrust
@@ -31,12 +33,22 @@ from .runtime_jobs import Jobs, empty
 from .runtime_spec import DIRECTORY, SPEC
 from .state import BlockerState
 
+LOGGER: Final = logging.getLogger(__name__)
+GAMING_POLL_SECONDS: Final = 1.0
+
+
+def _discard_gaming(_decision: str, _epoch: int) -> None:
+    return
+
 
 @final
 class Providers:
-    def __init__(self, cfg: config.Config, enqueue: Callable[[Callable[[], None]], None]) -> None:
+    def __init__(self, cfg: config.Config, enqueue: Callable[[Callable[[], None]], None], *,
+                 gaming_guard: GamingSessionGuard | None = None,
+                 gaming_sink: Callable[[str, int], None] | None = None) -> None:
         self.cfg, self.enqueue = cfg, enqueue
         self.worker = ThreadPoolExecutor(max_workers=1, thread_name_prefix="observation")
+        self.gaming_worker = ThreadPoolExecutor(max_workers=1, thread_name_prefix="gaming-guard")
         self.queries = ThreadPoolExecutor(max_workers=8, thread_name_prefix="guard-query")
         self.monitor = power.PowerMonitor()
         self.guard = thermal.ThermalGuard(cfg.thermal.enabled, cfg.thermal.pause_c, cfg.thermal.resume_c,
@@ -44,6 +56,18 @@ class Providers:
         self.guard_lock = threading.Lock()
         self.users = tuple(gaming.User.from_name(name) for name in cfg.gaming.users) if cfg.gaming.enabled else ()
         self.finish: Callable[[Observation], None] = lambda _: None
+        self.gaming_enabled = cfg.gaming.enabled
+        # Fail closed until the priority reducer speaks; disabled gaming is inert.
+        self.gaming_blocked = cfg.gaming.enabled
+        self.gaming_busy = False
+        self.gaming_sink: Callable[[str, int], None] = gaming_sink if gaming_sink is not None else _discard_gaming
+        if gaming_guard is not None:
+            self.gaming_guard: GamingSessionGuard | None = gaming_guard
+        elif cfg.gaming.enabled and self.users:
+            self.gaming_guard = GamingSessionGuard(LogindSessionProbe(), CgroupwalkProbe(),
+                                                   tuple(user.uid for user in self.users))
+        else:
+            self.gaming_guard = None
 
     def temperature(self) -> bool:
         with self.guard_lock:
@@ -52,12 +76,36 @@ class Providers:
     def request(self, sample: SampleId, deadline: float) -> None:
         _ = self.worker.submit(self.collect, sample, deadline)
 
+    def request_gaming(self, epoch: int) -> None:
+        """Dedicated bounded priority query; one in flight, never on the owner loop."""
+        if self.gaming_busy:
+            return
+        self.gaming_busy = True
+        _ = self.gaming_worker.submit(self.collect_gaming, epoch)
+
+    def collect_gaming(self, epoch: int) -> None:
+        """Supervised reducer call; any helper EOF/stale/disconnect yields UNKNOWN."""
+        try:
+            started = time.monotonic()
+            guard = self.gaming_guard
+            if guard is None:
+                decision = "BLOCKED" if self.gaming_enabled else "CLEAR"
+            else:
+                try:
+                    decision = guard.evaluate(started)
+                except Exception:
+                    LOGGER.exception("gaming guard failed; holding inhibition")
+                    decision = "UNKNOWN"
+            self.gaming_blocked = decision != "CLEAR"
+            self.gaming_sink(decision, epoch)
+        finally:
+            self.gaming_busy = False
+
     def collect(self, sample: SampleId, deadline: float) -> None:
         at = time.monotonic()
         inventory, sysfs, ac_online, discharge_rate_w = power.read_sysfs(Path("/sys"), at)
         upower_future = self.monitor.backend.query()
         thermal_future = self.queries.submit(self.temperature)
-        gaming_futures = tuple((user.uid, self.queries.submit(gaming.DEFAULT_PROBE.query, user)) for user in self.users)
         try:
             on_battery = upower_future.result(timeout=max(0.001, deadline - time.monotonic()))
         except TimeoutError:
@@ -66,23 +114,17 @@ class Providers:
             hot = thermal_future.result(timeout=max(0.001, deadline - time.monotonic()))
         except TimeoutError:
             hot = None
-        observations: list[tuple[ipc.Uid, bool | None]] = []
-        for uid, future in gaming_futures:
-            try:
-                value = future.result(timeout=max(0.001, deadline - time.monotonic()))
-            except TimeoutError:
-                value = None
-            observations.append((uid, value))
         now = time.monotonic()
         fresh = 0 <= now - at <= 10
         observation = Observation(sample, now, inventory.credible(now), on_battery if fresh else None,
-                                  sysfs.credible(now), tuple(observations), hot,
+                                  sysfs.credible(now), (), hot,
                                   ac_online if fresh else None, discharge_rate_w if fresh else None,
-                                  self.cfg.power.maintenance_mode)
+                                  self.cfg.power.maintenance_mode, self.gaming_blocked)
         self.enqueue(lambda: self.finish(observation))
 
     def close(self) -> None:
         self.worker.shutdown(wait=True, cancel_futures=True)
+        self.gaming_worker.shutdown(wait=True, cancel_futures=True)
         self.queries.shutdown(wait=True, cancel_futures=True)
 
 
@@ -148,6 +190,8 @@ def run() -> int:
     providers.finish, jobs.finish = owner.observe, owner.complete
     jobs.finished = owner.benchmark_finished
     jobs.authorize = lambda: owner.authorize(consume=False)
+    providers.gaming_sink = (lambda decision, epoch: safety.put(
+        partial(owner.safety, "gaming", decision != "CLEAR", source="gaming", epoch=Generation(epoch))))
     failures: list[str] = []
 
     def handle(request: ipc.Request, peer: ipc.Peer) -> ipc.Document:
@@ -179,12 +223,18 @@ def run() -> int:
             messages.put(owner.refresh)
             _ = stop.wait(5)
 
+    def gaming() -> None:
+        while not stop.is_set():
+            providers.request_gaming(int(owner.generation))
+            _ = stop.wait(GAMING_POLL_SECONDS)
+
     def terminate(_number: int, _frame: FrameType | None) -> None:
         stop.set()
 
     threads = (threading.Thread(target=serve, daemon=True),
                threading.Thread(target=providers.monitor.run, args=(stop, emit), daemon=True),
-               threading.Thread(target=temperatures, daemon=True))
+               threading.Thread(target=temperatures, daemon=True),
+               threading.Thread(target=gaming, daemon=True))
     old_term = signal.signal(signal.SIGTERM, terminate)
     old_int = signal.signal(signal.SIGINT, terminate)
     try:
@@ -193,6 +243,7 @@ def run() -> int:
             raise OSError("IPC failed to bind")
         threads[1].start()
         threads[2].start()
+        threads[3].start()
         owner.start()
         while not stop.is_set() and not owner.stopping:
             while not safety.empty():

@@ -37,8 +37,10 @@ def empty() -> bool:
 
 @final
 class Jobs:
-    def __init__(self, cfg: Config, enqueue: Callable[[Callable[[], None]], None]) -> None:
+    def __init__(self, cfg: Config, enqueue: Callable[[Callable[[], None]], None],
+                 *, clock: Callable[[], float] = time.monotonic) -> None:
         self.cfg, self.enqueue = cfg, enqueue
+        self.clock = clock
         self.worker = ThreadPoolExecutor(max_workers=1, thread_name_prefix="miner-job")
         self.epoch = 0
         self.operation: Operation | None = None
@@ -49,6 +51,10 @@ class Jobs:
         self.numa = Capabilities.detect(environ=ENV).numa_nodes if cfg.hugepages.enabled else None
         self.finished: Callable[[Operation], None] = lambda _: None
         self.stop = Event()
+        # C4 stop-proof instrumentation; the proof is dated separately from cleanup.
+        self.stop_requested_at: float | None = None
+        self.empty_proof_received_at: float | None = None
+        self.cleanup_finished_at: float | None = None
         self.watcher = Thread(target=self.watch, daemon=True)
         self.watcher.start()
 
@@ -79,18 +85,28 @@ class Jobs:
         self.enqueue(deliver)
         return ready.wait(0.5) and result == [True]
 
+    def _superseded(self, job: Job, epoch: int) -> bool:
+        """Reject a START whose submit predates a newer STOP or generation revocation."""
+        return (epoch != self.epoch
+                or (self.stop_requested_at is not None and self.stop_requested_at >= job.submitted_at))
+
     def perform(self, job: Job, epoch: int) -> None:
         success, vacant = False, False
+        proof_at: float | None = None
+        cleanup_at: float | None = None
         try:
             match job.action:
                 case Action.STOP:
+                    self.stop_requested_at = self.clock()
                     _ = checked(("/usr/bin/systemctl", "stop", "sparehash-xmrig.service"), 3)
                     vacant = empty()
                     if vacant:
+                        proof_at = self.empty_proof_received_at = self.clock()
                         _ = self.pages.cleanup()
+                        cleanup_at = self.cleanup_finished_at = self.clock()
                     success = vacant
                 case Action.START:
-                    if epoch != self.epoch or time.monotonic() >= job.deadline:
+                    if self._superseded(job, epoch) or self.clock() >= job.deadline:
                         return
                     publish(self.cfg, job.operation.generation, job.operation.mode.value)
                     def published() -> bool:
@@ -102,6 +118,8 @@ class Jobs:
                         return
                     _ = self.pages.reserve_after_authorization(self.cfg.hugepages.enabled, self.numa,
                                                               self.cfg.hugepages.pages, authorized=True)
+                    if self._superseded(job, epoch):
+                        return
                     _ = checked(("/usr/bin/systemctl", "start", "sparehash-xmrig.service"), 3)
                     success = checked(("/usr/bin/systemctl", "show", "sparehash-xmrig.service", "--property=ActiveState", "--value"), 1) == "active"
                     self.watched = job.operation if success and epoch == self.epoch else None
@@ -110,7 +128,7 @@ class Jobs:
         except (OSError, RuntimeError, ValueError):
             success = False
         finally:
-            completion = Completion(job, success, vacant)
+            completion = Completion(job, success, vacant, proof_at, cleanup_at)
             self.enqueue(lambda: self.finish(completion))
 
     def close(self) -> None:

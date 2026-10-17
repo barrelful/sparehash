@@ -55,6 +55,13 @@ class Controller:
         self.launch_permitted = False
         self.external: ActiveLease | None = None
         self.permanent_hold = False
+        # C4 objective instrumentation: one monotonic host clock, owner-thread only.
+        self.trigger_received_at: float | None = None
+        self.safety_callback_at: float | None = None
+        self.generation_revoked_at: float | None = None
+        self.stop_submitted_at: float | None = None
+        self.empty_proof_received_at: float | None = None
+        self.cleanup_finished_at: float | None = None
 
     @property
     def operation(self) -> Operation:
@@ -106,6 +113,7 @@ class Controller:
 
     def invalidate(self) -> None:
         self.generation = Generation(self.generation + 1)
+        self.generation_revoked_at = self.ports.clock()
         self.ports.jobs.cancel()
         self.pending = None
         self.empty = False
@@ -135,11 +143,44 @@ class Controller:
             if self.ready and not self.state.mining_allowed():
                 self.state.automatic_stop()
 
-    def safety(self, name: SafetyBlocker, blocked: bool | None) -> None:
-        """Immediate authoritative provider event; invalidate outstanding queries."""
-        self.real[name] = blocked is not False
-        self.collecting = False
-        self.observation = None
+    def safety(self, name: SafetyBlocker, blocked: bool | None, *,
+               source: str = "controller", epoch: Generation | None = None) -> None:
+        """Immediate authoritative provider event; invalidate outstanding queries.
+
+        ``source="gaming"`` routes the event through the single priority gaming
+        reducer: ACTIVE/UNKNOWN always revokes the generation, cancels queued
+        START/STOP work, forces a fresh STOP ahead of any START, and refreshes;
+        CLEAR is accepted only for the current generation, so a late inactive
+        aggregate can never overwrite a newer watcher inhibition.
+        """
+        now = self.ports.clock()
+        self.trigger_received_at = now
+        if name == "gaming":
+            self._gaming(blocked, epoch, now)
+        else:
+            self.real[name] = blocked is not False
+            self.collecting = False
+            self.observation = None
+            self.sync()
+            self.apply()
+            self.refresh()
+        self.safety_callback_at = self.ports.clock()
+
+    def _gaming(self, blocked: bool | None, epoch: Generation | None, now: float) -> None:
+        if blocked is not False:
+            self.real["gaming"] = True
+            changed = self.state.set("gaming", "unsafe or unknown observation", "controller").changed
+            self.invalidate()
+            self.collecting = False
+            self.observation = None
+            if changed:
+                self.state.automatic_stop()
+            self.apply()
+            self.refresh()
+            return
+        if epoch is not None and epoch != self.generation:
+            return
+        self.real["gaming"] = False
         self.sync()
         self.apply()
         self.refresh()
@@ -169,9 +210,12 @@ class Controller:
     def _submit(self, action: Action) -> None:
         if self.failures >= 3 or self.ports.clock() < self.retry_at:
             return
-        job = Job(action, self.operation, self.ports.clock() + 5)
+        now = self.ports.clock()
+        job = Job(action, self.operation, now + 5, now)
         if action is Action.START:
             self.launch_permitted = True
+        elif action is Action.STOP:
+            self.stop_submitted_at = now
         self.pending = job
         self.ports.jobs.submit(job)
 
@@ -184,6 +228,9 @@ class Controller:
                 success = result.success and result.cgroup_empty
                 if success:
                     self.empty, self.running = True, False
+                    receipt = self.ports.clock()
+                    self.empty_proof_received_at = result.empty_proof_at if result.empty_proof_at is not None else receipt
+                    self.cleanup_finished_at = result.cleanup_finished_at if result.cleanup_finished_at is not None else receipt
                     if self.next_mode is not None and self.lease is not None:
                         self.mode, self.next_mode = self.next_mode, None
                         _ = self.release_update(self.lease)
