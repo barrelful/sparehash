@@ -54,6 +54,12 @@ class Observation:
     None is unknown. Battery inventory False means confirmed desktop/UPS-only.
     Thermal False also represents a disabled or positively unavailable guard.
     Provider adapters must invalidate dead monitors and parse input at the edge.
+
+    ``gaming_authoritative`` carries the decision of the single priority gaming
+    reducer (GamingSessionGuard). When set, it OWNS the gaming blocker: the slow
+    aggregate writer can neither clear nor freshen an independent watcher event.
+    ``gaming`` remains the legacy per-user aggregate used only when no
+    authoritative reducer has spoken.
     """
 
     sample: SampleId
@@ -66,14 +72,16 @@ class Observation:
     ac_online: bool | None = None
     discharge_rate_w: float | None = None
     maintenance_mode: bool = False
+    gaming_authoritative: bool | None = None
 
     def blockers(self) -> tuple[tuple[str, bool], ...]:
         battery = blocked(PowerSample(self.at, Evidence(self.battery_present, self.at),
                                       Evidence(self.upower, self.at), Evidence(self.sysfs, self.at),
                                       self.ac_online, self.discharge_rate_w),
                           maintenance_mode=self.maintenance_mode)
-        return (("battery", battery), ("gaming", any(value is not False for _, value in self.gaming)),
-                ("thermal", self.thermal is not False))
+        gaming = (self.gaming_authoritative if self.gaming_authoritative is not None
+                  else any(value is not False for _, value in self.gaming))
+        return (("battery", battery), ("gaming", gaming), ("thermal", self.thermal is not False))
 
 
 @dataclass(frozen=True, slots=True)
@@ -81,6 +89,7 @@ class Job:
     action: Action
     operation: Operation
     deadline: float
+    submitted_at: float = 0.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -88,6 +97,8 @@ class Completion:
     job: Job
     success: bool
     cgroup_empty: bool = False
+    empty_proof_at: float | None = None
+    cleanup_finished_at: float | None = None
 
 
 class Providers(Protocol):
