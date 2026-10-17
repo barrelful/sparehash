@@ -185,6 +185,18 @@ the gaming blocker stays active regardless of hook state.
 This design trusts gaming users: a member of the `sparehash` group can block
 mining indefinitely by never sending `gaming-end`. Only add users you trust.
 
+### Gaming observation and admission status
+
+The gaming observation module (`sparehash/gaming.py`) queries `gamemoded -s` per
+configured user via `runuser` and the user's D-Bus session bus. Gaming
+observation is fail-closed: unknown user/session state inhibits mining.
+
+**Admission status: conservative fallback only.** SpareHash has NOT been demonstrated for FULL gaming coverage with validated idle-versus-gameplay distinction. The system implements conservative session inhibition as a fallback mechanism. The admission decision is `NO_DEPENDABLE_ROUTE`.
+
+The conservative fallback inhibits mining during covered graphical sessions but does not distinguish idle Steam from active gameplay. Latency objectives target ≤1 second callback and ≤5 second empty proof from trigger, but these are engineering objectives subject to feasibility testing, not hard real-time guarantees. Fallback-only status remains reduced-function NO-GO pending owner decision.
+
+See `docs/gaming-integration-contract.md` for the complete admission contract.
+
 ## Battery evidence
 
 Power state is observed concurrently from two independent sources:
