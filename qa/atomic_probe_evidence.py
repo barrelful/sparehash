@@ -177,11 +177,20 @@ def validate_audit(directory: Path, mode: str, pid: int) -> None:
     window = re.fullmatch(r"pid=([1-9][0-9]*)\nstart=([^\n]+)\nend=([^\n]+)\n", raw("audit-window"))
     if window is None or int(window[1]) != pid:
         raise RefusalError("audit window PID does not match observed execution")
-    start, end = (datetime.strptime(window[index], "%m/%d/%Y %H:%M:%S") for index in (2, 3))
+    try:
+        start, end = (datetime.strptime(window[index], "%m/%d/%Y %H:%M:%S") for index in (2, 3))
+    except ValueError as error:
+        raise RefusalError("audit window is not a valid wall-clock bound") from error
     if not 0 <= (end - start).total_seconds() <= 120:
         raise RefusalError("audit window invalid/unbounded")
+    # The harness exports LC_ALL=C.  ausearch parses absolute dates through
+    # strptime(3) %x, which rejects the retained %m/%d/%Y wall-clock form
+    # ("Error parsing start date (10/18/2026)"); the query therefore uses the
+    # locale-independent recent/now keywords.  The audit-window above still
+    # records and validates wall-clock bounds, PID attribution and the
+    # <=120 s execution window, so the raw evidence chain stays intact.
     command = ("/usr/sbin/ausearch", "-m", "AVC,USER_AVC", "-p", str(pid), "-ts",
-               *window[2].split(" "), "-te", *window[3].split(" "), "--raw")
+               "recent", "-te", "now", "--raw")
     if tuple(raw("audit-command").splitlines()) != command:
         raise RefusalError("audit query attribution/window not independently retained")
     query = raw("audit-query")

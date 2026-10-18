@@ -24,7 +24,7 @@ from qa.atomic_probe import (
     summarize,
     validate_evidence,
 )
-from qa.atomic_probe_evidence import CONTEXT_PATHS, legacy_assumption
+from qa.atomic_probe_evidence import CONTEXT_PATHS, legacy_assumption, validate_audit
 
 ISOLATION: Final = ("ProtectSystem=strict", "ProtectHome=yes", "PrivateNetwork=yes",
                     "NoNewPrivileges=yes", "PrivateTmp=yes")
@@ -50,6 +50,13 @@ def legacy_properties(*, status: str = "216", pid: str = "2483", user: str = "99
 
 
 LEGACY_PROPERTIES: Final = legacy_properties()
+
+
+def audit_command(pid: int) -> str:
+    """Exactly how the shell records the ausearch invocation (one argv per line)."""
+    parts = ("/usr/sbin/ausearch", "-m", "AVC,USER_AVC", "-p", str(pid), "-ts", "recent",
+             "-te", "now", "--raw")
+    return "".join(f"{part}\n" for part in parts)
 
 
 def write_legacy(directory: Path, *, properties: str | None = None, exit_code: str = "1\n",
@@ -199,6 +206,77 @@ def test_legacy_blocks_undocumented_outcomes(tmp_path: Path, write: dict[str, st
         _ = legacy_assumption(tmp_path, (99, 99))
 
 
+def write_audit_window(directory: Path, *, pid: int = 42, start: str = "10/18/2026 12:00:00",
+                       end: str = "10/18/2026 12:00:30", command: str | None = None) -> None:
+    for suffix in ("audit-before", "audit-after"):
+        _ = (directory / f"version.{suffix}").write_text(AUDIT_CTL)
+        _ = (directory / f"version.{suffix}.exit").write_text("0\n")
+    _ = (directory / "version.properties.exit").write_text("0\n")
+    _ = (directory / "version.audit-window").write_text(f"pid={pid}\nstart={start}\nend={end}\n")
+    _ = (directory / "version.audit-command").write_text(
+        audit_command(pid) if command is None else command)
+    _ = (directory / "version.audit-query").write_text("<no matches>\n")
+    _ = (directory / "version.audit-query.exit").write_text("1\n")
+    _ = (directory / "version.audit-known").write_text("yes\n")
+    _ = (directory / "version.avc").write_text("")
+
+
+def test_audit_accepts_locale_independent_recent_now(tmp_path: Path) -> None:
+    # Given: the exact query command the fixed shell records.
+    write_audit_window(tmp_path)
+    # When / Then
+    validate_audit(tmp_path, "version", 42)
+
+
+AUDIT_COMMAND_MISMATCHES: Final = (
+    # The guest-run blocker: absolute dates die under the exported LC_ALL=C.
+    pytest.param("/usr/sbin/ausearch\n-m\nAVC,USER_AVC\n-p\n42\n-ts\n10/18/2026\n12:00:00\n"
+                 "-te\n10/18/2026\n12:00:30\n--raw\n", id="absolute-dates"),
+    pytest.param("".join(f"{part}\n" for part in (
+        "/usr/sbin/ausearch", "-m", "AVC,USER_AVC", "-p", "42", "-ts", "now", "-te", "now",
+        "--raw")), id="now-now"),
+    pytest.param("".join(f"{part}\n" for part in (
+        "/usr/sbin/ausearch", "-m", "AVC,USER_AVC", "-p", "42", "-ts", "recent", "-te",
+        "recent", "--raw")), id="recent-recent"),
+    pytest.param("".join(f"{part}\n" for part in (
+        "/usr/sbin/ausearch", "-m", "AVC,USER_AVC", "-p", "42", "-ts", "recent", "--raw")),
+        id="missing-end"),
+    pytest.param(audit_command(42) + "extra\n", id="extra-argument"),
+    pytest.param(audit_command(99), id="wrong-pid"),
+    pytest.param("", id="empty"),
+)
+
+
+@pytest.mark.parametrize("command", AUDIT_COMMAND_MISMATCHES)
+def test_audit_blocks_noncanonical_query_command(tmp_path: Path, command: str) -> None:
+    # Given: a retained command that is not the exact recent/now tuple.
+    write_audit_window(tmp_path, command=command)
+    # When / Then
+    with pytest.raises(RefusalError):
+        validate_audit(tmp_path, "version", 42)
+
+
+@pytest.mark.parametrize("window", [
+    pytest.param({"end": "10/18/2026 12:02:01"}, id="duration-over-120s"),
+    pytest.param({"start": "not-a-date"}, id="unparseable-start"),
+    pytest.param({"end": "10/18/2026 11:59:59"}, id="end-before-start"),
+])
+def test_audit_blocks_invalid_window(tmp_path: Path, window: dict[str, str]) -> None:
+    # Given: wall-clock bounds that are not a bounded valid execution window.
+    write_audit_window(tmp_path, **window)
+    # When / Then
+    with pytest.raises(RefusalError):
+        validate_audit(tmp_path, "version", 42)
+
+
+def test_audit_blocks_pid_window_mismatch(tmp_path: Path) -> None:
+    # Given: retained window belongs to another PID.
+    write_audit_window(tmp_path, pid=43)
+    # When / Then
+    with pytest.raises(RefusalError):
+        validate_audit(tmp_path, "version", 42)
+
+
 @pytest.mark.parametrize("opt_in", [False, True])
 def test_entrypoint_refuses_before_effects(tmp_path: Path, opt_in: bool) -> None:
     # Given: invalid manifest, unchanged sentinel, and systemctl tripwire.
@@ -278,9 +356,7 @@ def raw_probe(tmp_path: Path, manifest: Manifest, facts: Facts) -> Path:
             f"{mode}.audit-before.exit": "0\n", f"{mode}.audit-after.exit": "0\n",
             f"{mode}.audit-query": "<no matches>\n", f"{mode}.audit-query.exit": "1\n",
             f"{mode}.audit-window": f"pid={pid}\nstart=10/18/2026 14:45:48\nend=10/18/2026 {end}\n",
-            # Exact guest command shape (absolute dates); blocker 2 replaces it.
-            f"{mode}.audit-command": (f"/usr/sbin/ausearch\n-m\nAVC,USER_AVC\n-p\n{pid}\n"
-                                      f"-ts\n10/18/2026\n14:45:48\n-te\n10/18/2026\n{end}\n--raw\n"),
+            f"{mode}.audit-command": audit_command(pid),
         })
     for name, value in records.items():
         _ = (tmp_path / name).write_text(value)
@@ -293,7 +369,9 @@ def raw_probe(tmp_path: Path, manifest: Manifest, facts: Facts) -> Path:
     "raw-missing", "audit-status-error", "audit-duplicate", "pid-window", "query-command",
     "context-path", "authorization", "candidate", "reviewer-counterexample",
     "legacy-status", "legacy-output", "legacy-group", "legacy-property", "legacy-duplicate",
-    "legacy-exit", "legacy-identity", "legacy-missing"])
+    "legacy-exit", "legacy-identity", "legacy-missing",
+    "audit-command-absolute", "audit-command-swap", "audit-command-extra",
+    "audit-window-duration", "audit-window-malformed", "audit-window-missing"])
 def test_summary_requires_raw_observations(raw_probe: Path, tamper: str,
                                           decode: Callable[[str], Json] = json.loads) -> None:
     # Given: synthetic raw records, never enforcing-distro acceptance.
@@ -333,6 +411,15 @@ def test_summary_requires_raw_observations(raw_probe: Path, tamper: str,
         "legacy-duplicate": ("legacy.properties", LEGACY_PROPERTIES + "User=99\n"),
         "legacy-exit": ("legacy.exit", "0\n"),
         "legacy-identity": ("legacy.properties", LEGACY_PROPERTIES.replace("User=99", "User=98")),
+        "audit-command-absolute": ("version.audit-command",
+            "/usr/sbin/ausearch\n-m\nAVC,USER_AVC\n-p\n2496\n-ts\n10/18/2026\n14:45:48\n"
+            "-te\n10/18/2026\n14:45:48\n--raw\n"),
+        "audit-command-swap": ("version.audit-command",
+            audit_command(2496).replace("-ts\nrecent", "-ts\nnow").replace("-te\nnow", "-te\nrecent")),
+        "audit-command-extra": ("version.audit-command", audit_command(2496) + "extra\n"),
+        "audit-window-duration": ("version.audit-window",
+            records["version.audit-window"].replace("end=10/18/2026 14:45:48", "end=10/18/2026 14:47:49")),
+        "audit-window-malformed": ("version.audit-window", "pid=2496\nstart=whenever\n"),
     }
     if tamper in replacements:
         name, value = replacements[tamper]
@@ -341,6 +428,8 @@ def test_summary_requires_raw_observations(raw_probe: Path, tamper: str,
         del records["version.audit-query"]
     if tamper == "legacy-missing":
         del records["legacy.properties"]
+    if tamper == "audit-window-missing":
+        del records["version.audit-window"]
     if tamper == "authorization":
         del records["authorization.json"]
     if tamper == "reviewer-counterexample":

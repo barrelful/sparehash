@@ -31,8 +31,9 @@ legacy Group=nogroup comparison and actual-primary-GID --version/--dry-run.
 All use nobody, mandatory isolation, zero donation, fake token, loopback dummy
 pool, no GPU/MSR/hugepage changes, no mining. No installed product units touched.
 Record effective properties, id UID/GID/PID from the sandbox before exec,
-installed-policy expected/actual contexts, mount/noexec facts, and PID-attributed
-raw AVCs with auditing enabled/loss counters unchanged. Missing evidence BLOCKS.
+installed-policy expected/actual contexts, mount/noexec facts, and
+PID-attributed raw AVCs over the retained recent/now audit window with
+auditing enabled/loss counters unchanged. Missing evidence BLOCKS.
 Only installed default labels are used: NO restorecon, policy module or bypass.
 
 Always attempt stop/reset-failed for our three unpredictable transient names.
@@ -153,7 +154,11 @@ for mode in legacy version dry-run; do
     if [[ ${pid:-} =~ ^[1-9][0-9]*$ ]]; then
         read -r end_date end_time <<< "$(/usr/bin/date '+%m/%d/%Y %H:%M:%S')"
         printf 'pid=%s\nstart=%s %s\nend=%s %s\n' "$pid" "$start_date" "$start_time" "$end_date" "$end_time" > "$E/$mode.audit-window"
-        query=(/usr/sbin/ausearch -m AVC,USER_AVC -p "$pid" -ts "$start_date" "$start_time" -te "$end_date" "$end_time" --raw)
+        # LC_ALL=C is exported above and ausearch absolute dates go through
+        # strptime(3) %x, which rejects the emitted %m/%d/%Y form ("Error
+        # parsing start date").  Query with the locale-independent recent/now
+        # keywords; audit-window retains the wall-clock execution bounds.
+        query=(/usr/sbin/ausearch -m AVC,USER_AVC -p "$pid" -ts recent -te now --raw)
         printf '%s\n' "${query[@]}" > "$E/$mode.audit-command"
         set +e
         (ulimit -f 128; /usr/bin/timeout 5 "${query[@]}") > "$E/$mode.audit-query" 2>&1
