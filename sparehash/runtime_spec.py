@@ -42,7 +42,7 @@ def publish(cfg: config.Config, generation: int, mode: str, *,
         from .xmrig_config import read_token, render_config
 
         document = render_config(cfg, read_token(), executable,
-                                 runner=runner if runner is not None else dry_run, layout=layout)
+                                 runner=runner, layout=layout)
         document["pools"] = []
         document["http"] = {"enabled": False}
         anchor.write(BENCHMARK, ((json.dumps(document) + "\n").encode(), 0o640, gid))

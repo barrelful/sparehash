@@ -140,7 +140,7 @@ def test_state_path_override_used(tmp_path: Path) -> None:
     assert not hostile.exists()
 
 
-def test_refuses_hostile_paths_or_deployment_drift() -> None:
+def test_runtime_entry_scrubs_hostile_environment() -> None:
     """Runtime refuses hostile environment variables and path overrides (task-16 contract)."""
     import inspect
     from sparehash import config, runtime
