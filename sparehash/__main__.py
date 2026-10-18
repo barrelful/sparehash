@@ -10,6 +10,14 @@ import sys
 from collections.abc import Callable, Sequence
 from typing import Final
 
+# install.sh executes this file directly under ``python3 -I -B``. Isolated mode
+# does not put the script directory on sys.path, so re-anchor the launcher-selected
+# source root here; environment imports stay scrubbed by the shell.
+if __package__ in (None, ""):
+    _SOURCE_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    if _SOURCE_ROOT not in sys.path:
+        sys.path.insert(0, _SOURCE_ROOT)
+
 PUBLIC_COMMANDS: Final = (
     "install",
     "status",

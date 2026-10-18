@@ -222,7 +222,7 @@ class BootstrapReceiptTests(unittest.TestCase):
         self.assertFalse(by_id["/opt/sparehash"].created)
 
 
-@unittest.skipUnless(BWRAP is not None, "bwrap is required for the install.sh argument test")
+@unittest.skipUnless(BWRAP is not None, "bwrap is required for the install.sh launcher test")
 @final
 class BootstrapShellTests(unittest.TestCase):
     def __init__(self, methodName: str = "runTest") -> None:
@@ -231,19 +231,19 @@ class BootstrapShellTests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
 
-    def test_install_sh_preserves_answers_and_declares_each_created_path(self) -> None:
+    def test_install_sh_is_a_fixed_environment_launcher(self) -> None:
         # Given a repo copy whose final exec is replaced by an argument dump
         repo = self.root / "repo"
         (repo / "sparehash").mkdir(parents=True)
         (repo / "systemd").mkdir()
-        modules = ("alpha.py", "beta.py")
-        for name in modules:
+        for name in ("__init__.py", "__main__.py"):
             _ = (repo / "sparehash" / name).write_text("value = 1\n")
         for name in ("sparehash.service.in", "sparehash-xmrig.service.in"):
             _ = (repo / "systemd" / name).write_text("[Unit]\n")
         source = (Path(__file__).resolve().parents[1] / "install.sh").read_text()
-        _ = (repo / "install.sh").write_text(source.replace('exec /usr/local/bin/sparehash install "$@"',
-                                                             'printf "%s\\n" "$@"'))
+        executable = 'exec python3 -I -B "$source_package/__main__.py" install "$@"'
+        self.assertIn(executable, source)
+        _ = (repo / "install.sh").write_text(source.replace(executable, 'printf "%s\\n" install "$@"'))
         answers = self.root / "answers.toml"
         _ = answers.write_text("version = 1\n")
         bindings: list[str] = []
@@ -253,25 +253,20 @@ class BootstrapShellTests(unittest.TestCase):
             directory.chmod(0o755)
             bindings.append(str(directory))
         (self.root / "usr-local" / "bin").mkdir(mode=0o755)
-        # When
+        # When the launcher runs under an unshared root with only its own source tree
         result = subprocess.run(
             [str(BWRAP), "--unshare-user", "--uid", "0", "--gid", "0", "--ro-bind", "/", "/",
              "--bind", bindings[0], "/opt", "--bind", bindings[1], "/usr/local",
              "--bind", bindings[2], "/run/systemd/system", "--dev", "/dev", "--proc", "/proc",
              "/bin/sh", str(repo / "install.sh"), "--answers", str(answers)],
             capture_output=True, text=True, timeout=90, check=False)
-        # Then
+        # Then argv passes through unchanged and no shell-created provenance is fabricated
         self.assertEqual(result.returncode, 0, result.stderr)
         lines = result.stdout.splitlines()
+        self.assertEqual(lines[0], "install")
         self.assertIn("--answers", lines)
         self.assertEqual(lines[lines.index("--answers") + 1], str(answers))
-        self.assertLess(lines.index("--answers"), lines.index("--bootstrap-created"))
-        for path in ("/opt/sparehash", "/opt/sparehash/src", "/opt/sparehash/src/sparehash",
-                     "/opt/sparehash/src/systemd", "/usr/local/bin/sparehash",
-                     *(PACKAGE + name for name in modules),
-                     TEMPLATE + "sparehash.service.in", TEMPLATE + "sparehash-xmrig.service.in"):
-            with self.subTest(path=path):
-                self.assertIn(path, lines)
+        self.assertNotIn("--bootstrap-created", lines)
 
 
 if __name__ == "__main__":

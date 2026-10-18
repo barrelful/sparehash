@@ -97,6 +97,20 @@ already-running controller on reinstall). The installer never enables or starts
 the miner directly. Its final summary reports boot startup, controller activity,
 and whether mining is blocked (or unknown if controller status is unavailable).
 
+Like the interactive installer, `--answers` mode stages the selected local
+release only after it records explicit consent; `--yes` approves those effects
+without prompting. Review proposed effects first without any host change:
+
+```
+sudo ./install.sh --preflight
+sudo ./install.sh --preflight --json
+```
+
+`--preflight` performs no host mutation: no transient probe, directory, account,
+latch, download or source-copy effect. It prints a readiness report (human or
+`--json`) and exits 0 when ready, 2 for an unsupported host and 1 for a refused
+or unsafe host.
+
 For unattended installs, supply a TOML answers file with explicit consent:
 
 ```
@@ -136,7 +150,7 @@ Every public command:
 
 | Command | Flags | Requires root | Description |
 |---|---|---|---|
-| `install` | `--answers FILE`, `--use-existing`, `--clear-lifecycle-latch`, `--operation-id ID`, `--upgrade OPERATION_ID`, `--reconfigure`, `--recover OPERATION_ID`, `--complete-upgrade OPERATION_ID`, `--no-start`, `--no-enable` | yes | Run, reconfigure, upgrade or recover an installation |
+| `install` | `--answers FILE`, `--use-existing`, `--clear-lifecycle-latch`, `--operation-id ID`, `--upgrade OPERATION_ID`, `--reconfigure`, `--recover OPERATION_ID`, `--complete-upgrade OPERATION_ID`, `--no-start`, `--no-enable`, `--preflight`, `--json`, `--yes` | yes | Run, reconfigure, upgrade or recover an installation |
 | `complete-upgrade` | `OPERATION_ID` | yes | Commit a published local upgrade; removes only the migration journal and update hold |
 | `uninstall` | `--purge` | yes | Remove SpareHash; configuration retained unless `--purge` |
 | `status` | `--json` | yes | Show controller, miner, blockers, power, thermal, hugepages, gaming, API |

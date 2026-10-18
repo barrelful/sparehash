@@ -25,6 +25,7 @@ from typing import Final
 from uuid import uuid4
 
 from . import config, gaming_install, ipc, lifecycle, systemd, upgrade, wizard, xmrig_config
+from .bootstrap import Bootstrapper, ConsentRefused, staging_path
 from .deployment import ENV, DeploymentError, Tree, checked, command
 from .install_ledger import Ledger
 from .install_manifest import StoreContext, locked_store
@@ -45,6 +46,7 @@ PROTECTED_UPGRADE_FILES: Final = (
     "config.toml", "xmrig.json", "xmrig.runtime.json", "state.json", "deployment.json",
     "install-manifest.json", "lifecycle-lease.json", "lifecycle.json", "migration.json",
 )
+UNSUPPORTED_STAGES: Final = frozenset(("python", "systemd", "architecture"))
 
 
 class Arguments(argparse.Namespace):
@@ -59,6 +61,9 @@ class Arguments(argparse.Namespace):
     complete_upgrade: str | None = None
     no_start: bool = False
     no_enable: bool = False
+    preflight: bool = False
+    json: bool = False
+    yes: bool = False
 
 
 def preflight(tree: Tree, caps: Capabilities) -> None:
@@ -348,10 +353,41 @@ def complete_install(tree: Tree, operation_id: str, *, proof: Callable[[], bool]
     print(f"upgrade: operation {operation_id} committed; startup choices and manual state preserved")
 
 
+def preflight_report(tree: Tree, caps: Capabilities) -> tuple[int, dict[str, object]]:
+    """Read-only readiness report; performs no mutation and no transient probe."""
+    capabilities = caps.summary()
+    try:
+        preflight(tree, caps)
+    except DeploymentError as error:
+        code = 2 if error.stage in UNSUPPORTED_STAGES else 1
+        return code, {"ready": False, "stage": error.stage, "detail": str(error), "capabilities": capabilities}
+    except (systemd.CollisionError, systemd.UnitError) as error:
+        return 1, {"ready": False, "stage": "units", "detail": str(error), "capabilities": capabilities}
+    return 0, {"ready": True, "stage": "preflight", "detail": "ready", "capabilities": capabilities}
+
+
+def confirm_effects(read: Callable[[str], str], write: Callable[[str], None]) -> bool:
+    """Ask for explicit effect consent; an empty answer and 'no' both refuse."""
+    write("sparehash: this install stages the selected local release and writes protected deployment paths")
+    while True:
+        answer = read("Proceed with installation and service effects? [y/N]: ").strip().lower()
+        if answer in {"", "n", "no"}:
+            return False
+        if answer in {"y", "yes"}:
+            return True
+        write("Please answer yes or no.")
+
+
+def launcher_source_root() -> Path:
+    """The selected source tree: the parent directory of the sparehash package."""
+    return Path(__file__).resolve().parent.parent
+
+
 def execute(tree: Tree, caps: Capabilities, cfg: config.Config, *, use_existing: bool = False,
             bootstrap_created: tuple[str, ...] = (), interactive: bool = True,
             preserve: bool = False, operation_id: str | None = None,
-            backup_root: Path | None = None) -> None:
+            backup_root: Path | None = None,
+            source_root: Path | None = None, approved: bool = False) -> None:
     preflight(tree, caps)
     preservation: Preservation | None = None
     if preserve:
@@ -360,6 +396,14 @@ def execute(tree: Tree, caps: Capabilities, cfg: config.Config, *, use_existing:
         preservation = capture_preservation(tree.path(CONFIG_DIR), tree.path(STATE_DIR),
                                             operation_id=operation, backup_root=root)
     ledger = Ledger(tree)
+    if source_root is not None:
+        if interactive and not approved:
+            approved = confirm_effects(input, print)
+        if not approved:
+            raise ConsentRefused("consent", "installation consent was refused; no host mutation performed")
+        caps = Capabilities.detect(environ=ENV, manager_probe=systemd.probe_cpuweight_idle)
+        if not caps.cpuweight_idle:
+            print("capabilities: idle cgroup weights unavailable; retaining Nice/SCHED_IDLE")
     established = tree.path("/etc/sparehash/config.toml").exists()
     existed_dirs = {name: tree.path(name).exists() for name in ("/etc/sparehash", "/var/lib/sparehash")}
     token_path = tree.path("/etc/sparehash/xmrig.json")
@@ -373,7 +417,13 @@ def execute(tree: Tree, caps: Capabilities, cfg: config.Config, *, use_existing:
         token = xmrig_config.new_token()
     ledger.initialize()
     identities(ledger)
-    bootstrap(ledger, bootstrap_created)
+    if source_root is not None:
+        bootstrapper = Bootstrapper(tree)
+        bootstrapper.consent(True)
+        staged = bootstrapper.stage_source(source_root, staging_path(tree))
+        bootstrapper.publish(staged, ledger)
+    else:
+        bootstrap(ledger, bootstrap_created)
     gid = grp.getgrnam("sparehash").gr_gid
     for name in ("/etc/sparehash", "/var/lib/sparehash"):
         existed = existed_dirs[name]
@@ -500,12 +550,26 @@ def main(argv: Sequence[str] | None = None, *, geteuid: Callable[[], int] = os.g
                             help="fresh/reconfigure: leave the controller stopped")
     _ = parser.add_argument("--no-enable", action="store_true",
                             help="fresh/reconfigure: leave the controller disabled at boot")
+    _ = parser.add_argument("--preflight", action="store_true",
+                            help="report readiness without host changes")
+    _ = parser.add_argument("--json", action="store_true", help="emit the preflight report as JSON")
+    _ = parser.add_argument("--yes", action="store_true",
+                            help="approve installation effects non-interactively")
     args = parser.parse_args(argv, namespace=Arguments())
     if geteuid() != 0:
         print("sparehash: root: installation requires root", file=sys.stderr)
         return 1
     previous = signal.signal(signal.SIGTERM, interrupted)
     try:
+        if args.preflight:
+            caps = Capabilities.detect(environ=ENV, manager_probe=None)
+            code, document = preflight_report(Tree(), caps)
+            if args.json:
+                print(json.dumps(document, sort_keys=True))
+            else:
+                verb = "READY" if document["ready"] is True else "REFUSED"
+                print(f"preflight: {verb}: {document['detail']}")
+            return code
         if platform.machine() != "x86_64":
             raise DeploymentError("architecture", "x86_64 is required")
         if is_retired():
@@ -533,10 +597,8 @@ def main(argv: Sequence[str] | None = None, *, geteuid: Callable[[], int] = os.g
             elif args.complete_upgrade is not None:
                 complete_install(tree, args.complete_upgrade)
             return 0
-        caps = Capabilities.detect(environ=ENV, manager_probe=systemd.probe_cpuweight_idle)
+        caps = Capabilities.detect(environ=ENV, manager_probe=None)
         preflight(tree, caps)
-        if not caps.cpuweight_idle:
-            print("capabilities: idle cgroup weights unavailable; retaining Nice/SCHED_IDLE")
         existing = tree.path("/etc/sparehash/config.toml")
         current = None
         if existing.exists():
@@ -544,7 +606,8 @@ def main(argv: Sequence[str] | None = None, *, geteuid: Callable[[], int] = os.g
             current = wizard.load_answers(existing, caps)
         cfg = wizard.load_answers(args.answers, caps) if args.answers else wizard.run_interactive(caps, input, print, current=current)
         execute(tree, caps, cfg, use_existing=args.use_existing, bootstrap_created=tuple(args.bootstrap_created or ()),
-                interactive=(args.answers is None), preserve=args.reconfigure)
+                interactive=(args.answers is None), preserve=args.reconfigure, source_root=launcher_source_root(),
+                 approved=(args.answers is not None or args.yes))
         return 0
     except KeyboardInterrupt:
         print("sparehash: interrupted; pending ledger retained for inspection", file=sys.stderr)

@@ -129,14 +129,14 @@ class InstallTests(InstallFixture):
         self.assertFalse(any(argv[1] == "enable" for argv in self.calls))
 
     def test_shim_suppresses_bytecode_when_executed(self) -> None:
-        # Given the exact PYTHON_SHIM block install.sh writes
+        # Given the exact CLI shim template bootstrap.py publishes
+        from sparehash import bootstrap
         install_sh = Path(__file__).resolve().parents[1] / "install.sh"
         text = install_sh.read_text()
         self.assertIn("PYTHONDONTWRITEBYTECODE=1", text)
-        self.assertIn("sys.dont_write_bytecode = True", text)
-        marker = "<<'PYTHON_SHIM'\n"
-        start = text.index(marker) + len(marker)
-        shim = text[start:text.index("\nPYTHON_SHIM", start)]
+        template = bootstrap.SHIM_TEMPLATE
+        self.assertIn("sys.dont_write_bytecode = True", Path(bootstrap.__file__).read_text())
+        shim = template
         self.assertIn("sys.dont_write_bytecode = True", shim)
         with tempfile.TemporaryDirectory() as temporary_directory:
             temporary_path = Path(temporary_directory)
@@ -159,7 +159,7 @@ class InstallTests(InstallFixture):
                                 {key: value for key, value in os.environ.items()
                                  if key != "PYTHONDONTWRITEBYTECODE"}):
                 with self.subTest(dont_write_bytecode=environment.get("PYTHONDONTWRITEBYTECODE")):
-                    script.write_text(shim.replace('"/opt/sparehash/src"', repr(str(temporary_path))))
+                    script.write_text(shim.format(source=str(temporary_path)))
                     marker_path.unlink(missing_ok=True)
                     result = subprocess.run(
                         [sys.executable, str(script)], capture_output=True, text=True,
