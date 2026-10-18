@@ -13,7 +13,7 @@ import pytest
 from sparehash.deployment import DeploymentError, Tree
 from sparehash.install_ledger import Ledger
 from sparehash.install_manifest import StoreContext, StoreError, locked_store
-from sparehash.migration import transform_v1_to_v2_artifact
+from sparehash.receipt_migration import transform_v1_to_v2_artifact
 from sparehash.xmrig_ledger import (
     PACKAGE_DIR,
     Action,
