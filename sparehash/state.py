@@ -17,7 +17,10 @@ from typing import Callable, Final, Literal, TypedDict, cast
 
 BLOCKERS: Final = ("battery", "gaming", "manual", "thermal")
 MIN_DWELL_SECONDS: Final = 60.0
-STATE_FILE: Final = Path(os.environ.get("SPAREHASH_STATE_FILE", "/var/lib/sparehash/state.json"))
+# Fixed production default. The environment override is resolved at construction
+# time, never at import time, so a hostile process environment cannot redirect the
+# manual-pause file before the runtime passes its explicit production path.
+STATE_FILE: Final = Path("/var/lib/sparehash/state.json")
 MINING_STOPPED_BATTERY: Final = "Mining stopped: on battery."
 MINING_STOPPED_GAMING: Final = "Mining stopped: GameMode session active."
 MINING_PAUSED_MANUALLY: Final = "Mining paused manually."
@@ -79,11 +82,19 @@ class BlockerState:
 
     def __init__(
         self,
-        state_file: str | Path = STATE_FILE,
+        state_file: str | Path | None = None,
         clock: Callable[[], float] = time.monotonic,
         min_dwell_seconds: float = MIN_DWELL_SECONDS,
+        *,
+        state_path_override: Path | None = None,
     ) -> None:
-        self._state_file: Path = Path(state_file)
+        if state_path_override is not None:
+            resolved = Path(state_path_override)
+        elif state_file is not None:
+            resolved = Path(state_file)
+        else:
+            resolved = Path(os.environ.get("SPAREHASH_STATE_FILE", str(STATE_FILE)))
+        self._state_file: Path = resolved
         self._clock: Callable[[], float] = clock
         self._min_dwell_seconds: float = min_dwell_seconds
         if not math.isfinite(min_dwell_seconds) or min_dwell_seconds < 0:
