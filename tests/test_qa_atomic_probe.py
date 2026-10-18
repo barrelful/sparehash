@@ -36,8 +36,8 @@ CONTEXTS: Final = (
     ("system_u:object_r:usr_t:s0", "system_u:object_r:usr_t:s0"),
     ("system_u:object_r:usr_t:s0", "system_u:object_r:usr_t:s0"),
     ("system_u:object_r:bin_t:s0", "system_u:object_r:bin_t:s0"),
-    ("system_u:object_r:usr_t:s0", "system_u:object_r:usr_t:s0"),
-    ("system_u:object_r:usr_t:s0", "system_u:object_r:usr_t:s0"),
+    ("system_u:object_r:usr_t:s0", "unconfined_u:object_r:usr_t:s0"),
+    ("system_u:object_r:usr_t:s0", "unconfined_u:object_r:usr_t:s0"),
 )
 
 
@@ -122,6 +122,15 @@ def test_accepts_enforcing_probe(evidence: Evidence) -> None:
     validate_evidence(evidence, (65534, 65534))
 
 
+def test_accepts_staged_user_only_context_difference(evidence: Evidence) -> None:
+    # Given: the exact guest-run shape; the two task-staged files differ from
+    # the installed policy only in the SELinux user field (creating domain).
+    staged = ("system_u:object_r:usr_t:s0", "unconfined_u:object_r:usr_t:s0")
+    contexts = (*CONTEXTS[:3], staged, staged)
+    # When / Then
+    validate_evidence(replace(evidence, contexts=contexts), (65534, 65534))
+
+
 EVIDENCE_CHANGES: Final[tuple[Callable[[Evidence], Evidence], ...]] = (
     lambda item: replace(item, properties=("ProtectSystem=strict",)),
     lambda item: replace(item, uid=0), lambda item: replace(item, gid=0),
@@ -142,6 +151,61 @@ def test_blocks_incomplete_evidence(evidence: Evidence,
     # When / Then
     with pytest.raises(RefusalError):
         validate_evidence(incomplete, (65534, 65534))
+
+
+def context_variant(index: int, *, expected: str | None = None,
+                    actual: str | None = None) -> tuple[tuple[str, str], ...]:
+    pairs = list(CONTEXTS)
+    base_expected, base_actual = pairs[index]
+    pairs[index] = (base_expected if expected is None else expected,
+                    base_actual if actual is None else actual)
+    return tuple(pairs)
+
+
+CONTEXT_MISMATCHES: Final = (
+    # Redirect roots (/var/opt, /var/usrlocal, /var/usrlocal/bin): exact match.
+    pytest.param(lambda item: replace(item, contexts=context_variant(
+        0, actual="unconfined_u:object_r:usr_t:s0")), id="redirect-user-diff"),
+    pytest.param(lambda item: replace(item, contexts=context_variant(
+        1, actual="system_u:sysadm_r:usr_t:s0")), id="redirect-role-diff"),
+    pytest.param(lambda item: replace(item, contexts=context_variant(
+        2, actual="system_u:object_r:var_t:s0")), id="redirect-type-diff"),
+    pytest.param(lambda item: replace(item, contexts=context_variant(
+        0, actual="system_u:object_r:usr_t:s0:c1")), id="redirect-level-diff"),
+    # Task-staged files: exact role:type:level with expected user system_u.
+    pytest.param(lambda item: replace(item, contexts=context_variant(
+        3, actual="staff_u:object_r:usr_t:s0")), id="staged-unknown-user"),
+    pytest.param(lambda item: replace(item, contexts=context_variant(
+        4, actual="unconfined_u:sysadm_r:usr_t:s0")), id="staged-role-diff"),
+    pytest.param(lambda item: replace(item, contexts=context_variant(
+        3, actual="unconfined_u:object_r:var_t:s0")), id="staged-type-diff"),
+    pytest.param(lambda item: replace(item, contexts=context_variant(
+        4, actual="unconfined_u:object_r:usr_t:s0:c1")), id="staged-level-diff"),
+    pytest.param(lambda item: replace(item, contexts=context_variant(
+        3, expected="unconfined_u:object_r:usr_t:s0")), id="staged-expected-user"),
+    pytest.param(lambda item: replace(item, contexts=context_variant(
+        3, expected="system_u:object_r:var_t:s0")), id="staged-expected-type-diff"),
+    # All four fields must parse as non-empty user:role:type:level.
+    pytest.param(lambda item: replace(item, contexts=context_variant(
+        0, expected="system_u:object_r:usr_t", actual="system_u:object_r:usr_t")),
+        id="malformed-missing-level"),
+    pytest.param(lambda item: replace(item, contexts=context_variant(
+        0, expected="system_u::usr_t:s0", actual="system_u::usr_t:s0")),
+        id="malformed-empty-role"),
+    pytest.param(lambda item: replace(item, contexts=context_variant(
+        4, actual=":object_r:usr_t:s0")), id="malformed-empty-user"),
+    pytest.param(lambda item: replace(item, contexts=context_variant(
+        4, actual="system_u:object_r:usr_t:")), id="malformed-empty-level"),
+)
+
+
+@pytest.mark.parametrize("change", CONTEXT_MISMATCHES)
+def test_blocks_context_mismatches(evidence: Evidence,
+                                   change: Callable[[Evidence], Evidence]) -> None:
+    # Given: an otherwise complete observation with a context contradiction.
+    # When / Then
+    with pytest.raises(RefusalError):
+        validate_evidence(change(evidence), (65534, 65534))
 
 
 def test_legacy_accepts_nogroup_unavailable_observation(tmp_path: Path) -> None:

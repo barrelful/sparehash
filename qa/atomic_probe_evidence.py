@@ -16,6 +16,11 @@ PROPERTIES: Final = ("ProtectSystem=strict", "ProtectHome=yes", "PrivateNetwork=
                      "NoNewPrivileges=yes", "PrivateTmp=yes")
 CONTEXT_PATHS: Final = ("/var/opt", "/var/usrlocal", "/var/usrlocal/bin",
                         "/var/opt/xmrig/task3/xmrig", "/var/opt/xmrig/task3/config.json")
+# First three entries are redirect roots inspected as-is; the last two are the
+# task-staged files whose SELinux user field reflects the creating domain.
+STAGED_CONTEXT_PATHS: Final = CONTEXT_PATHS[3:]
+STAGED_EXPECTED_USER: Final = "system_u"
+STAGED_ACCEPTED_USERS: Final = ("system_u", "unconfined_u")
 MANAGER_KEYS: Final = frozenset((*[item.split("=")[0] for item in PROPERTIES],
                                "User", "Group", "ExecMainPID", "ExecMainStatus"))
 AUDIT_KEYS: Final = frozenset(("enabled", "failure", "pid", "rate_limit", "backlog_limit",
@@ -136,6 +141,41 @@ def legacy_assumption(directory: Path, identity: tuple[int, int]) -> Literal["su
     raise RefusalError("legacy comparison status is not a documented outcome")
 
 
+def split_context(value: str) -> tuple[str, str, str, str]:
+    """Exactly four non-empty user:role:type:level fields (MLS levels may hold colons)."""
+    parts = value.split(":", 3)
+    if len(parts) != 4 or any(not part for part in parts):
+        raise RefusalError("malformed SELinux context")
+    return parts[0], parts[1], parts[2], parts[3]
+
+
+def validate_contexts(contexts: tuple[tuple[str, str], ...]) -> None:
+    """Two-class installed-policy/actual comparison over CONTEXT_PATHS order.
+
+    Redirect roots are inspected, never written, and require exact equality.
+    Task-staged files are created by the probe's own staging: their SELinux
+    user field records the creating domain (root's system_u or an unconfined
+    caller's unconfined_u) and does not participate in type enforcement.
+    Equivalence is therefore exact role:type:level equality with expected user
+    system_u and actual user system_u/unconfined_u; the mandatory no-AVC audit
+    evidence independently establishes that no policy denial occurred.  Any
+    role/type/level difference, unknown actual user, expected user other than
+    system_u, or malformed four-field context blocks.
+    """
+    if len(contexts) != len(CONTEXT_PATHS):
+        raise RefusalError("installed-policy/actual context inventory incomplete")
+    for path, (expected, actual) in zip(CONTEXT_PATHS, contexts, strict=True):
+        expected_user, expected_role, expected_type, expected_level = split_context(expected)
+        actual_user, actual_role, actual_type, actual_level = split_context(actual)
+        if path in STAGED_CONTEXT_PATHS:
+            if (expected_user != STAGED_EXPECTED_USER or actual_user not in STAGED_ACCEPTED_USERS
+                    or (expected_role, expected_type, expected_level)
+                    != (actual_role, actual_type, actual_level)):
+                raise RefusalError("task-staged context not equivalent to installed policy")
+        elif expected != actual:
+            raise RefusalError("redirect-root context differs from installed policy")
+
+
 def validate_evidence(evidence: Evidence, identity: tuple[int, int]) -> None:
     keys = [line.partition("=")[0] for line in evidence.properties]
     if len(set(keys)) != len(keys) or any(key not in MANAGER_KEYS for key in keys) or not set(PROPERTIES).issubset(evidence.properties):
@@ -144,8 +184,7 @@ def validate_evidence(evidence: Evidence, identity: tuple[int, int]) -> None:
         raise RefusalError("execution identity not independently observed")
     if evidence.pid <= 0 or evidence.exit_code != 0:
         raise RefusalError("execution failed or PID unknown")
-    if not evidence.contexts or any(not re.fullmatch(r"[^:]+:[^:]+:[^:]+:.+", expected) or expected != actual for expected, actual in evidence.contexts):
-        raise RefusalError("installed-policy/actual contexts unknown or mismatched")
+    validate_contexts(evidence.contexts)
     if not evidence.audit_known or evidence.avc.strip() or not evidence.cleaned:
         raise RefusalError("audit unknown/AVC present/cleanup incomplete")
 
@@ -206,6 +245,8 @@ def contexts_record(directory: Path) -> tuple[tuple[str, str], ...]:
         raise RefusalError("incomplete path-bearing context inventory")
     if tuple(row[0] for row in rows) != CONTEXT_PATHS:
         raise RefusalError("context paths do not match exact probe surface")
+    # CONTEXT_PATHS order is the contract validate_contexts relies on:
+    # first three redirect roots, last two task-staged files.
     pairs = tuple((row[1], row[2]) for row in rows)
     if read_raw(directory / "contexts") != "".join(f"{expected}\t{actual}\n" for expected, actual in pairs):
         raise RefusalError("context summary contradicts raw path observations")
