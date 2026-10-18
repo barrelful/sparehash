@@ -51,6 +51,7 @@ class Arguments(argparse.Namespace):
     answers: Path | None = None
     use_existing: bool = False
     clear_lifecycle_latch: bool = False
+    operation_id: str | None = None
     bootstrap_created: list[str] | None = None
     upgrade: str | None = None
     reconfigure: bool = False
@@ -456,12 +457,36 @@ def complete_upgrade_main(operation_id: str, *, geteuid: Callable[[], int] = os.
     return 0
 
 
+def _retired_guidance() -> str:
+    """Exact recovery command for a retired system; never suggest manual deletion.
+
+    The command uses the source-tree installer entrypoint, so it stays valid even
+    when the installed CLI (/usr/local/bin/sparehash) is absent mid-recovery. The
+    operation id is included only when the retirement record carries one.
+    """
+    try:
+        recorded = lifecycle.retirement_operation_id()
+    except LeaseError:
+        recorded = None
+    command = "sudo ./install.sh --clear-lifecycle-latch"
+    if recorded is not None:
+        command += f" --operation-id {recorded}"
+    return ("sparehash: install: this system was previously uninstalled; resolve any "
+            "partial-uninstall failure, then reinstall from the source tree with:\n"
+            f"  {command}\n"
+            "This works even when the installed CLI is absent. Do not delete "
+            "/var/lib/sparehash/lifecycle.json manually.")
+
+
 def main(argv: Sequence[str] | None = None, *, geteuid: Callable[[], int] = os.geteuid) -> int:
     parser = argparse.ArgumentParser(prog="sparehash install")
     _ = parser.add_argument("--answers", type=Path)
     _ = parser.add_argument("--use-existing", action="store_true")
     _ = parser.add_argument("--clear-lifecycle-latch", action="store_true",
                             help="allow reinstall after a previous uninstall (root only)")
+    _ = parser.add_argument("--operation-id", metavar="ID",
+                            help="operation id of the uninstall retirement to resolve "
+                                 "(required with --clear-lifecycle-latch when the record carries one)")
     _ = parser.add_argument("--upgrade", metavar="OPERATION_ID",
                             help="stage and publish a selected local release under a compatible hold")
     _ = parser.add_argument("--reconfigure", action="store_true",
@@ -486,15 +511,13 @@ def main(argv: Sequence[str] | None = None, *, geteuid: Callable[[], int] = os.g
         if is_retired():
             if args.clear_lifecycle_latch:
                 try:
-                    lifecycle.clear_lifecycle_latch()
+                    lifecycle.clear_lifecycle_latch(operation_id=args.operation_id)
                 except (LeaseError, OSError) as error:
                     print(f"sparehash: install: lifecycle latch retained: {error}; system remains retired", file=sys.stderr)
                     return 1
                 print("sparehash: lifecycle latch cleared; reinstall permitted")
             else:
-                print("sparehash: install: this system was previously uninstalled; "
-                      "run with --clear-lifecycle-latch to reinstall, or remove /var/lib/sparehash/lifecycle.json manually",
-                      file=sys.stderr)
+                print(_retired_guidance(), file=sys.stderr)
                 return 2
         tree = Tree()
         if args.upgrade is not None or args.recover is not None or args.complete_upgrade is not None:
