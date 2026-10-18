@@ -19,6 +19,7 @@ import io
 import json
 import os
 import stat
+import threading
 from collections.abc import Callable
 from contextlib import ExitStack, redirect_stderr
 from pathlib import Path
@@ -225,10 +226,28 @@ def _foreign_receipt_artifact_attack(tmp_path: Path) -> None:
 
 
 def _nested_lock_attack(tmp_path: Path) -> None:
+    # The merged store contract composes same-thread nesting deliberately
+    # (task-8's reentrant _HELD descriptor; covered by
+    # test_manifest_v2.py::test_no_nested_lock) but must still refuse an
+    # independent holder: a second acquisition from another thread is a real
+    # cross-boundary attempt and fails closed while the transaction is held.
     root = _tree(tmp_path / "case")
     context = StoreContext(PathTrust(root, os.getuid()), create=True, timeout=0)
-    with locked_store(context), pytest.raises(StoreError), locked_store(context):
-        pass
+    outcome: list[str] = []
+
+    def second_holder() -> None:
+        try:
+            with locked_store(context):
+                outcome.append("entered")
+        except StoreError as error:
+            outcome.append(f"refused:{error.stage}")
+
+    with locked_store(context):
+        worker = threading.Thread(target=second_holder)
+        worker.start()
+        worker.join(timeout=5)
+        assert not worker.is_alive()
+    assert outcome == ["refused:manifest-lock"]
 
 
 def _checksum_mismatch_attack(tmp_path: Path) -> None:
