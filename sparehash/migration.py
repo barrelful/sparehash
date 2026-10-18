@@ -36,6 +36,7 @@ from collections.abc import Callable
 from contextlib import suppress
 from dataclasses import dataclass, replace
 from enum import Enum
+from pathlib import Path
 from typing import Any, Final, Literal, cast
 
 from .install_manifest import ManifestStore
@@ -399,3 +400,26 @@ def complete_migration(
     if invalidate_authorization is not None:
         invalidate_authorization()
     return MigrationPhase.COMPLETE
+
+
+def complete_upgrade(
+    operation_id: str,
+    store: ManifestStore,
+    *,
+    evidence: CompletionEvidence,
+    state_path: Path | None = None,
+    invalidate_authorization: Callable[[], None] | None = None,
+) -> MigrationPhase:
+    """Root-only complete-upgrade: remove only the journal and the update hold.
+
+    Completion is allowed while a protected manual pause is still active: that
+    pause is an authoritative inhibited state, and this function never reads or
+    writes ``state.json``. When ``state_path`` is supplied, an existing protected
+    manual state refuses completion: no upgrade entrypoint may be the operation
+    that crosses a live, preserved manual pause. Missing or unreadable required
+    evidence still refuses through :func:`complete_migration`.
+    """
+    if state_path is not None and state_path.exists():
+        raise MigrationError("refusing to complete an upgrade across a protected manual state")
+    return complete_migration(operation_id, store, evidence=evidence,
+                              invalidate_authorization=invalidate_authorization)

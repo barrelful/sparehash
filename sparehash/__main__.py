@@ -22,6 +22,7 @@ PUBLIC_COMMANDS: Final = (
     "benchmark",
     "update",
     "uninstall",
+    "complete-upgrade",
 )
 GAMING_COMMANDS: Final = ("gaming-start", "gaming-end")
 INTERNAL_COMMANDS: Final = (
@@ -47,6 +48,7 @@ class CliArguments(argparse.Namespace):
     debug_command: str | None = None
     name: str = ""
     purge: bool = False
+    operation_id: str = ""
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -59,6 +61,8 @@ def _parser() -> argparse.ArgumentParser:
         ))
         if command == "install":
             _ = command_parser.add_argument("--answers", metavar="FILE")
+        elif command == "complete-upgrade":
+            _ = command_parser.add_argument("operation_id")
         elif command == "uninstall":
             _ = command_parser.add_argument("--purge", action="store_true")
         elif command == "status":
@@ -116,8 +120,6 @@ def main(
             from sparehash.controller_io import authorize_miner
 
             return authorize_miner()
-        return _incomplete(command)
-
     if arguments and arguments[0] == "install":
         from sparehash.install import main as install
 
@@ -181,6 +183,14 @@ def main(
             return 0 if call({"cmd": verb, "blocker": parsed.name}, timeout=1).get("ok") is True else 1
         except IPCError:
             return 1
+    if command == "complete-upgrade":
+        if geteuid() != 0:
+            print("sparehash: complete-upgrade requires root; run: sudo sparehash complete-upgrade <operation_id>",
+                  file=sys.stderr)
+            return 1
+        from sparehash.install import complete_upgrade_main
+
+        return complete_upgrade_main(parsed.operation_id, geteuid=geteuid)
     return _incomplete(command)
 
 

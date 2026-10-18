@@ -90,7 +90,7 @@ class MsrExclusionTests(unittest.TestCase):
     def test_public_cli_has_no_msr_switch(self) -> None:
         self.assertEqual(PUBLIC_COMMANDS, (
             "install", "status", "start", "stop", "pause", "resume", "config", "logs",
-            "benchmark", "update", "uninstall",
+            "benchmark", "update", "uninstall", "complete-upgrade",
         ))
         with redirect_stderr(StringIO()), self.assertRaises(SystemExit):
             _ = main(("install", "--msr"))

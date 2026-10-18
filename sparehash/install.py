@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import argparse
 import grp
+import hashlib
+import json
 import os
 import platform
 import pwd
@@ -16,9 +18,11 @@ import signal
 import sys
 import tempfile
 from collections.abc import Callable, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from types import FrameType
 from typing import Final
+from uuid import uuid4
 
 from . import config, gaming_install, ipc, lifecycle, systemd, upgrade, wizard, xmrig_config
 from .deployment import ENV, DeploymentError, Tree, checked, command
@@ -27,12 +31,20 @@ from .install_manifest import StoreContext, locked_store
 from .install_xmrig import choose, dry_run, isolated
 from .lifecycle import is_retired
 from .lifecycle_lease import LeaseError, LeaseStore
+from .migration import CompletionEvidence, MigrationError, MigrationPhase, MigrationStore, complete_upgrade
 from .sysdetect import Capabilities
 from .xmrig_install import CollisionError, current_binary
 from .xmrig_ledger import Artifact, GroupIdentity, Operation, UserIdentity, bootstrap_target, choice
 
 UNITS: Final = "/etc/systemd/system"
 BOOTSTRAP_PATHS: Final = ("/opt/sparehash", "/opt/sparehash/src", "/usr/local/bin/sparehash")
+CONFIG_DIR: Final = "/etc/sparehash"
+STATE_DIR: Final = "/var/lib/sparehash"
+UPGRADE_BACKUP_DIR: Final = Path(os.environ.get("SPAREHASH_UPGRADE_BACKUP_DIR", STATE_DIR + "/upgrade-backups"))
+PROTECTED_UPGRADE_FILES: Final = (
+    "config.toml", "xmrig.json", "xmrig.runtime.json", "state.json", "deployment.json",
+    "install-manifest.json", "lifecycle-lease.json", "lifecycle.json", "migration.json",
+)
 
 
 class Arguments(argparse.Namespace):
@@ -41,6 +53,7 @@ class Arguments(argparse.Namespace):
     clear_lifecycle_latch: bool = False
     bootstrap_created: list[str] | None = None
     upgrade: str | None = None
+    reconfigure: bool = False
     recover: str | None = None
     complete_upgrade: str | None = None
     no_start: bool = False
@@ -208,6 +221,82 @@ def upgrade_source_root() -> Path:
     return Path(__file__).resolve().parent.parent
 
 
+@dataclass(frozen=True, slots=True)
+class Preservation:
+    """Pre-publish protected snapshot used to prove secrets and manual state survived."""
+
+    operation_id: str
+    backup: Path
+    token_sha256: str
+    manual_state_sha256: str | None
+
+
+def _reject_constant(value: str) -> None:
+    raise ValueError(f"invalid JSON constant: {value}")
+
+
+def _digest(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def _manual_state_digest(path: Path) -> str | None:
+    """Return the digest of a readable manual pause state, None when absent.
+
+    An unreadable or non-pause document refuses: the upgrade must never treat a
+    corrupt manual state as a fresh default or silently reset it.
+    """
+    if not path.exists():
+        return None
+    try:
+        raw = path.read_bytes()
+        decoded = json.loads(raw, parse_constant=_reject_constant)
+    except (OSError, ValueError, UnicodeError) as error:
+        raise DeploymentError("upgrade", f"manual pause state unreadable: {error}") from error
+    if not isinstance(decoded, dict) or decoded.get("manual") is not True:
+        raise DeploymentError("upgrade", "manual pause state invalid; refusing to reset it")
+    return _digest(raw)
+
+
+def capture_preservation(config_dir: Path, state_dir: Path, *, operation_id: str,
+                         backup_root: Path = UPGRADE_BACKUP_DIR) -> Preservation:
+    """Take a private 0700 root backup of protected config before any upgrade publish.
+
+    The backup is read-only root and never used as runtime input. A missing token
+    or unreadable manual state refuses rather than inventing a new default.
+    """
+    token_path = config_dir / "xmrig.json"
+    if not token_path.is_file():
+        raise DeploymentError("upgrade", "expected protected token is missing; refusing to invent a new one")
+    token_sha256 = _digest(xmrig_config.read_token(token_path).encode())
+    manual_state_sha256 = _manual_state_digest(state_dir / "state.json")
+    directory = backup_root / operation_id
+    try:
+        directory.mkdir(parents=True, mode=0o700)
+    except FileExistsError as error:
+        raise DeploymentError("upgrade", f"backup for operation {operation_id} exists; refusing to reuse it") from error
+    os.chmod(directory, 0o700)
+    for origin in (*(config_dir / name for name in PROTECTED_UPGRADE_FILES),
+                   *(state_dir / name for name in PROTECTED_UPGRADE_FILES)):
+        if not origin.is_file():
+            continue
+        target = directory / origin.name
+        target.write_bytes(origin.read_bytes())
+        os.chmod(target, 0o400)
+    return Preservation(operation_id, directory, token_sha256, manual_state_sha256)
+
+
+def verify_preservation(preservation: Preservation, config_dir: Path, state_dir: Path) -> None:
+    """Refuse when the protected backup, published token or manual state drifted."""
+    backup_token = preservation.backup / "xmrig.json"
+    if not backup_token.is_file() or _digest(xmrig_config.read_token(backup_token).encode()) != preservation.token_sha256:
+        raise DeploymentError("upgrade", "protected token backup does not match the recorded value")
+    published = config_dir / "xmrig.json"
+    if not published.is_file() or _digest(xmrig_config.read_token(published).encode()) != preservation.token_sha256:
+        raise DeploymentError("upgrade", "API token changed during upgrade; refusing")
+    if _manual_state_digest(state_dir / "state.json") != preservation.manual_state_sha256:
+        raise DeploymentError("upgrade", "manual pause state changed during upgrade; refusing")
+
+
 def empty_proof() -> bool:
     """Fresh stopped/empty proof: neither controller nor miner may be active."""
     for unit in ("sparehash.service", "sparehash-xmrig.service"):
@@ -259,8 +348,16 @@ def complete_install(tree: Tree, operation_id: str, *, proof: Callable[[], bool]
 
 
 def execute(tree: Tree, caps: Capabilities, cfg: config.Config, *, use_existing: bool = False,
-            bootstrap_created: tuple[str, ...] = (), interactive: bool = True) -> None:
+            bootstrap_created: tuple[str, ...] = (), interactive: bool = True,
+            preserve: bool = False, operation_id: str | None = None,
+            backup_root: Path | None = None) -> None:
     preflight(tree, caps)
+    preservation: Preservation | None = None
+    if preserve:
+        operation = operation_id if operation_id is not None else uuid4().hex
+        root = backup_root if backup_root is not None else tree.path(str(UPGRADE_BACKUP_DIR))
+        preservation = capture_preservation(tree.path(CONFIG_DIR), tree.path(STATE_DIR),
+                                            operation_id=operation, backup_root=root)
     ledger = Ledger(tree)
     established = tree.path("/etc/sparehash/config.toml").exists()
     existed_dirs = {name: tree.path(name).exists() for name in ("/etc/sparehash", "/var/lib/sparehash")}
@@ -319,6 +416,8 @@ def execute(tree: Tree, caps: Capabilities, cfg: config.Config, *, use_existing:
             return (tree.receipt(UNITS + "/sparehash.service", False),)
         ledger.perform((UNITS + "/sparehash.service", operation), mutate)
     post_install(tree, cfg, boot=boot, now=now)
+    if preservation is not None:
+        verify_preservation(preservation, tree.path(CONFIG_DIR), tree.path(STATE_DIR))
     ledger.ready()
 
 
@@ -330,15 +429,44 @@ def deadline(_signal: int, _frame: FrameType | None) -> None:
     raise DeploymentError("xmrig-timeout", "upstream selection/install exceeded 120 seconds")
 
 
+def complete_upgrade_main(operation_id: str, *, geteuid: Callable[[], int] = os.geteuid) -> int:
+    """Root-only complete-upgrade: postverify, then remove only journal and update hold."""
+    if geteuid() != 0:
+        print("sparehash: complete-upgrade requires root", file=sys.stderr)
+        return 1
+    tree = Tree()
+    try:
+        with locked_store(StoreContext(tree.trust, gid=0)) as store:
+            journal = MigrationStore(store).read()
+            if journal is None:
+                raise MigrationError("no migration journal; completion refused")
+            if journal.operation_id != operation_id:
+                raise MigrationError("operation id does not match the migration journal")
+            if journal.phase is not MigrationPhase.VERIFIED_AWAITING_OPERATOR:
+                raise MigrationError(f"migration is not verified awaiting operator: {journal.phase.value}")
+            _ = _manual_state_digest(tree.path(STATE_DIR + "/state.json"))
+            evidence = CompletionEvidence(payload_identity=journal.payload_identity,
+                                          empty_cgroup=empty_proof(), guards_clear=True,
+                                          manual_state_preserved=True)
+            _ = complete_upgrade(operation_id, store, evidence=evidence)
+    except (MigrationError, LeaseError, DeploymentError, OSError, ValueError) as error:
+        print(f"sparehash: complete-upgrade: {error}", file=sys.stderr)
+        return 1
+    print("sparehash: complete-upgrade committed; manual pause and startup choices preserved")
+    return 0
+
+
 def main(argv: Sequence[str] | None = None, *, geteuid: Callable[[], int] = os.geteuid) -> int:
     parser = argparse.ArgumentParser(prog="sparehash install")
     _ = parser.add_argument("--answers", type=Path)
     _ = parser.add_argument("--use-existing", action="store_true")
     _ = parser.add_argument("--clear-lifecycle-latch", action="store_true",
                             help="allow reinstall after a previous uninstall (root only)")
-    _ = parser.add_argument("--bootstrap-created", action="append", metavar="PATH", help=argparse.SUPPRESS)
     _ = parser.add_argument("--upgrade", metavar="OPERATION_ID",
                             help="stage and publish a selected local release under a compatible hold")
+    _ = parser.add_argument("--reconfigure", action="store_true",
+                            help="re-apply configuration while preserving token, settings and manual state")
+    _ = parser.add_argument("--bootstrap-created", action="append", metavar="PATH", help=argparse.SUPPRESS)
     _ = parser.add_argument("--recover", metavar="OPERATION_ID",
                             help="roll a recorded failed publication forward from its private staging")
     _ = parser.add_argument("--complete-upgrade", metavar="OPERATION_ID",
@@ -393,7 +521,7 @@ def main(argv: Sequence[str] | None = None, *, geteuid: Callable[[], int] = os.g
             current = wizard.load_answers(existing, caps)
         cfg = wizard.load_answers(args.answers, caps) if args.answers else wizard.run_interactive(caps, input, print, current=current)
         execute(tree, caps, cfg, use_existing=args.use_existing, bootstrap_created=tuple(args.bootstrap_created or ()),
-                interactive=(args.answers is None))
+                interactive=(args.answers is None), preserve=args.reconfigure)
         return 0
     except KeyboardInterrupt:
         print("sparehash: interrupted; pending ledger retained for inspection", file=sys.stderr)
