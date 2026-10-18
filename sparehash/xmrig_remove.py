@@ -10,7 +10,7 @@ import stat
 from contextlib import ExitStack
 from dataclasses import replace
 from pathlib import Path
-from typing import Final
+from typing import Final, Protocol, runtime_checkable
 
 from .deployment import DeploymentError, Tree
 from .install_manifest import StoreContext, locked_store
@@ -24,6 +24,39 @@ LEAF_DIRS: Final = (PACKAGE_DIR, TEMPLATE_DIR)
 PRUNE_DIRS: Final = (PACKAGE_DIR, TEMPLATE_DIR, "/opt/sparehash/src", "/opt/sparehash")
 CONTAINER_CHILDREN: Final = {"/opt/sparehash": frozenset(("src",)),
                              "/opt/sparehash/src": frozenset(("sparehash", "systemd"))}
+_LEAF_FLAGS: Final = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
+
+
+@runtime_checkable
+class RemovalProgress(Protocol):
+    """Write-ahead removal journal seam.
+
+    The uninstall caller owns persistence; this module only records intent
+    (path sets and coarse phase names) before each deletion so an interrupted
+    run can resume without adopting an unknown or replaced object.
+    """
+
+    done: set[str]
+    phases: set[str]
+
+    def save(self) -> None: ...
+
+
+def _present(tree: Tree, name: str) -> bool:
+    """True when the pinned name exists; FileNotFoundError means genuinely absent."""
+    try:
+        with ExitStack() as stack:
+            parent = tree.pin(stack, str(Path(name).parent))
+            try:
+                fd = os.open(Path(name).name, _LEAF_FLAGS, dir_fd=parent)
+            except FileNotFoundError:
+                return False
+            except OSError as error:
+                raise CollisionError("receipt", "unsafe artifact: " + name) from error
+            os.close(fd)
+    except FileNotFoundError:
+        return False
+    return True
 
 
 def _with_layout(trust: PathTrust, layout: Layout | None) -> PathTrust:
@@ -49,9 +82,22 @@ def _validate_tree(fd: int, uid: int) -> None:
                 raise CollisionError("ownership", "version tree contains linked or special content")
 
 
-def remove_owned_versions(trust: PathTrust, *, layout: Layout | None = None) -> tuple[str, ...]:
-    """Use the canonical store lock and pinned root; retain all installer receipts."""
+def remove_owned_versions(trust: PathTrust, *, layout: Layout | None = None,
+                          tree: Tree | None = None,
+                          progress: RemovalProgress | None = None) -> tuple[str, ...]:
+    """Use the canonical store lock and pinned root; retain all installer receipts.
+
+    The managed version tree is mutations-only through pinned descriptors. An
+    injected ``Tree`` (or the trust boundary it wraps) supplies the physical
+    roots; ``layout`` overlays the selected prefix layout on the removal trust;
+    any ``current`` symlink whose target is not a manifest-owned version name is
+    refused before deletion so a foreign redirect is never unlinked.
+    """
+    if tree is not None:
+        trust = tree.trust
     effective = _with_layout(trust, layout)
+    if progress is not None and "versions" in progress.phases:
+        return ()
     with ExitStack() as stack:
         store = stack.enter_context(locked_store(StoreContext(effective)))
         prior = store.read()
@@ -61,12 +107,17 @@ def remove_owned_versions(trust: PathTrust, *, layout: Layout | None = None) -> 
         if root_fd is None:
             if prior.manifest.versions:
                 raise CollisionError("root", "manifest references a missing managed root")
+            if progress is not None:
+                progress.phases.add("versions")
+                progress.save()
             return ()
         manifest = effective.manifest()
         if manifest is None or manifest != prior.manifest:
             raise CollisionError("marker", "valid protected marker and manifest are required")
         names = manifest.names
         target = current_target(root_fd)
+        if target is not None and (target not in names or "/" in target or target in {".", ".."}):
+            raise CollisionError("current", "current symlink target is not a manifest-owned version")
         if target is not None and effective.authorized_current(
                 effective.marker_path, effective.manifest_path) is None:
             raise CollisionError("current", "current is not manifest-authorized")
@@ -93,6 +144,9 @@ def remove_owned_versions(trust: PathTrust, *, layout: Layout | None = None) -> 
         os.rmdir(effective.managed_root.name, dir_fd=parent)
         os.fsync(parent)
         store.write(replace(manifest, versions=()))
+        if progress is not None:
+            progress.phases.add("versions")
+            progress.save()
         return names
 
 
@@ -107,13 +161,17 @@ def _current(tree: Tree, path: str) -> Artifact:
         raise CollisionError("receipt", "authorized artifact is missing or unsafe: " + path) from error
 
 
-def _authorized_leaves(tree: Tree, installer: Installer) -> dict[str, Artifact]:
+def _authorized_leaves(tree: Tree, installer: Installer,
+                       progress: RemovalProgress | None = None) -> dict[str, Artifact]:
     authorized: dict[str, Artifact] = {}
     for artifact in installer.artifacts:
         if not artifact.created or artifact.kind != "file" or leaf_identity(artifact.path) is None:
             continue
         if fixed_target(artifact.id) != (artifact.path, "file"):
             raise CollisionError("receipt", "receipt does not match the fixed grammar: " + artifact.id)
+        if progress is not None and artifact.path in progress.done and not _present(tree, artifact.path):
+            # Write-ahead recorded and already gone: a resumed run may finish.
+            continue
         if _fields(_current(tree, artifact.path)) != _fields(artifact):
             raise CollisionError("receipt", "authorized artifact changed since install: " + artifact.path)
         authorized[artifact.path] = artifact
@@ -141,16 +199,25 @@ def _allowed_children(directory: str, leaves: dict[str, Artifact]) -> frozenset[
     return {Path(path).name for path in leaves if str(Path(path).parent) == directory}
 
 
-def remove_leaf_receipts(trust: PathTrust, *, layout: Layout | None = None) -> tuple[str, ...]:
-    """Remove only created package/template file receipts after a full preflight of every container."""
+def remove_leaf_receipts(trust: PathTrust, *, layout: Layout | None = None,
+                         tree: Tree | None = None,
+                         progress: RemovalProgress | None = None) -> tuple[str, ...]:
+    """Remove only created package/template file receipts after a full preflight of every container.
+
+    An injected ``Tree`` supplies the physical roots; ``layout`` overlays the
+    selected prefix layout on the removal trust; ``progress`` is an optional
+    write-ahead journal. Each leaf path is recorded before its unlink, so a
+    resumed run skips already-removed leaves and refuses to adopt one that
+    vanished without being recorded.
+    """
     effective = _with_layout(trust, layout)
-    tree = Tree(effective.root, effective.uid, effective.layout)
+    tree = tree if tree is not None else Tree(effective.root, effective.uid, effective.layout)
     with ExitStack() as stack:
         store = stack.enter_context(locked_store(StoreContext(effective)))
         prior = store.read()
         if prior is None or prior.manifest.installer is None:
             raise CollisionError("receipt", "no per-file installer receipts; reinstall before removal")
-        leaves = _authorized_leaves(tree, prior.manifest.installer)
+        leaves = _authorized_leaves(tree, prior.manifest.installer, progress)
         directories = _authorized_directories(tree, prior.manifest.installer)
         roots: dict[str, int] = {}
         for directory in (*LEAF_DIRS, *CONTAINER_CHILDREN):
@@ -169,6 +236,9 @@ def remove_leaf_receipts(trust: PathTrust, *, layout: Layout | None = None) -> t
             if _fd is None:
                 continue
             for path in sorted(path for path in leaves if str(Path(path).parent) == directory):
+                if progress is not None:
+                    progress.done.add(path)
+                    progress.save()
                 os.unlink(Path(path).name, dir_fd=_fd)
                 removed.append(path)
             os.fsync(_fd)
