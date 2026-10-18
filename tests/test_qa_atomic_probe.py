@@ -24,6 +24,40 @@ from qa.atomic_probe import (
     summarize,
     validate_evidence,
 )
+from qa.atomic_probe_evidence import CONTEXT_PATHS, legacy_assumption
+
+ISOLATION: Final = ("ProtectSystem=strict", "ProtectHome=yes", "PrivateNetwork=yes",
+                    "NoNewPrivileges=yes", "PrivateTmp=yes")
+# Exact auditctl -s output from the 2026-10-18 enforcing Bazzite Task-3 run.
+AUDIT_CTL: Final = ("enabled 1\nfailure 1\npid 785\nrate_limit 0\nbacklog_limit 64\n"
+                    "lost 0\nbacklog 0\nbacklog_wait_time 60000\nbacklog_wait_time_actual 0\n"
+                    "loginuid_immutable 0 unlocked\n")
+CONTEXTS: Final = (
+    ("system_u:object_r:usr_t:s0", "system_u:object_r:usr_t:s0"),
+    ("system_u:object_r:usr_t:s0", "system_u:object_r:usr_t:s0"),
+    ("system_u:object_r:bin_t:s0", "system_u:object_r:bin_t:s0"),
+    ("system_u:object_r:usr_t:s0", "system_u:object_r:usr_t:s0"),
+    ("system_u:object_r:usr_t:s0", "system_u:object_r:usr_t:s0"),
+)
+
+
+def legacy_properties(*, status: str = "216", pid: str = "2483", user: str = "99",
+                      group: str = "nogroup") -> str:
+    """Exact legacy manager record shape; the guest observed 216/nogroup/99/1."""
+    return (f"ExecMainPID={pid}\nExecMainStatus={status}\nUser={user}\nGroup={group}\n"
+            "PrivateTmp=yes\nPrivateNetwork=yes\nProtectHome=yes\n"
+            "ProtectSystem=strict\nNoNewPrivileges=yes\n")
+
+
+LEGACY_PROPERTIES: Final = legacy_properties()
+
+
+def write_legacy(directory: Path, *, properties: str | None = None, exit_code: str = "1\n",
+                 output: str = "") -> None:
+    _ = (directory / "legacy.properties").write_text(
+        LEGACY_PROPERTIES if properties is None else properties)
+    _ = (directory / "legacy.exit").write_text(exit_code)
+    _ = (directory / "legacy.output").write_text(output)
 
 
 @pytest.fixture
@@ -35,7 +69,7 @@ def manifest() -> Manifest:
 @pytest.fixture
 def facts() -> Facts:
     return Facts("a" * 32, "1:2", "b" * 40, "c" * 64, "d" * 64,
-                 "Enforcing", 65534, 65534, "nobody", True)
+                 "Enforcing", 99, 99, "nobody", True)
 
 
 @pytest.mark.parametrize("change", [
@@ -62,7 +96,7 @@ FACT_CHANGES: Final[tuple[Callable[[Facts], Facts], ...]] = (
 
 @pytest.mark.parametrize("change", FACT_CHANGES)
 def test_refuses_unsafe_probe(manifest: Manifest, facts: Facts,
-                            change: Callable[[Facts], Facts]) -> None:
+                              change: Callable[[Facts], Facts]) -> None:
     # Given
     unsafe = change(facts)
     # When / Then
@@ -72,9 +106,7 @@ def test_refuses_unsafe_probe(manifest: Manifest, facts: Facts,
 
 @pytest.fixture
 def evidence() -> Evidence:
-    return Evidence(("ProtectSystem=strict", "ProtectHome=yes", "PrivateNetwork=yes",
-                     "NoNewPrivileges=yes", "PrivateTmp=yes"),
-                    65534, 65534, 42, 0, (("system_u:object_r:usr_t:s0", "system_u:object_r:usr_t:s0"),), True, "", True)
+    return Evidence(ISOLATION, 65534, 65534, 42, 0, CONTEXTS, True, "", True)
 
 
 def test_accepts_enforcing_probe(evidence: Evidence) -> None:
@@ -103,6 +135,68 @@ def test_blocks_incomplete_evidence(evidence: Evidence,
     # When / Then
     with pytest.raises(RefusalError):
         validate_evidence(incomplete, (65534, 65534))
+
+
+def test_legacy_accepts_nogroup_unavailable_observation(tmp_path: Path) -> None:
+    # Given: exact guest evidence; Bazzite has no legacy nogroup group, so
+    # systemd fails before exec with ExecMainStatus=216 (EXIT_GROUP).
+    write_legacy(tmp_path)
+    # When / Then: an observation, not a harness failure.
+    assert legacy_assumption(tmp_path, (99, 99)) == "unsupported"
+
+
+def test_legacy_accepts_supported_execution(tmp_path: Path) -> None:
+    # Given: a platform where Group=nogroup exists; the sandbox runs and its
+    # first output line is the wrapper identity.
+    write_legacy(tmp_path, properties=legacy_properties(status="0"), exit_code="0\n",
+                 output="99 65534 2483\nXMRig fixture\n")
+    # When / Then
+    assert legacy_assumption(tmp_path, (99, 99)) == "supported"
+
+
+LEGACY_BLOCKED: Final = (
+    pytest.param({"output": "Failed to set group: nogroup\n"}, id="216-nonempty-output"),
+    pytest.param({"output": "99 65534 2483\n"}, id="216-identity-output"),
+    pytest.param({"exit_code": "0\n"}, id="216-zero-exit"),
+    pytest.param({"properties": legacy_properties(user="98")}, id="user-not-identity"),
+    pytest.param({"properties": legacy_properties(user="0")}, id="user-zero"),
+    pytest.param({"properties": legacy_properties(user="099")}, id="user-noncanonical"),
+    pytest.param({"properties": legacy_properties(status="217")}, id="status-217"),
+    pytest.param({"properties": legacy_properties(status="1")}, id="status-1"),
+    pytest.param({"properties": legacy_properties(status="")}, id="status-empty"),
+    pytest.param({"properties": legacy_properties(group="99")}, id="group-numeric"),
+    pytest.param({"properties": legacy_properties().replace("Group=nogroup\n", "")},
+        id="group-missing"),
+    pytest.param({"properties": legacy_properties() + "User=99\n"}, id="duplicate-property"),
+    pytest.param({"properties": legacy_properties() + "Extra=yes\n"}, id="unknown-property"),
+    pytest.param({"properties": legacy_properties().replace("PrivateNetwork=yes\n", "")},
+        id="missing-isolation-property"),
+    pytest.param({"exit_code": "signal\n"}, id="exit-malformed"),
+    pytest.param({"exit_code": "-1\n"}, id="exit-negative"),
+    pytest.param({"properties": legacy_properties(status="0"), "exit_code": "1\n",
+                  "output": "99 99 2483\n"}, id="supported-nonzero-exit"),
+    pytest.param({"properties": legacy_properties(status="0"), "exit_code": "0\n"},
+        id="supported-empty-output"),
+    pytest.param({"properties": legacy_properties(status="0"), "exit_code": "0\n",
+                  "output": "99 0 2483\n"}, id="supported-zero-gid"),
+    pytest.param({"properties": legacy_properties(status="0"), "exit_code": "0\n",
+                  "output": "99 99 0\n"}, id="supported-zero-pid"),
+    pytest.param({"properties": legacy_properties(status="0"), "exit_code": "0\n",
+                  "output": "99 99 9999\n"}, id="supported-pid-mismatch"),
+    pytest.param({"properties": legacy_properties(status="0"), "exit_code": "0\n",
+                  "output": "98 99 2483\n"}, id="supported-uid-mismatch"),
+    pytest.param({"properties": legacy_properties(status="0"), "exit_code": "0\n",
+                  "output": "99-99-2483\n"}, id="supported-malformed-line"),
+)
+
+
+@pytest.mark.parametrize("write", LEGACY_BLOCKED)
+def test_legacy_blocks_undocumented_outcomes(tmp_path: Path, write: dict[str, str]) -> None:
+    # Given: a legacy record that is not one of the two documented outcomes.
+    write_legacy(tmp_path, **write)
+    # When / Then: fail closed.
+    with pytest.raises(RefusalError):
+        _ = legacy_assumption(tmp_path, (99, 99))
 
 
 @pytest.mark.parametrize("opt_in", [False, True])
@@ -157,31 +251,36 @@ def test_manifest_refuses_symlink_before_read(tmp_path: Path) -> None:
 
 @pytest.fixture
 def raw_probe(tmp_path: Path, manifest: Manifest, facts: Facts) -> Path:
-    context = "system_u:object_r:usr_t:s0"
-    paths = ("/var/opt", "/var/usrlocal", "/var/usrlocal/bin",
-             "/var/opt/xmrig/task3/xmrig", "/var/opt/xmrig/task3/config.json")
+    contexts_paths = "".join(f"{path}\t{expected}\t{actual}\n"
+                             for path, (expected, actual) in zip(CONTEXT_PATHS, CONTEXTS, strict=True))
     records = {
-        "identity": "65534 65534\n", "cleanup": "removed-owned-staging-and-units\n",
-        "contexts": f"{context}\t{context}\n" * 5,
-        "contexts-paths": "".join(f"{path}\t{context}\t{context}\n" for path in paths),
+        "identity": f"{facts.uid} {facts.gid}\n", "cleanup": "removed-owned-staging-and-units\n",
+        "contexts": "".join(f"{expected}\t{actual}\n" for expected, actual in CONTEXTS),
+        "contexts-paths": contexts_paths,
         "candidate.sha": manifest.candidate_sha + "\n",
         "authorization.json": json.dumps({"manifest": asdict(manifest), "facts": asdict(facts),
                                             "helpers": ["/usr/bin/systemctl"]}),
-        "legacy.exit": "1\n", "legacy.output": "Failed to resolve group nogroup\n",
+        # Exact 2026-10-18 guest values: nogroup is absent on Bazzite, so the
+        # legacy unit dies before exec with EXIT_GROUP and no output.
+        "legacy.properties": LEGACY_PROPERTIES,
+        "legacy.exit": "1\n", "legacy.output": "",
     }
-    for mode in ("version", "dry-run"):
+    # Exact guest PIDs and wall-clock windows for the two executable modes.
+    for mode, pid, end in (("version", 2496, "14:45:48"), ("dry-run", 2519, "14:45:49")):
         records.update({
-            f"{mode}.properties": "ProtectSystem=strict\nProtectHome=yes\nPrivateNetwork=yes\n" +
-                "NoNewPrivileges=yes\nPrivateTmp=yes\nUser=65534\nGroup=65534\nExecMainPID=42\nExecMainStatus=0\n",
-            f"{mode}.output": "65534 65534 42\nXMRig fixture\n",
+            f"{mode}.properties": f"ExecMainPID={pid}\nExecMainStatus=0\nUser=99\nGroup=99\n" +
+                "PrivateTmp=yes\nPrivateNetwork=yes\nProtectHome=yes\n" +
+                "ProtectSystem=strict\nNoNewPrivileges=yes\n",
+            f"{mode}.output": f"99 99 {pid}\n" + ("XMRig fixture\n" if mode == "version" else ""),
             f"{mode}.exit": "0\n", f"{mode}.audit-known": "yes\n", f"{mode}.avc": "",
             f"{mode}.properties.exit": "0\n",
-            f"{mode}.audit-before": "enabled 1\npid 17\nlost 0\nbacklog 0\n",
-            f"{mode}.audit-after": "enabled 1\npid 17\nlost 0\nbacklog 0\n",
+            f"{mode}.audit-before": AUDIT_CTL, f"{mode}.audit-after": AUDIT_CTL,
             f"{mode}.audit-before.exit": "0\n", f"{mode}.audit-after.exit": "0\n",
             f"{mode}.audit-query": "<no matches>\n", f"{mode}.audit-query.exit": "1\n",
-            f"{mode}.audit-window": "pid=42\nstart=10/18/2026 12:00:00\nend=10/18/2026 12:00:30\n",
-            f"{mode}.audit-command": "/usr/sbin/ausearch\n-m\nAVC,USER_AVC\n-p\n42\n-ts\n10/18/2026\n12:00:00\n-te\n10/18/2026\n12:00:30\n--raw\n",
+            f"{mode}.audit-window": f"pid={pid}\nstart=10/18/2026 14:45:48\nend=10/18/2026 {end}\n",
+            # Exact guest command shape (absolute dates); blocker 2 replaces it.
+            f"{mode}.audit-command": (f"/usr/sbin/ausearch\n-m\nAVC,USER_AVC\n-p\n{pid}\n"
+                                      f"-ts\n10/18/2026\n14:45:48\n-te\n10/18/2026\n{end}\n--raw\n"),
         })
     for name, value in records.items():
         _ = (tmp_path / name).write_text(value)
@@ -192,14 +291,16 @@ def raw_probe(tmp_path: Path, manifest: Manifest, facts: Facts) -> Path:
     "duplicate-property", "duplicate-identity", "malformed-manager", "unknown-manager",
     "raw-disabled", "raw-loss", "raw-backlog", "raw-avc", "query-error", "query-rc",
     "raw-missing", "audit-status-error", "audit-duplicate", "pid-window", "query-command",
-    "context-path", "authorization", "candidate", "reviewer-counterexample"])
+    "context-path", "authorization", "candidate", "reviewer-counterexample",
+    "legacy-status", "legacy-output", "legacy-group", "legacy-property", "legacy-duplicate",
+    "legacy-exit", "legacy-identity", "legacy-missing"])
 def test_summary_requires_raw_observations(raw_probe: Path, tamper: str,
                                           decode: Callable[[str], Json] = json.loads) -> None:
     # Given: synthetic raw records, never enforcing-distro acceptance.
     tmp_path = raw_probe
     records = {path.name: path.read_text() for path in tmp_path.iterdir()}
     if tamper == "manager":
-        records["version.properties"] = records["version.properties"].replace("User=65534", "User=0")
+        records["version.properties"] = records["version.properties"].replace("User=99", "User=0")
     if tamper == "property":
         records["version.properties"] = records["version.properties"].replace("PrivateNetwork=yes\n", "")
     if tamper == "audit":
@@ -221,16 +322,25 @@ def test_summary_requires_raw_observations(raw_probe: Path, tamper: str,
         "query-rc": ("version.audit-query.exit", "124\n"),
         "audit-status-error": ("version.audit-before.exit", "1\n"),
         "audit-duplicate": ("version.audit-before", "enabled 0\nenabled 1\npid 17\nlost 0\nbacklog 0\n"),
-        "pid-window": ("version.audit-window", records["version.audit-window"].replace("pid=42", "pid=99")),
-        "query-command": ("version.audit-command", records["version.audit-command"].replace("42\n", "99\n")),
+        "pid-window": ("version.audit-window", records["version.audit-window"].replace("pid=2496", "pid=99")),
+        "query-command": ("version.audit-command", records["version.audit-command"].replace("2496\n", "99\n")),
         "context-path": ("contexts-paths", records["contexts-paths"].replace("/var/opt\t", "/foreign\t")),
         "candidate": ("candidate.sha", "f" * 40 + "\n"),
+        "legacy-status": ("legacy.properties", LEGACY_PROPERTIES.replace("ExecMainStatus=216", "ExecMainStatus=217")),
+        "legacy-output": ("legacy.output", "Failed to set group: nogroup\n"),
+        "legacy-group": ("legacy.properties", LEGACY_PROPERTIES.replace("Group=nogroup", "Group=99")),
+        "legacy-property": ("legacy.properties", LEGACY_PROPERTIES.replace("PrivateNetwork=yes\n", "")),
+        "legacy-duplicate": ("legacy.properties", LEGACY_PROPERTIES + "User=99\n"),
+        "legacy-exit": ("legacy.exit", "0\n"),
+        "legacy-identity": ("legacy.properties", LEGACY_PROPERTIES.replace("User=99", "User=98")),
     }
     if tamper in replacements:
         name, value = replacements[tamper]
         records[name] = value
     if tamper == "raw-missing":
         del records["version.audit-query"]
+    if tamper == "legacy-missing":
+        del records["legacy.properties"]
     if tamper == "authorization":
         del records["authorization.json"]
     if tamper == "reviewer-counterexample":
@@ -254,6 +364,23 @@ def test_summary_requires_raw_observations(raw_probe: Path, tamper: str,
     assert isinstance(result, dict)
     assert result["status"] == ("FEASIBLE" if tamper == "none" else "BLOCKED")
     assert result["release_acceptance"] is False
+    if tamper == "none":
+        # Guest-observed but non-failing: the legacy assumption is simply
+        # unsupported on platforms without the nogroup group.
+        assert result["legacy_assumption"] == "unsupported"
+
+
+def test_summary_records_supported_legacy_assumption(raw_probe: Path) -> None:
+    # Given: a platform where the legacy nogroup comparison executes.
+    _ = (raw_probe / "legacy.properties").write_text(legacy_properties(status="0"))
+    _ = (raw_probe / "legacy.exit").write_text("0\n")
+    _ = (raw_probe / "legacy.output").write_text("99 65534 2483\nXMRig fixture\n")
+    # When
+    summarize(raw_probe)
+    # Then
+    result = json.loads((raw_probe / "probe.json").read_text())
+    assert result["status"] == "FEASIBLE"
+    assert result["legacy_assumption"] == "supported"
 
 
 @pytest.mark.parametrize("mode", ["version", "dry-run"])

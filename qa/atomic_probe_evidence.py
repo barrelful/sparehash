@@ -10,7 +10,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Final, TypeAlias
+from typing import Final, Literal, TypeAlias
 
 PROPERTIES: Final = ("ProtectSystem=strict", "ProtectHome=yes", "PrivateNetwork=yes",
                      "NoNewPrivileges=yes", "PrivateTmp=yes")
@@ -77,6 +77,63 @@ def manager_record(lines: tuple[str, ...]) -> Manager:
     if observed["ExecMainStatus"] != "0":
         raise RefusalError("manager execution failed")
     return Manager(lines, (int(observed["User"]), int(observed["Group"]), int(observed["ExecMainPID"])))
+
+
+def legacy_assumption(directory: Path, identity: tuple[int, int]) -> Literal["supported", "unsupported"]:
+    """Interpret ONLY the two documented legacy Group=nogroup outcomes.
+
+    On platforms without the legacy ``nogroup`` group (Bazzite/Fedora)
+    systemd cannot resolve the group and fails before exec with
+    ExecMainStatus=216 (EXIT_GROUP), empty output and a nonzero wrapper
+    exit; the legacy assumption is UNSUPPORTED there, an observation and
+    not a harness failure.  Where ``nogroup`` exists the unit executes,
+    exits zero and its first output line is the wrapper identity.  Any
+    other status, contradictory output/exit, duplicated or missing
+    manager properties, or a Group other than exactly ``nogroup`` blocks.
+    """
+    lines = tuple(read_raw(directory / "legacy.properties").splitlines())
+    observed: dict[str, str] = {}
+    for line in lines:
+        key, separator, value = line.partition("=")
+        if separator != "=" or key not in MANAGER_KEYS or key in observed or not value or "=" in value:
+            raise RefusalError("duplicate, unknown or malformed legacy manager field")
+        observed[key] = value
+    if frozenset(observed) != MANAGER_KEYS or not set(PROPERTIES).issubset(lines):
+        raise RefusalError("legacy comparison missing mandatory manager property")
+    if observed["Group"] != "nogroup":
+        raise RefusalError("legacy comparison did not retain Group=nogroup")
+    if not re.fullmatch(r"[1-9][0-9]*", observed["User"]) or int(observed["User"]) != identity[0]:
+        raise RefusalError("legacy comparison identity does not match observed execution")
+    if not re.fullmatch(r"[1-9][0-9]*", observed["ExecMainPID"]):
+        raise RefusalError("legacy comparison main PID unknown")
+    exit_text = read_raw(directory / "legacy.exit")
+    if not re.fullmatch(r"[0-9]+\n", exit_text):
+        raise RefusalError("legacy comparison exit status malformed")
+    exit_code = int(exit_text)
+    output = read_raw(directory / "legacy.output")
+    status = observed["ExecMainStatus"]
+    if status == "216":
+        # EXIT_GROUP: systemd failed to resolve/set the legacy group before
+        # exec.  Nothing ran, so empty output and a nonzero exit are expected.
+        if output or exit_code == 0:
+            raise RefusalError("legacy nogroup-unavailable observation contradicted")
+        return "unsupported"
+    if status == "0":
+        # The sandbox ran: exit zero and the first output line is its
+        # identity, consistent with the recorded manager properties.
+        if exit_code != 0:
+            raise RefusalError("legacy comparison exit status contradicts manager result")
+        first = output.splitlines()
+        if not first:
+            raise RefusalError("legacy comparison output missing identity line")
+        identity_line = re.fullmatch(r"([1-9][0-9]*) ([1-9][0-9]*) ([1-9][0-9]*)", first[0])
+        if identity_line is None:
+            raise RefusalError("legacy comparison identity line malformed")
+        if (int(identity_line[1]) != int(observed["User"])
+                or int(identity_line[3]) != int(observed["ExecMainPID"])):
+            raise RefusalError("legacy comparison identity contradicts manager record")
+        return "supported"
+    raise RefusalError("legacy comparison status is not a documented outcome")
 
 
 def validate_evidence(evidence: Evidence, identity: tuple[int, int]) -> None:
@@ -148,11 +205,10 @@ def contexts_record(directory: Path) -> tuple[tuple[str, str], ...]:
 
 def summarize_raw(directory: Path, binding: Callable[[Path], tuple[int, int]]) -> None:
     failures: list[str] = []
+    legacy: Literal["supported", "unsupported"] | None = None
     try:
         identity = binding(directory)
-        _ = int(read_raw(directory / "legacy.exit"))
-        if not read_raw(directory / "legacy.output").strip():
-            raise RefusalError("legacy comparison unknown")
+        legacy = legacy_assumption(directory, identity)
         contexts = contexts_record(directory)
         for mode in ("version", "dry-run"):
             manager = manager_record(tuple(read_raw(directory / f"{mode}.properties").splitlines()))
@@ -167,6 +223,7 @@ def summarize_raw(directory: Path, binding: Callable[[Path], tuple[int, int]]) -
     except (OSError, ValueError, KeyError, IndexError, RefusalError) as error:
         failures.append(str(error))
     result = {"status": "BLOCKED" if failures else "FEASIBLE", "failures": failures,
+              "legacy_assumption": legacy,
               "release_acceptance": False, "scope": "Task 3 only; independent guest verification required"}
     _ = (directory / "probe.json").write_text(json.dumps(result, indent=2) + "\n")
     if failures:
