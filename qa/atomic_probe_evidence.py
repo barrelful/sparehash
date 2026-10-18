@@ -228,12 +228,19 @@ def validate_audit(directory: Path, mode: str, pid: int) -> None:
     # locale-independent recent/now keywords.  The audit-window above still
     # records and validates wall-clock bounds, PID attribution and the
     # <=120 s execution window, so the raw evidence chain stays intact.
+    # No-match capture shapes (stderr is merged into the capture): audit 4.2.1
+    # (Fedora 44) `ausearch --raw` prints nothing and exits 1; older or
+    # non-raw shapes print "<no matches>" and exit 1.  Real failures against
+    # the exact command tuple below ("Error parsing start date", usage
+    # errors) always write non-empty text, so the empty capture is
+    # unambiguous only together with that command tuple and the validated
+    # window/PID bounds.
     command = ("/usr/sbin/ausearch", "-m", "AVC,USER_AVC", "-p", str(pid), "-ts",
                "recent", "-te", "now", "--raw")
     if tuple(raw("audit-command").splitlines()) != command:
         raise RefusalError("audit query attribution/window not independently retained")
     query = raw("audit-query")
-    if query != "<no matches>\n" or raw("audit-query.exit") != "1\n":
+    if query not in ("<no matches>\n", "") or raw("audit-query.exit") != "1\n":
         raise RefusalError("raw audit query contains AVC, error, unknown output or exit status")
     if raw("audit-known") != "yes\n" or raw("avc") != "":
         raise RefusalError("derived audit markers disagree with raw evidence")

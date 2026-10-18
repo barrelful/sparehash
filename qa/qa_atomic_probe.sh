@@ -158,6 +158,10 @@ for mode in legacy version dry-run; do
         # strptime(3) %x, which rejects the emitted %m/%d/%Y form ("Error
         # parsing start date").  Query with the locale-independent recent/now
         # keywords; audit-window retains the wall-clock execution bounds.
+        # Observed no-match capture shapes (stderr is merged): audit 4.2.1
+        # (Fedora 44) --raw prints nothing and exits 1; older/non-raw ausearch
+        # prints "<no matches>" on stderr and exits 1.  Real errors against
+        # this exact command remain non-empty text.
         query=(/usr/sbin/ausearch -m AVC,USER_AVC -p "$pid" -ts recent -te now --raw)
         printf '%s\n' "${query[@]}" > "$E/$mode.audit-command"
         set +e
@@ -173,7 +177,7 @@ for mode in legacy version dry-run; do
         set -e
         if [[ $audit_rc == 0 ]]; then
             /usr/bin/cp "$E/$mode.audit-query" "$E/$mode.avc"
-        elif [[ $audit_rc == 1 && $(<"$E/$mode.audit-query") == '<no matches>' ]]; then
+        elif [[ $audit_rc == 1 && ( -z "$(<"$E/$mode.audit-query")" || $(<"$E/$mode.audit-query") == '<no matches>' ) ]]; then
             : > "$E/$mode.avc"
         fi
         if [[ -f $E/$mode.avc ]] &&

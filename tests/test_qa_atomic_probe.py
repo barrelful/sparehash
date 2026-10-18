@@ -271,7 +271,9 @@ def test_legacy_blocks_undocumented_outcomes(tmp_path: Path, write: dict[str, st
 
 
 def write_audit_window(directory: Path, *, pid: int = 42, start: str = "10/18/2026 12:00:00",
-                       end: str = "10/18/2026 12:00:30", command: str | None = None) -> None:
+                       end: str = "10/18/2026 12:00:30", command: str | None = None,
+                       query: str = "", query_exit: str = "1\n", known: str = "yes\n",
+                       avc: str = "") -> None:
     for suffix in ("audit-before", "audit-after"):
         _ = (directory / f"version.{suffix}").write_text(AUDIT_CTL)
         _ = (directory / f"version.{suffix}.exit").write_text("0\n")
@@ -279,17 +281,71 @@ def write_audit_window(directory: Path, *, pid: int = 42, start: str = "10/18/20
     _ = (directory / "version.audit-window").write_text(f"pid={pid}\nstart={start}\nend={end}\n")
     _ = (directory / "version.audit-command").write_text(
         audit_command(pid) if command is None else command)
-    _ = (directory / "version.audit-query").write_text("<no matches>\n")
-    _ = (directory / "version.audit-query.exit").write_text("1\n")
-    _ = (directory / "version.audit-known").write_text("yes\n")
-    _ = (directory / "version.avc").write_text("")
+    # Audit 4.2.1 (Fedora 44) `--raw` no-match shape: empty merged capture,
+    # exit 1, empty derived avc and audit-known=yes as the fixed shell records.
+    _ = (directory / "version.audit-query").write_text(query)
+    _ = (directory / "version.audit-query.exit").write_text(query_exit)
+    _ = (directory / "version.audit-known").write_text(known)
+    _ = (directory / "version.avc").write_text(avc)
 
 
 def test_audit_accepts_locale_independent_recent_now(tmp_path: Path) -> None:
-    # Given: the exact query command the fixed shell records.
+    # Given: the exact recent/now query command the fixed shell records with
+    # the PRIMARY audit 4.2.1 (Fedora 44) no-match shape: empty merged
+    # capture, exit 1, derived empty avc and audit-known=yes.
     write_audit_window(tmp_path)
     # When / Then
     validate_audit(tmp_path, "version", 42)
+
+
+def test_audit_accepts_legacy_no_matches_capture(tmp_path: Path) -> None:
+    # Given: the compatibility shape; older/non-raw ausearch writes
+    # "<no matches>" (stderr is merged into the capture) and exits 1.
+    write_audit_window(tmp_path, query="<no matches>\n")
+    # When / Then
+    validate_audit(tmp_path, "version", 42)
+
+
+AUDIT_QUERY_BLOCKED: Final = (
+    # rc 0 means real AVC output was produced; never a no-match.
+    pytest.param({"query": "<no matches>\n", "query_exit": "0\n"}, id="no-matches-exit-0"),
+    pytest.param({"query": "", "query_exit": "0\n"}, id="empty-exit-0"),
+    pytest.param({"query": "", "query_exit": "124\n"}, id="empty-timeout-exit"),
+    # Only the two version-observed shapes are accepted, exactly.
+    pytest.param({"query": "<no matches>"}, id="no-matches-no-newline"),
+    pytest.param({"query": "\n"}, id="newline-only"),
+    pytest.param({"query": "<no matches> \n"}, id="no-matches-trailing-space"),
+    pytest.param({"query": "<no matches> extra\n"}, id="no-matches-extra-text"),
+    pytest.param({"query": "Error parsing start date (10/18/2026)\n"}, id="error-text"),
+    pytest.param({"query": 'type=AVC msg=audit(1.1:1): avc: denied { execute } for pid=42\n'},
+                 id="avc-text"),
+)
+
+
+@pytest.mark.parametrize("write", AUDIT_QUERY_BLOCKED)
+def test_audit_blocks_noncanonical_no_match_shapes(tmp_path: Path, write: dict[str, str]) -> None:
+    # Given: merged capture text/exit that is not one of the two observed
+    # no-match shapes.
+    write_audit_window(tmp_path, **write)
+    # When / Then: fail closed.
+    with pytest.raises(RefusalError):
+        validate_audit(tmp_path, "version", 42)
+
+
+AUDIT_MARKER_BLOCKED: Final = (
+    pytest.param({"known": ""}, id="audit-known-missing"),
+    pytest.param({"known": "no\n"}, id="audit-known-not-yes"),
+    pytest.param({"avc": "denied\n"}, id="avc-marker-nonempty"),
+)
+
+
+@pytest.mark.parametrize("write", AUDIT_MARKER_BLOCKED)
+def test_audit_blocks_derived_marker_contradictions(tmp_path: Path, write: dict[str, str]) -> None:
+    # Given: a clean no-match capture but the shell markers disagree.
+    write_audit_window(tmp_path, **write)
+    # When / Then
+    with pytest.raises(RefusalError):
+        validate_audit(tmp_path, "version", 42)
 
 
 AUDIT_COMMAND_MISMATCHES: Final = (
@@ -418,7 +474,8 @@ def raw_probe(tmp_path: Path, manifest: Manifest, facts: Facts) -> Path:
             f"{mode}.properties.exit": "0\n",
             f"{mode}.audit-before": AUDIT_CTL, f"{mode}.audit-after": AUDIT_CTL,
             f"{mode}.audit-before.exit": "0\n", f"{mode}.audit-after.exit": "0\n",
-            f"{mode}.audit-query": "<no matches>\n", f"{mode}.audit-query.exit": "1\n",
+            # Audit 4.2.1 `--raw` no-match capture: empty merged output, exit 1.
+            f"{mode}.audit-query": "", f"{mode}.audit-query.exit": "1\n",
             f"{mode}.audit-window": f"pid={pid}\nstart=10/18/2026 14:45:48\nend=10/18/2026 {end}\n",
             f"{mode}.audit-command": audit_command(pid),
         })
@@ -537,12 +594,28 @@ def test_summary_records_supported_legacy_assumption(raw_probe: Path) -> None:
 
 
 @pytest.mark.parametrize("mode", ["version", "dry-run"])
+def test_summary_accepts_legacy_no_matches_capture(raw_probe: Path, mode: str) -> None:
+    # Given: the compatibility no-match shape ("<no matches>" merged from
+    # stderr) in either executable mode, with the empty primary shape left in
+    # place for the other; both shapes must stay independently acceptable.
+    _ = (raw_probe / f"{mode}.audit-query").write_text("<no matches>\n")
+    # When
+    summarize(raw_probe)
+    # Then
+    result = json.loads((raw_probe / "probe.json").read_text())
+    assert result["status"] == "FEASIBLE"
+    assert result["failures"] == []
+    assert result["legacy_assumption"] == "unsupported"
+
+
+@pytest.mark.parametrize("mode", ["version", "dry-run"])
 @pytest.mark.parametrize("suffix,raw", [
     ("properties", "PrivateNetwork=no\n"),
     ("audit-before", "enabled 0\npid 17\nlost 0\nbacklog 0\n"),
     ("audit-after", "enabled 1\npid 17\nlost 1\nbacklog 0\n"),
     ("audit-query", 'type=AVC msg=audit(1): avc: denied { execute } for pid=42\n'),
     ("audit-query.exit", "0\n"),
+    ("avc", 'type=AVC msg=audit(1): avc: denied { execute } for pid=42\n'),
 ])
 def test_both_runs_reject_raw_marker_contradictions(raw_probe: Path, mode: str,
                                                    suffix: str, raw: str) -> None:
