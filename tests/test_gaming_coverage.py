@@ -1,132 +1,6 @@
-<<<<<<< HEAD
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (c) 2026 SpareHash contributors
 
-"""Gaming coverage admission and refusal tests.
-
-These tests verify that the gaming integration honestly documents its admission
-status and refuses silent downgrade from FULL to fallback coverage.
-"""
-
-import unittest
-from pathlib import Path
-
-
-class TestGamingCoverageAdmission(unittest.TestCase):
-    """Verify gaming coverage admission is documented honestly."""
-
-    def test_refuses_silent_downgrade(self):
-        """Gaming contract must document NO_DEPENDABLE_ROUTE admission."""
-        contract_path = Path("docs/gaming-integration-contract.md")
-        self.assertTrue(contract_path.exists(), "gaming-integration-contract.md must exist")
-
-        content = contract_path.read_text()
-
-        # Must document the admission decision
-        self.assertIn("NO_DEPENDABLE_ROUTE", content)
-        self.assertIn("FULL gaming coverage", content)
-        self.assertIn("NOT been demonstrated", content)
-
-        # Must distinguish FULL from fallback
-        self.assertIn("conservative fallback", content.lower())
-        self.assertIn("conservative session inhibition", content.lower())
-
-        # Must not claim FULL coverage
-        self.assertNotIn("FULL gaming safety", content)
-        self.assertNotIn("full support", content.lower())
-
-    def test_documents_latency_objectives_not_guarantees(self):
-        """Gaming contract must frame latency as objectives, not guarantees."""
-        contract_path = Path("docs/gaming-integration-contract.md")
-        content = contract_path.read_text()
-
-        # Must mention latency objectives
-        self.assertIn("1 second", content)
-        self.assertIn("5 second", content)
-
-        # Must frame as objectives, not guarantees
-        self.assertIn("engineering objectives", content.lower())
-        self.assertIn("not hard real-time", content.lower())
-        self.assertIn("not zero game-start overlap", content.lower())
-
-    def test_documents_manual_pause_independence(self):
-        """Gaming contract must document manual pause independence."""
-        contract_path = Path("docs/gaming-integration-contract.md")
-        content = contract_path.read_text()
-
-        # Must document manual pause interaction
-        self.assertIn("manual pause", content.lower())
-        self.assertIn("independent", content.lower())
-        self.assertIn("cannot bypass", content.lower())
-
-    def test_documents_fallback_only_status(self):
-        """Gaming contract must document fallback-only NO-GO status."""
-        contract_path = Path("docs/gaming-integration-contract.md")
-        content = contract_path.read_text()
-
-        # Must document NO-GO status
-        self.assertIn("NO-GO", content)
-        self.assertIn("reduced-function", content.lower())
-        self.assertIn("pending owner decision", content.lower())
-
-    def test_documents_unknowns_and_limitations(self):
-        """Gaming contract must document unknowns and limitations."""
-        contract_path = Path("docs/gaming-integration-contract.md")
-        content = contract_path.read_text()
-
-        # Must document key limitations
-        self.assertIn("session bus requirement", content.lower())
-        self.assertIn("lingering teardown", content.lower())
-        self.assertIn("monitor loss", content.lower())
-        self.assertIn("uncovered workloads", content.lower())
-
-    def test_readme_documents_admission_status(self):
-        """README must document gaming admission status."""
-        readme_path = Path("README.md")
-        content = readme_path.read_text()
-
-        # Must mention admission status
-        self.assertIn("conservative fallback", content.lower())
-        self.assertIn("NOT been demonstrated", content)
-        self.assertIn("NO_DEPENDABLE_ROUTE", content)
-
-        # Must reference the contract
-        self.assertIn("docs/gaming-integration-contract.md", content)
-
-    def test_security_md_documents_gaming_limitations(self):
-        """SECURITY.md must document gaming coverage limitations."""
-        security_path = Path("SECURITY.md")
-        content = security_path.read_text()
-
-        # Must document gaming limitations
-        self.assertIn("conservative fallback", content.lower())
-        self.assertIn("NO_DEPENDABLE_ROUTE", content)
-        self.assertIn("NOT been demonstrated", content)
-
-        # Must reference the contract
-        self.assertIn("docs/gaming-integration-contract.md", content)
-
-    def test_architecture_documents_gaming_module(self):
-        """Architecture doc must document gaming module and admission."""
-        arch_path = Path("docs/architecture.md")
-        content = arch_path.read_text()
-
-        # Must document gaming observation module
-        self.assertIn("sparehash/gaming.py", content)
-        self.assertIn("gaming observation", content.lower())
-
-        # Must document admission status
-        self.assertIn("NO_DEPENDABLE_ROUTE", content)
-        self.assertIn("conservative session inhibition", content.lower())
-
-        # Must document latency objectives
-        self.assertIn("1 second", content)
-        self.assertIn("5 second", content)
-
-
-if __name__ == "__main__":
-    unittest.main()
-=======
 """Coverage-tier configuration, status and unattended-refusal behavior.
 
 The v0.2.0 gaming model adds ``gaming.integration`` (auto|conservative|gamemode)
@@ -138,13 +12,17 @@ unadmitted ``auto`` (FULL) tier without explicit operator action.
 import json
 import pwd
 import tempfile
+from collections.abc import Iterator
+from concurrent.futures import Future
 from pathlib import Path
 from typing import Literal
+from unittest.mock import patch
 
 import pytest
 
 from sparehash import status
 from sparehash.config import Config, GamingIntegration, load
+from sparehash.power import Evidence
 from sparehash.sysdetect import Capabilities
 from sparehash.thermal import SensorPath
 from sparehash.wizard import WizardError, load_answers
@@ -158,20 +36,97 @@ CAPS = Capabilities("x86_64", True, 255, True, "cgroup2", True, True, False,
 Health = Literal["OK", "STALE", "DISCONNECTED", "MALFORMED", "OVERFLOW"]
 
 
+# --- task-16 documentation-honesty tests (converted from unittest) ---
+
+def test_gaming_contract_documents_admission() -> None:
+    """Gaming contract must document NO_DEPENDABLE_ROUTE admission."""
+    contract_path = Path("docs/gaming-integration-contract.md")
+    assert contract_path.exists(), "gaming-integration-contract.md must exist"
+    content = contract_path.read_text()
+    assert "NO_DEPENDABLE_ROUTE" in content
+    assert "FULL gaming coverage" in content
+    assert "NOT been demonstrated" in content
+    assert "conservative fallback" in content.lower()
+    assert "conservative session inhibition" in content.lower()
+    assert "FULL gaming safety" not in content
+    assert "full support" not in content.lower()
+
+
+def test_gaming_contract_documents_latency_objectives() -> None:
+    """Gaming contract must frame latency as objectives, not guarantees."""
+    content = Path("docs/gaming-integration-contract.md").read_text()
+    assert "1 second" in content
+    assert "5 second" in content
+    assert "engineering objectives" in content.lower()
+    assert "not hard real-time" in content.lower()
+    assert "not zero game-start overlap" in content.lower()
+
+
+def test_gaming_contract_documents_manual_pause_independence() -> None:
+    """Gaming contract must document manual pause independence."""
+    content = Path("docs/gaming-integration-contract.md").read_text()
+    assert "manual pause" in content.lower()
+    assert "independent" in content.lower()
+    assert "cannot bypass" in content.lower()
+
+
+def test_gaming_contract_documents_fallback_only_status() -> None:
+    """Gaming contract must document fallback-only NO-GO status."""
+    content = Path("docs/gaming-integration-contract.md").read_text()
+    assert "NO-GO" in content
+    assert "reduced-function" in content.lower()
+    assert "pending owner decision" in content.lower()
+
+
+def test_gaming_contract_documents_unknowns_and_limitations() -> None:
+    """Gaming contract must document unknowns and limitations."""
+    content = Path("docs/gaming-integration-contract.md").read_text()
+    assert "session bus requirement" in content.lower()
+    assert "lingering teardown" in content.lower()
+    assert "monitor loss" in content.lower()
+    assert "uncovered workloads" in content.lower()
+
+
+def test_readme_documents_admission_status() -> None:
+    """README must document gaming admission status."""
+    content = Path("README.md").read_text()
+    assert "conservative fallback" in content.lower()
+    assert "NOT been demonstrated" in content
+    assert "NO_DEPENDABLE_ROUTE" in content
+    assert "docs/gaming-integration-contract.md" in content
+
+
+def test_security_md_documents_gaming_limitations() -> None:
+    """SECURITY.md must document gaming coverage limitations."""
+    content = Path("SECURITY.md").read_text()
+    assert "conservative fallback" in content.lower()
+    assert "NO_DEPENDABLE_ROUTE" in content
+    assert "NOT been demonstrated" in content
+    assert "docs/gaming-integration-contract.md" in content
+
+
+def test_architecture_documents_gaming_module() -> None:
+    """Architecture doc must document gaming module and admission."""
+    content = Path("docs/architecture.md").read_text()
+    assert "sparehash/gaming.py" in content
+    assert "gaming observation" in content.lower()
+    assert "NO_DEPENDABLE_ROUTE" in content
+    assert "conservative session inhibition" in content.lower()
+    assert "1 second" in content
+    assert "5 second" in content
+
+
+# --- task-17 coverage-tier tests ---
+
 def test_accepts_explicit_coverage_policy() -> None:
-    # Given an explicit conservative coverage policy, status reports the fallback tier.
     cfg = Config.from_dict({"gaming": {"enabled": True, "integration": "conservative"}})
     snapshot = status.StatusSnapshot(coverage_tier=status.coverage_tier(cfg.gaming.integration))
-    # When
     result = json.loads(status.format_status(snapshot, True))
-    # Then
     assert cfg.gaming.integration is GamingIntegration.CONSERVATIVE
     assert result["coverage_tier"] == "CONSERVATIVE"
 
 
 def test_refuses_silent_downgrade() -> None:
-    # Given an unattended answers file requesting auto (FULL) coverage on a host with
-    # no admitted producer, the wizard must refuse rather than silently downgrade.
     with tempfile.TemporaryDirectory() as directory:
         path = Path(directory) / "answers.toml"
         _ = path.write_text(
@@ -180,24 +135,17 @@ def test_refuses_silent_downgrade() -> None:
             + f'[gaming]\nenabled = true\nusers = ["{ACCOUNT}"]\nintegration = "auto"\n',
             encoding="utf-8",
         )
-        # When / Then
         with pytest.raises(WizardError) as caught:
             _ = load_answers(path, CAPS, sensor_probe=lambda: SENSOR, unattended=True)
         assert caught.value.reason == "no_full_gaming_contract_admitted"
 
 
 def test_v011_migration_pending_acknowledgment() -> None:
-    # Given a v0.1.1 gaming section (originally enabled=True) that migrated to the
-    # reduced conservative fallback with the guard disabled, the operator must
-    # acknowledge the downgrade before unattended Bazzite mining.
     with tempfile.TemporaryDirectory() as directory:
         path = Path(directory) / "config.toml"
         _ = path.write_text('[gaming]\nenabled = false\nintegration = "conservative"\n', encoding="utf-8")
-        # When
         cfg = load(path)
-        # Then
         assert cfg.gaming.migration_pending_acknowledgment is True
-    # An enabled or auto coverage request is not a silent downgrade.
     assert not Config.from_dict({"gaming": {"enabled": True, "integration": "conservative"}}).gaming.migration_pending_acknowledgment
     assert not Config.from_dict({"gaming": {"enabled": False, "integration": "auto"}}).gaming.migration_pending_acknowledgment
 
@@ -206,14 +154,53 @@ def test_v011_migration_pending_acknowledgment() -> None:
     ("OK", 0), ("STALE", 1), ("DISCONNECTED", 2), ("MALFORMED", 3), ("OVERFLOW", 4),
 ])
 def test_status_reports_health_and_epoch(health: Health, epoch: int) -> None:
-    # Given a provider coverage sample, status preserves its health and epoch.
     coverage = status.GamingCoverage(
         provider="logind", uid=1000, epoch=epoch, observed_at=12.5,
         state="ACTIVE", health=health, producer_version="v1.2.3",
     )
-    # When
     result = json.loads(status.format_status(status.StatusSnapshot(coverage=coverage), True))
-    # Then
     assert result["coverage"]["health"] == health
     assert result["coverage"]["epoch"] == epoch
->>>>>>> atlas/v020-task-17-coverage-tiers
+
+
+@pytest.fixture
+def bounded_observations() -> Iterator[None]:
+    """Replace host observations, not the snapshot or coverage policy."""
+    unknown: Future[bool | None] = Future()
+    unknown.set_result(None)
+    with patch("sparehash.status.Helpers") as helpers, patch(
+        "sparehash.status.read_sysfs",
+        return_value=(Evidence(None, 20), Evidence(None, 20), None, None),
+    ), patch("sparehash.status.time.monotonic", return_value=20), patch(
+        "sparehash.status.find_sensor", return_value=None,
+    ), patch("sparehash.status.Path.glob", return_value=()), patch(
+        "sparehash.status.number", return_value=None,
+    ):
+        helpers.return_value.query.return_value = unknown
+        yield
+
+
+@pytest.mark.usefixtures("bounded_observations")
+@pytest.mark.parametrize("integration,tier", [
+    ("conservative", "CONSERVATIVE"), ("auto", "UNVERIFIED"),
+    ("gamemode", "UNSUPPORTED"),
+])
+@pytest.mark.parametrize("observation", [(0, False), (0, True), (0, None), (11, False)])
+def test_live_tier_when_observations_are_fresh_unknown_or_stale(
+    integration: str, tier: status.CoverageTier, observation: tuple[int, bool | None],
+) -> None:
+    # Given: even a ready controller supplies no admitted provider evidence.
+    age, active = observation
+    cfg = Config.from_dict({"gaming": {"integration": integration}})
+    provider = status.LiveProvider(controller_reader=lambda: {
+        "ok": True, "ready": True, "running": False,
+        "observation_age": age, "gaming": [[0, active]],
+    }, resolver=lambda host: True)
+    with patch("sparehash.status.load", return_value=cfg):
+        # When
+        result = json.loads(status.format_status(provider.snapshot(), True))
+    # Then: policy is reported separately from unknown provider evidence.
+    assert result["coverage_tier"] == tier
+    assert result["coverage"] is None
+    assert result["gaming"][0]["active"] is (active if age <= 10 else None)
+    assert result["gaming"][0]["stale"] is (age > 10)
