@@ -63,7 +63,8 @@ class InstallTests(InstallFixture):
         self.assertTrue(config.load(self.tree.path("/etc/sparehash/config.toml")).gaming.enabled)
 
     def test_main_when_answers_supplied_disables_interactive_consent(self) -> None:
-        for argv, interactive in (([], True), (["--answers", "answers.toml"], False)):
+        report = install.Preflight("VALIDATED", "READY", "CONSERVATIVE", False, False, True, None, (), (), (), None, ())
+        for argv, interactive in (([], True), (["--answers", "answers.toml", "--yes"], False)):
             # Given
             with self.subTest(interactive=interactive), mock.patch.object(install, "is_retired", return_value=False), mock.patch.object(
                 install.platform, "machine", return_value="x86_64"
@@ -72,6 +73,10 @@ class InstallTests(InstallFixture):
             ), mock.patch.object(Capabilities, "detect", return_value=capabilities()), mock.patch.object(
                 install.wizard, "load_answers", return_value=self.cfg
             ), mock.patch.object(install.wizard, "run_interactive", return_value=self.cfg), mock.patch.object(
+                install, "evaluate_report", return_value=report
+            ), mock.patch.object(install.systemd, "probe_cpuweight_idle", return_value=False), mock.patch(
+                "builtins.input", return_value=""
+            ), mock.patch.object(
                 install, "execute"
             ) as execute:
                 # When

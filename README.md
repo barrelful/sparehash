@@ -97,37 +97,30 @@ already-running controller on reinstall). The installer never enables or starts
 the miner directly. Its final summary reports boot startup, controller activity,
 and whether mining is blocked (or unknown if controller status is unavailable).
 
-Like the interactive installer, `--answers` mode stages the selected local
-release only after it records explicit consent; `--yes` approves those effects
-without prompting. Review proposed effects first without any host change:
+For unattended installs, supply a TOML answers file and explicit `--yes`
+consent for the disclosed effects:
+
+```
+sudo ./install.sh --answers answers.toml --yes
+```
+
+`--answers` without `--yes` refuses before any effect is applied. `--no-start`
+and `--no-enable` skip the two startup prompts (defaulting each to No) so QA or
+an operator can stage a service without starting the controller.
+
+A dry, read-only preflight reports support, readiness, and gaming coverage
+without changing the host, in human or `--json` form:
 
 ```
 sudo ./install.sh --preflight
 sudo ./install.sh --preflight --json
 ```
 
-`--preflight` performs no host mutation: no transient probe, directory, account,
-latch, download or source-copy effect. It prints a readiness report (human or
-`--json`) and exits 0 when ready, 2 for an unsupported host and 1 for a refused
-or unsafe host.
-
-For unattended installs, supply a TOML answers file with explicit consent:
-
-```
-sudo ./install.sh --answers answers.toml --yes
-```
-
-The `--yes` flag is required with `--answers`. It confirms that you have reviewed the answers file and approve the effects. Without `--yes`, the installer refuses to proceed.
-
-In `--answers --yes` mode, both startup choices default to Yes without reading stdin: the controller is enabled at boot and started immediately. For testing or staged deployment, suppress automatic startup:
-
-```
-sudo ./install.sh --answers answers.toml --yes --no-start --no-enable
-```
-
-`--no-start` installs but does not start the controller now. `--no-enable` installs but does not enable the controller at boot. The installer completes successfully; the controller remains stopped and disabled until you run `sudo sparehash start`.
-
-If you declined startup interactively, you can enable and start it later with:
+A `READY` report exits 0; `ACTION_REQUIRED` exits 2; refused or inconclusive
+outcomes exit 1. In `--answers` mode, both startup choices default to Yes
+without reading stdin: the controller is enabled at boot and started
+immediately. If you declined startup interactively, you can enable and start it
+later with:
 
 ```
 sudo sparehash start

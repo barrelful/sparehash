@@ -69,6 +69,13 @@ def _parser() -> argparse.ArgumentParser:
         ))
         if command == "install":
             _ = command_parser.add_argument("--answers", metavar="FILE")
+            _ = command_parser.add_argument("--use-existing", action="store_true")
+            _ = command_parser.add_argument("--clear-lifecycle-latch", action="store_true")
+            _ = command_parser.add_argument("--preflight", action="store_true")
+            _ = command_parser.add_argument("--json", action="store_true")
+            _ = command_parser.add_argument("--yes", action="store_true")
+            _ = command_parser.add_argument("--no-start", action="store_true")
+            _ = command_parser.add_argument("--no-enable", action="store_true")
         elif command == "complete-upgrade":
             _ = command_parser.add_argument("operation_id")
         elif command == "uninstall":
