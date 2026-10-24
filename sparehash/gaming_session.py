@@ -30,13 +30,15 @@ from .gaming_state import GamingEvidence, GamingReducer
 from .sysdetect import FIXED_PATH
 
 SessionClass = Literal["user", "greeter", "lock-screen", "background", "user-shared",
-                       "user-early-session", "user-inexistent"]
+                       "user-early-session", "user-inexistent", "manager"]
 Health = Literal["OK", "STALE", "DISCONNECTED", "MALFORMED", "OVERFLOW"]
 REQUIRED: Final = frozenset({"logind.list_sessions", "logind.seat"})
 CLASSES: Final[dict[str, SessionClass]] = {
     "user": "user", "greeter": "greeter", "lock-screen": "lock-screen",
     "background": "background", "user-shared": "user-shared",
     "user-early-session": "user-early-session", "user-inexistent": "user-inexistent",
+    # Bazzite/Gamescope reports the graphical seat session with Class=manager.
+    "manager": "manager",
 }
 CGROUP_ROOT: Final = Path("/sys/fs/cgroup")
 DIR_FLAGS: Final = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
