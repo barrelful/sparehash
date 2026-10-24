@@ -5,19 +5,20 @@
 
 from __future__ import annotations
 
-import os
 import logging
+import os
+import pwd
 import signal
+import sys
 import threading
 import time
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import ExitStack
+from functools import partial
 from pathlib import Path
 from queue import Empty, Queue
 from types import FrameType
-import sys
-from functools import partial
 from typing import Final, final
 
 from . import config, deployment_spec, gaming, ipc, power, systemd, thermal
@@ -25,6 +26,7 @@ from .controller import Controller
 from .controller_io import Generation, Observation, Ports, SampleId
 from .deployment import Tree, checked
 from .deployment_spec import DeploymentSpec, DeploymentSpecError
+from .gaming_producer import build_producer
 from .gaming_session import CgroupwalkProbe, GamingSessionGuard, LogindSessionProbe
 from .hugepages import LeaseManager
 from .paths import STATE_FILE
@@ -35,6 +37,14 @@ from .state import BlockerState
 LOGGER: Final = logging.getLogger(__name__)
 GAMING_POLL_SECONDS: Final = 1.0
 PRODUCTION_ROOT: Final = Path("/")
+
+
+def _home(uid: int) -> str:
+    try:
+        entry = pwd.getpwuid(uid)
+    except KeyError:
+        return ""
+    return entry.pw_dir
 
 
 def _discard_gaming(_decision: str, _epoch: int) -> None:
@@ -64,8 +74,13 @@ class Providers:
         if gaming_guard is not None:
             self.gaming_guard: GamingSessionGuard | None = gaming_guard
         elif cfg.gaming.enabled and self.users:
+            producers = tuple(
+                producer for user in self.users
+                if (producer := build_producer(_home(user.uid), user.uid)) is not None
+            ) if cfg.gaming.steam_log else ()
             self.gaming_guard = GamingSessionGuard(LogindSessionProbe(), CgroupwalkProbe(),
-                                                   tuple(user.uid for user in self.users))
+                                                   tuple(user.uid for user in self.users),
+                                                   steam_producers=producers)
         else:
             self.gaming_guard = None
 

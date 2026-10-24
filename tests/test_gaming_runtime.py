@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from threading import Event, get_ident
 from unittest.mock import patch
 
 import pytest
@@ -22,11 +23,21 @@ from sparehash.controller_io import (
     SampleId,
 )
 from sparehash.gaming_session import CgroupEvidence, GamingSessionGuard, InventoryResult
+from sparehash.gaming_state import GamingEvidence
 from sparehash.hugepages import LeaseManager
 from sparehash.runtime import Providers
 from sparehash.runtime_jobs import Jobs
 from sparehash.state import BlockerState
 from tests.controller_fixtures import FakePorts
+from tests.test_gaming_session import (
+    EMPTY,
+    FRESH,
+    SESSION,
+    USER_EMPTY,
+    Groups,
+    Inventory,
+    SteamEvidence,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -255,3 +266,41 @@ def test_providers_disabled_gaming_is_inert() -> None:
     # Then no authoritative blocker is synthesized
     assert events == [("CLEAR", 0)]
     assert provider.gaming_blocked is False
+
+
+def test_optional_steam_is_evaluated_on_gaming_worker() -> None:
+    # Given
+    from dataclasses import replace
+
+    called = Event()
+    threads: list[int] = []
+    events: list[str] = []
+
+    class WorkerSteam(SteamEvidence):
+        def evaluate(self, epoch: int, *, now: float) -> GamingEvidence:
+            threads.append(get_ident())
+            return super().evaluate(epoch, now=now)
+
+    guard = GamingSessionGuard(Inventory(replace(FRESH, sessions=(SESSION,))),
+                               Groups((EMPTY, USER_EMPTY)), (1000,),
+                               steam_producers=(WorkerSteam(),))
+
+    def deliver(decision: str, epoch: int) -> None:
+        events.append(decision)
+        called.set()
+
+    with patch("sparehash.runtime.power.PowerMonitor"), patch(
+        "sparehash.runtime.thermal.find_sensor", return_value=None,
+    ), patch("sparehash.runtime.time.monotonic", return_value=100.0):
+        provider = Providers(config.Config(), lambda action: action(),
+                             gaming_guard=guard, gaming_sink=deliver)
+        try:
+            # When: subscribe (Event) before dispatch, then wait on that exact callback.
+            provider.request_gaming(7)
+            assert called.wait(5)
+            # Then
+            assert events == ["CLEAR"]
+            assert threads and threads[0] != get_ident()
+            assert provider.gaming_blocked is False
+        finally:
+            provider.close()

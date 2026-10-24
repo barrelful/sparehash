@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (c) 2026 SpareHash contributors
 
-"""Worker-side CONSERVATIVE inhibition, not idle/gameplay discrimination.
+"""Worker-side conservative fallback with optional Steam evidence.
 
 Every evaluation resnapshots logind; the cache is diagnostic, never clearance
 authority. Call on a provider worker, not the controller selector. This module
@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Final, Literal, Protocol, final
 
 from .gaming import resolve_helper
+from .gaming_state import GamingEvidence, GamingReducer
 from .sysdetect import FIXED_PATH
 
 SessionClass = Literal["user", "greeter", "lock-screen", "background", "user-shared",
@@ -83,6 +84,13 @@ class SessionProbe(Protocol):
 
 class CgroupProbe(Protocol):
     def snapshot(self, uids: tuple[int, ...]) -> tuple[CgroupEvidence, ...]: ...
+
+
+class SteamEvidenceSource(Protocol):
+    @property
+    def uid(self) -> int: ...
+
+    def evaluate(self, epoch: int, *, now: float) -> GamingEvidence: ...
 
 
 @final
@@ -298,7 +306,8 @@ class GamingSessionGuard:
     """Mutable owner-thread history; removing configuration never erases a lifetime."""
 
     def __init__(self, session_probe: SessionProbe, cgroup_probe: CgroupProbe, covered_uids: tuple[int, ...],
-                 cgroup_max_age_seconds: float = 5.0, tracked_sessions_refresh_seconds: float = 30.0) -> None:
+                 cgroup_max_age_seconds: float = 5.0, tracked_sessions_refresh_seconds: float = 30.0, *,
+                 steam_producers: tuple[SteamEvidenceSource, ...] = ()) -> None:
         if any(not math.isfinite(age) or age <= 0 for age in (cgroup_max_age_seconds, tracked_sessions_refresh_seconds)):
             raise ProbeError("freshness budgets must be finite and positive")
         self.session_probe, self.cgroup_probe = session_probe, cgroup_probe
@@ -308,6 +317,13 @@ class GamingSessionGuard:
         self._tracked_uids: tuple[int, ...] = ()
         self._coverage_overflow = False
         self.set_tracked_uids(covered_uids)
+        if len(steam_producers) > LIMIT or len({source.uid for source in steam_producers}) != len(steam_producers):
+            raise ProbeError("invalid or duplicate Steam coverage")
+        self.steam_producers = steam_producers
+        self._steam = GamingReducer(cgroup_max_age_seconds)
+        self._steam_sessions: tuple[SessionInventory, ...] | None = None
+        if steam_producers:
+            self.set_tracked_uids(tuple(source.uid for source in steam_producers))
 
     @property
     def tracked_uids(self) -> tuple[int, ...]:
@@ -345,7 +361,37 @@ class GamingSessionGuard:
             return "UNKNOWN"
         if actual != expected or len(groups) != len(expected):
             return "UNKNOWN"
-        if inventory.sessions:
+        if self.steam_producers:
+            self._steam.set_coverage(tuple(f"steam-log:{uid}" for uid in self.tracked_uids))
+            if inventory.sessions != self._steam_sessions:
+                self._steam.bump_epoch()
+                self._steam_sessions = inventory.sessions
+            epoch = self._steam.current_epoch
+            # This guard is called by Providers' gaming worker, never the selector.
+            # Use the caller's clock: producer timestamps are not re-stamped here.
+            samples = tuple(source.evaluate(epoch, now=now) for source in self.steam_producers)
+            decision = self._steam.reduce(samples, now=now)
+            # The reducer intentionally ignores old/replayed samples. A failed
+            # *current* query must not borrow its previously cached clearance.
+            current = all(
+                sample.provider == "steam-log" and sample.uid == source.uid
+                and sample.epoch == epoch and sample.state == "INACTIVE"
+                and sample.health == "OK" and bool(sample.producer_version)
+                and f"steam-log:{source.uid}" in sample.completeness
+                and math.isfinite(sample.observed_at)
+                and 0 <= now - sample.observed_at <= self._steam.max_age_seconds
+                for source, sample in zip(self.steam_producers, samples, strict=True)
+            )
+            if decision == "CLEAR" and not current:
+                decision = "UNKNOWN"
+            if decision != "CLEAR":
+                return "BLOCKED" if inventory.sessions or decision == "BLOCKED" else "UNKNOWN"
+            # The owner chose producer evidence as the idle authority: a normal
+            # logged-in desktop always populates user.slice, so requiring an empty
+            # slice here would make clearance unreachable. The cgroup snapshot above
+            # still gates probe health; it is diagnostic, not permission.
+            return "CLEAR"
+        elif inventory.sessions:
             return "BLOCKED"
         if any(not group.procs_empty or group.populated for group in groups):
             return "UNKNOWN"

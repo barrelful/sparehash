@@ -95,6 +95,7 @@ class Gaming:
     enabled: bool = True
     users: tuple[str, ...] = ()
     integration: GamingIntegration = GamingIntegration.AUTO
+    steam_log: bool = False
 
     @property
     def migration_pending_acknowledgment(self) -> bool:
@@ -216,7 +217,7 @@ def _construct(data: RawConfig) -> Config:
     _unknown(power, ("maintenance_mode",), "power.")
     hugepages, api = _table(data, "hugepages"), _table(data, "api")
     controller, xmrig = _table(data, "controller"), _table(data, "xmrig")
-    sections = ((pool, ("host", "port", "tls", "worker"), "pool."), (cpu, ("mode", "max_threads_percent", "custom_json"), "cpu."), (thermal, ("enabled", "pause_c", "resume_c"), "thermal."), (gaming, ("enabled", "users", "integration"), "gaming."), (hugepages, ("enabled", "pages"), "hugepages."), (api, ("port",), "api."), (controller, ("min_dwell_seconds", "reconcile_seconds"), "controller."), (xmrig, ("binary",), "xmrig."))
+    sections = ((pool, ("host", "port", "tls", "worker"), "pool."), (cpu, ("mode", "max_threads_percent", "custom_json"), "cpu."), (thermal, ("enabled", "pause_c", "resume_c"), "thermal."), (gaming, ("enabled", "users", "integration", "steam_log"), "gaming."), (hugepages, ("enabled", "pages"), "hugepages."), (api, ("port",), "api."), (controller, ("min_dwell_seconds", "reconcile_seconds"), "controller."), (xmrig, ("binary",), "xmrig."))
     for section, allowed, prefix in sections:
         _unknown(section, allowed, prefix)
     try:
@@ -237,7 +238,8 @@ def _construct(data: RawConfig) -> Config:
             thermal=Thermal(enabled=_field(thermal, "enabled", False, bool), pause_c=_field(thermal, "pause_c", 85, int), resume_c=_field(thermal, "resume_c", 75, int)),
             power=Power(maintenance_mode=_field(power, "maintenance_mode", False, bool)),
             gaming=Gaming(enabled=_field(gaming, "enabled", True, bool), users=tuple(cast(str, user) for user in users),
-                          integration=_integration(_field(gaming, "integration", "auto", str))),
+                          integration=_integration(_field(gaming, "integration", "auto", str)),
+                          steam_log=_field(gaming, "steam_log", False, bool)),
             hugepages=Hugepages(enabled=_field(hugepages, "enabled", False, bool), pages=_field(hugepages, "pages", 1280, int)),
             api=Api(port=_field(api, "port", 38087, int)),
             controller=Controller(min_dwell_seconds=_field(controller, "min_dwell_seconds", 60, int), reconcile_seconds=_field(controller, "reconcile_seconds", 30, int)),
@@ -291,7 +293,7 @@ def _serialize(cfg: Config) -> str:
         ("cpu", {"mode": cfg.cpu.mode, "max_threads_percent": cfg.cpu.max_threads_percent, "custom_json": cfg.cpu.custom_json}),
         ("thermal", {"enabled": cfg.thermal.enabled, "pause_c": cfg.thermal.pause_c, "resume_c": cfg.thermal.resume_c}),
         ("power", {"maintenance_mode": cfg.power.maintenance_mode}),
-        ("gaming", {"enabled": cfg.gaming.enabled, "users": cfg.gaming.users, "integration": cfg.gaming.integration.value}),
+        ("gaming", {"enabled": cfg.gaming.enabled, "users": cfg.gaming.users, "integration": cfg.gaming.integration.value, "steam_log": cfg.gaming.steam_log}),
         ("hugepages", {"enabled": cfg.hugepages.enabled, "pages": cfg.hugepages.pages}),
         ("api", {"port": cfg.api.port}),
         ("controller", {"min_dwell_seconds": cfg.controller.min_dwell_seconds, "reconcile_seconds": cfg.controller.reconcile_seconds}),

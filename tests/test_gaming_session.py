@@ -17,6 +17,7 @@ from sparehash.gaming_session import (
     ProbeError,
     SessionInventory,
 )
+from sparehash.gaming_state import GamingEvidence, GamingHealth, GamingState
 
 
 @dataclass(frozen=True, slots=True)
@@ -301,3 +302,100 @@ def test_empty_coverage_is_not_permission() -> None:
     decision = guard.evaluate(100.0)
     # Then
     assert decision == "UNKNOWN"
+
+
+@dataclass(frozen=True, slots=True)
+class SteamEvidence:
+    state: GamingState = "INACTIVE"
+    uid: int = 1000
+    health: GamingHealth = "OK"
+    complete: bool = True
+    observed_at: float = 100.0
+    epoch_offset: int = 0
+
+    def evaluate(self, epoch: int, *, now: float) -> GamingEvidence:
+        return GamingEvidence("steam-log", self.uid, epoch + self.epoch_offset, 1, self.observed_at, self.state,
+                              self.health, frozenset({f"steam-log:{self.uid}"})
+                              if self.complete else frozenset(), "test-protocol")
+
+
+@pytest.mark.parametrize("state,health,complete,idle,populated,expected", [
+    ("INACTIVE", "OK", True, True, False, "CLEAR"),
+    ("ACTIVE", "OK", True, True, False, "BLOCKED"),
+    ("UNKNOWN", "OK", True, True, False, "BLOCKED"),
+    ("INACTIVE", "STALE", True, True, False, "BLOCKED"),
+    ("INACTIVE", "OK", False, True, False, "BLOCKED"),
+    ("INACTIVE", "OK", True, False, False, "CLEAR"),
+    ("INACTIVE", "OK", True, None, False, "CLEAR"),
+    # Owner decision 2026-10-24: with producers configured, a complete INACTIVE
+    # sample is the idle authority, so a populated user.slice no longer inhibits.
+    ("INACTIVE", "OK", True, True, True, "CLEAR"),
+    # Without that authority the populated slice still inhibits.
+    ("ACTIVE", "OK", True, True, True, "BLOCKED"),
+    ("INACTIVE", "STALE", True, True, True, "BLOCKED"),
+])
+def test_steam_clearance_retains_idle_and_cgroup_requirements(
+    state: GamingState, health: GamingHealth, complete: bool, idle: bool | None, populated: bool, expected: str,
+) -> None:
+    # Given
+    inventory = replace(FRESH, sessions=(replace(SESSION, idle_hint=idle),))
+    groups = (replace(EMPTY, populated=populated), replace(USER_EMPTY, populated=populated))
+    guard = GamingSessionGuard(Inventory(inventory), Groups(groups), (1000,),
+                               steam_producers=(SteamEvidence(state, 1000, health, complete),))
+    # When / Then
+    assert guard.evaluate(100.0) == expected
+
+
+@pytest.mark.parametrize("sessions", [(), (SESSION,)])
+@pytest.mark.parametrize("state", ["ACTIVE", "UNKNOWN"])
+def test_steam_inhibition_survives_session_disappearance(
+    sessions: tuple[SessionInventory, ...], state: GamingState,
+) -> None:
+    # Given
+    guard = GamingSessionGuard(Inventory(replace(FRESH, sessions=sessions)),
+                               Groups((EMPTY, USER_EMPTY)), (1000,),
+                               steam_producers=(SteamEvidence(state),))
+    # When / Then
+    assert guard.evaluate(100.0) != "CLEAR"
+
+
+def test_steam_does_not_clear_uncovered_uid() -> None:
+    # Given
+    sessions = (SESSION, replace(SESSION, uid=2000, session_id="2"))
+    groups = (EMPTY, USER_EMPTY, replace(USER_EMPTY, uid=2000,
+                                        cgroup_path="/user.slice/user-2000.slice"))
+    guard = GamingSessionGuard(Inventory(replace(FRESH, sessions=sessions)), Groups(groups),
+                               (1000,), steam_producers=(SteamEvidence(),))
+    # When / Then
+    assert guard.evaluate(100.0) == "BLOCKED"
+
+
+@pytest.mark.parametrize("sample", [
+    SteamEvidence(observed_at=94.99), SteamEvidence(observed_at=100.1),
+    SteamEvidence(observed_at=float("nan")), SteamEvidence(epoch_offset=-1),
+    SteamEvidence(epoch_offset=1),
+])
+def test_steam_freshness_and_epoch_use_guard_now(sample: SteamEvidence) -> None:
+    # Given
+    guard = GamingSessionGuard(Inventory(replace(FRESH, sessions=(SESSION,))),
+                               Groups((EMPTY, USER_EMPTY)), (1000,), steam_producers=(sample,))
+    # When / Then: real monotonic time is intentionally unrelated to this clock.
+    assert guard.evaluate(100.0) == "BLOCKED"
+
+
+@pytest.mark.parametrize("changed", [
+    SteamEvidence(observed_at=94.0), SteamEvidence(epoch_offset=-1),
+    SteamEvidence(state="UNKNOWN"), SteamEvidence(health="STALE"),
+    SteamEvidence(complete=False),
+])
+def test_prior_clear_does_not_hide_a_rejected_current_sample(changed: SteamEvidence) -> None:
+    # Given: a replay/old epoch must not borrow prior reducer clearance.
+    source = SteamEvidence()
+    guard = GamingSessionGuard(Inventory(replace(FRESH, sessions=(SESSION,))),
+                               Groups((EMPTY, USER_EMPTY)), (1000,), steam_producers=(source,))
+    assert guard.evaluate(100.0) == "CLEAR"
+    # When
+    with patch.object(SteamEvidence, "evaluate", return_value=changed.evaluate(guard._steam.current_epoch, now=100.0)):
+        decision = guard.evaluate(100.0)
+    # Then
+    assert decision == "BLOCKED"
