@@ -4,7 +4,7 @@ from dataclasses import replace
 
 import pytest
 
-from sparehash.config import Config, Gaming
+from sparehash.config import Config, Gaming, GamingIntegration
 from sparehash.preflight import GamingDecision, HostFacts, evaluate
 from sparehash.sysdetect import Capabilities
 
@@ -61,6 +61,21 @@ def test_gaming_requires_complete_admission(caps: Capabilities, facts: HostFacts
     assert evaluate(facts, caps, Config(), True, gaming_admission_decision="ADMISSIBLE_CANDIDATE").gaming == "CONSERVATIVE"
     assert evaluate(facts, caps, Config(), True, gaming_admission_decision="NO_DEPENDABLE_ROUTE").gaming == "UNSUPPORTED"
     assert evaluate(facts, caps, Config(gaming=Gaming(enabled=False)), True).gaming == "UNVERIFIED"
+
+
+@pytest.mark.parametrize("integration", (GamingIntegration.CONSERVATIVE, GamingIntegration.GAMEMODE))
+def test_explicit_reduced_coverage_is_accepted_on_bazzite(
+    caps: Capabilities, facts: HostFacts, integration: GamingIntegration,
+) -> None:
+    """An explicit non-auto integration acknowledges reduced coverage and is installable."""
+    result = evaluate(facts, caps, Config(gaming=Gaming(integration=integration)), True)
+    assert (result.gaming, result.readiness) == ("CONSERVATIVE", "READY")
+
+
+def test_auto_integration_still_waits_for_admission_on_bazzite(caps: Capabilities, facts: HostFacts) -> None:
+    """The default posture must not be talked into reduced coverage implicitly."""
+    result = evaluate(facts, caps, Config(gaming=Gaming(enabled=True)), True)
+    assert (result.gaming, result.readiness) == ("UNVERIFIED", "ACTION_REQUIRED")
 
 
 def test_missing_facts_are_inconclusive(caps: Capabilities) -> None:

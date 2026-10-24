@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from hashlib import sha256
 from typing import Literal
 
-from .config import Config
+from .config import Config, GamingIntegration
 from .sysdetect import Capabilities
 
 Support = Literal["VALIDATED", "UNVERIFIED", "UNSUPPORTED"]
@@ -122,7 +122,13 @@ def evaluate(
     elif gaming_admission_decision in {"NO_DEPENDABLE_ROUTE", "BLOCKED_ENVIRONMENT"}:
         gaming = "UNSUPPORTED"
     elif gaming_admission_decision is None and facts.distro_id.casefold() == "bazzite":
-        gaming = "UNVERIFIED"
+        # An explicit non-auto integration is the operator's acknowledgement of reduced
+        # coverage. Only the default auto posture on Bazzite has to wait for an admission
+        # decision, which the environment currently cannot produce.
+        gaming = (
+            "UNVERIFIED" if config.gaming.integration is GamingIntegration.AUTO
+            else "CONSERVATIVE"
+        )
     else:
         gaming = "CONSERVATIVE"
 
