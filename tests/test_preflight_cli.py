@@ -33,6 +33,10 @@ def _debian() -> PreflightFacts:
     return PreflightFacts("debian", "12")
 
 
+def _bazzite() -> PreflightFacts:
+    return PreflightFacts("bazzite", "44", atomic=True, dnf_available=True)
+
+
 def _proxmox() -> PreflightFacts:
     return PreflightFacts("debian", "12", proxmox_evidence=True)
 
@@ -55,6 +59,27 @@ def _patches(facts: PreflightFacts, cfg: config.Config):
         mock.patch.object(install, "execute"),
     ):
         yield
+
+
+@pytest.mark.parametrize("integration", (config.GamingIntegration.CONSERVATIVE, config.GamingIntegration.GAMEMODE))
+def test_preflight_answers_are_used_for_readiness(integration: config.GamingIntegration, tmp_path: Path) -> None:
+    """A dry preflight must report the posture the operator actually supplied."""
+    # Given a Bazzite host and answers naming an explicit reduced coverage
+    cfg = config.Config(
+        wallet=WALLET,
+        pool=config.Pool(host="127.0.0.1"),
+        gaming=config.Gaming(enabled=True, users=("gamer",), integration=integration),
+    )
+    answers = tmp_path / "answers.toml"
+    _ = answers.write_text("wallet = 'unused'\n", encoding="utf-8")
+    # When preflight runs with those answers
+    machine = io.StringIO()
+    with _patches(_bazzite(), cfg), redirect_stdout(machine):
+        code = install.main(["--preflight", "--json", "--answers", str(answers)], geteuid=lambda: 0)
+    # Then the report reflects the explicit coverage instead of the default auto posture
+    report = json.loads(machine.getvalue())
+    assert code == 0
+    assert (report["gaming"], report["readiness"]) == ("CONSERVATIVE", "READY")
 
 
 @pytest.mark.parametrize("mode", ["interactive", "unattended"])

@@ -549,7 +549,7 @@ def _validate_options(args: Arguments) -> str | None:
     """Return a refusal reason for contradictory options, or None when valid."""
     if args.yes and args.answers is None:
         return "--yes requires an answers file via --answers FILE"
-    if args.answers is not None and not args.yes:
+    if args.answers is not None and not args.yes and not args.preflight:
         return "--answers requires explicit --yes consent before any effects are applied"
     if args.json and not args.preflight:
         return "--json is only meaningful with --preflight"
@@ -690,9 +690,9 @@ def render_report(report: Preflight, *, as_json: bool = False) -> str:
     return render_human(report)
 
 
-def run_preflight(args: Arguments, caps: Capabilities) -> int:
+def run_preflight(args: Arguments, caps: Capabilities, cfg: config.Config | None = None) -> int:
     """Dry preflight: report only, no host mutation and no manager probe."""
-    report = evaluate_report(caps, config.Config())
+    report = evaluate_report(caps, config.Config() if cfg is None else cfg)
     print(render_report(report, as_json=args.json))
     return PREFLIGHT_EXIT[report.readiness]
 
@@ -736,7 +736,8 @@ def main(argv: Sequence[str] | None = None, *, geteuid: Callable[[], int] = os.g
     try:
         if args.preflight:
             caps = Capabilities.detect(environ=ENV, manager_probe=None)
-            return run_preflight(args, caps)
+            cfg = wizard.load_answers(args.answers, caps) if args.answers else config.Config()
+            return run_preflight(args, caps, cfg)
         if platform.machine() != "x86_64":
             raise DeploymentError("architecture", "x86_64 is required")
         if is_retired():
