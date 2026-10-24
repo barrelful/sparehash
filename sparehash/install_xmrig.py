@@ -28,6 +28,8 @@ from .xmrig_verify import fetch_signing_key
 
 
 PROBE_USER: Final = "nobody"
+PASSWD_FILES: Final = ("etc/passwd", "usr/lib/passwd", "usr/etc/passwd")
+GROUP_FILES: Final = ("etc/group", "usr/lib/group", "usr/etc/group")
 PROBE_UID: Final = 65534
 PROBE_ROOT: Final = Path("/")
 IDENTITY_LIMIT: Final = 1024 * 1024
@@ -97,6 +99,25 @@ def _group_memberships(text: str, user: str, primary_gid: int) -> tuple[str, fro
     return primary, frozenset(sensitive)
 
 
+def _identity_text(root: Path, names: tuple[str, ...]) -> str:
+    """Concatenate every present identity file, first match winning.
+
+    Atomic desktops such as Bazzite keep the account database in ``/usr/lib``
+    (nss-altfiles) and leave ``/etc/passwd`` as a stub, so the NSS-visible truth
+    spans several files. An absent candidate is skipped; an unreadable or unsafe
+    one still refuses.
+    """
+    present: list[str] = []
+    for name in names:
+        path = root / name
+        if not path.exists():
+            continue
+        present.append(_read_identity_file(path))
+    if not present:
+        raise DeploymentError("identity", f"missing identity file: {names[0]}")
+    return "\n".join(present)
+
+
 def resolve_probe_identity(root: Path) -> tuple[int, int]:
     """Resolve the real unprivileged probe identity from NSS files, or refuse.
 
@@ -107,13 +128,13 @@ def resolve_probe_identity(root: Path) -> tuple[int, int]:
     memberships. Raises :class:`DeploymentError` rather than inventing an identity
     or falling back to root.
     """
-    entry = _passwd_identity(_read_identity_file(root / "etc" / "passwd"), PROBE_USER)
+    entry = _passwd_identity(_identity_text(root, PASSWD_FILES), PROBE_USER)
     if entry is None:
         raise DeploymentError("identity", "no dedicated unprivileged nobody account")
     uid, gid = entry
     if uid == 0:
         raise DeploymentError("identity", "probe identity must not be root")
-    primary, sensitive = _group_memberships(_read_identity_file(root / "etc" / "group"), PROBE_USER, gid)
+    primary, sensitive = _group_memberships(_identity_text(root, GROUP_FILES), PROBE_USER, gid)
     if not primary or primary in SENSITIVE_GROUPS:
         raise DeploymentError("identity", "probe identity has no safe primary group")
     if sensitive:

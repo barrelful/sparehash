@@ -66,6 +66,32 @@ def test_accepts_validated_primary_group() -> None:
         assert install_xmrig.resolve_probe_identity(root) == (12345, 54321)
 
 
+def test_resolves_accounts_from_atomic_altfiles() -> None:
+    # Given a Bazzite-style root whose /etc/passwd is a stub and the account lives in /usr/lib
+    with tempfile.TemporaryDirectory() as tmp:
+        base = Path(tmp)
+        (base / "etc").mkdir(parents=True, exist_ok=True)
+        (base / "usr/lib").mkdir(parents=True, exist_ok=True)
+        _ = (base / "etc/passwd").write_text("root:x:0:0:root:/root:/bin/bash\n", encoding="utf-8")
+        _ = (base / "etc/group").write_text("root:x:0:\n", encoding="utf-8")
+        _ = (base / "usr/lib/passwd").write_text(
+            "nobody:x:99:99:Nobody:/:/usr/sbin/nologin\n", encoding="utf-8")
+        _ = (base / "usr/lib/group").write_text("nobody:x:99:\n", encoding="utf-8")
+        # When / Then the NSS-visible account is found even though /etc is a stub
+        assert install_xmrig.resolve_probe_identity(base) == (99, 99)
+
+
+def test_etc_account_database_wins_over_altfiles() -> None:
+    # Given an account present in both databases with different ids
+    with tempfile.TemporaryDirectory() as tmp:
+        root = identity_root(Path(tmp))
+        (root / "usr/lib").mkdir(parents=True, exist_ok=True)
+        _ = (root / "usr/lib/passwd").write_text(
+            "nobody:x:1234:1234:x:/nonexistent:/usr/sbin/nologin\n", encoding="utf-8")
+        # When / Then the mutable /etc entry takes precedence, as NSS does
+        assert install_xmrig.resolve_probe_identity(root) == (65534, 65534)
+
+
 def test_accepts_owned_units_and_threads_expected_probe_uid() -> None:
     # Given the rendered SpareHash units installed under a synthetic root
     units = systemd.render(capabilities())
