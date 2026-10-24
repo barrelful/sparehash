@@ -30,7 +30,7 @@ from .bootstrap import Bootstrapper, ConsentRefused, staging_path
 from .deployment import ENV, DeploymentError, Tree, checked, command
 from .install_ledger import Ledger
 from .install_manifest import StoreContext, locked_store
-from .install_xmrig import choose, dry_run, isolated
+from .install_xmrig import PROBE_ROOT, choose, dry_run, isolated, resolve_probe_identity
 from .lifecycle import is_retired
 from .lifecycle_lease import LeaseError, LeaseStore
 from .migration import CompletionEvidence, MigrationError, MigrationPhase, MigrationStore, complete_upgrade
@@ -157,9 +157,10 @@ def install_config(ledger: Ledger, cfg: config.Config, token: str) -> None:
     with tempfile.TemporaryDirectory(prefix=".sparehash-config-", dir=ledger.tree.path("/etc/sparehash")) as directory:
         stage = Path(directory)
         config.save(cfg, stage / "config.toml", warn_overwrite=False)
-        xmrig_config.write_xmrig_json(cfg, token, stage / "xmrig.json", runner=dry_run)
-        rendered = xmrig_config.render_config(cfg, token, Path(cfg.xmrig.binary), runner=dry_run)
-        xmrig_config.validate_rendered(rendered, Path(cfg.xmrig.binary), dry_run)
+        probe_uid, _ = resolve_probe_identity(PROBE_ROOT)
+        xmrig_config.write_xmrig_json(cfg, token, stage / "xmrig.json", runner=dry_run, probe_uid=probe_uid)
+        rendered = xmrig_config.render_config(cfg, token, Path(cfg.xmrig.binary), runner=dry_run, probe_uid=probe_uid)
+        xmrig_config.validate_rendered(rendered, Path(cfg.xmrig.binary), dry_run, probe_uid=probe_uid)
         file(ledger, "/etc/sparehash/config.toml", ((stage / "config.toml").read_bytes(), 0o644, spare_gid))
         data = (stage / "xmrig.json").read_bytes()
         file(ledger, "/etc/sparehash/xmrig.json", (data, 0o640, spare_gid))
@@ -200,7 +201,7 @@ def post_install(tree: Tree, cfg: config.Config, *, boot: bool = True, now: bool
     code, _ = isolated(Path(cfg.xmrig.binary), ("--version",))
     if code:
         raise DeploymentError("post-install", "isolated XMRig version check failed")
-    document = xmrig_config.render_config(cfg, xmrig_config.read_token(tree.path("/etc/sparehash/xmrig.json")), Path(cfg.xmrig.binary), runner=dry_run)
+    document = xmrig_config.render_config(cfg, xmrig_config.read_token(tree.path("/etc/sparehash/xmrig.json")), Path(cfg.xmrig.binary), runner=dry_run, probe_uid=resolve_probe_identity(PROBE_ROOT)[0])
     if document["http"] is None:
         raise DeploymentError("post-install", "missing loopback API")
     mining = "unknown" if controller_active else "yes (controller inactive)"
