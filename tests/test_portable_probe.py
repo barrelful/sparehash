@@ -208,7 +208,7 @@ def test_probe_stages_executable_snapshot_outside_state_directory(
 ) -> None:
     # Given protected snapshot bytes and an established executable application root
     root = identity_root(tmp_path, uid=99, gid=99)
-    application = tmp_path / "opt/sparehash"
+    application = tmp_path / "var/tmp/sparehash-probe"
     application.mkdir(parents=True)
     snapshot = tmp_path / "snapshot"
     snapshot.write_bytes(b"private candidate snapshot")
@@ -219,7 +219,7 @@ def test_probe_stages_executable_snapshot_outside_state_directory(
 
     def stage_directory(*, prefix: str, dir: str) -> tempfile.TemporaryDirectory[str]:
         # The application tree is executable; the state tree need not be.
-        assert dir == "/opt/sparehash"
+        assert dir == "/var/tmp/sparehash-probe"
         return temporary_directory(prefix=prefix, dir=application)
 
     def isolated(binary: Path, arguments: tuple[str, ...], *, root: Path) -> tuple[int, str]:

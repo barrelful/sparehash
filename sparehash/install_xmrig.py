@@ -28,7 +28,7 @@ from .xmrig_verify import fetch_signing_key
 
 
 PROBE_USER: Final = "nobody"
-PROBE_STAGE_ROOT: Final = "/opt/sparehash"
+PROBE_STAGE_ROOT: Final = "/var/tmp/sparehash-probe"
 PASSWD_FILES: Final = ("etc/passwd", "usr/lib/passwd", "usr/etc/passwd")
 GROUP_FILES: Final = ("etc/group", "usr/lib/group", "usr/etc/group")
 PROBE_UID: Final = 65534
@@ -178,12 +178,25 @@ def isolated(binary: Path, arguments: tuple[str, ...], *, root: Path = PROBE_ROO
         _ = command(("/usr/bin/systemctl", "stop", unit), 5)
 
 
+def _stage_root() -> str:
+    """Return the probe staging directory, creating it when running as root.
+
+    The probe binary must sit on an executable filesystem that is outside every
+    receipt-managed installation tree, otherwise the uninstaller refuses with
+    unrecorded content. The sticky /var/tmp parent keeps it out of reach of
+    unprivileged renames, and tests never create it because they do not run as root.
+    """
+    if os.geteuid() == 0:
+        Path(PROBE_STAGE_ROOT).mkdir(mode=0o755, exist_ok=True)
+    return PROBE_STAGE_ROOT
+
+
 def version_probe(snapshot: Path, *, timeout: int, uid: int, required_properties: tuple[str, ...],
                   root: Path = PROBE_ROOT) -> str | None:
     expected, _ = resolve_probe_identity(root)
     if uid != expected or timeout > 15 or set(required_properties) != set(PROPERTIES):
         return None
-    with tempfile.TemporaryDirectory(prefix=".sparehash-probe-", dir=PROBE_STAGE_ROOT) as directory:
+    with tempfile.TemporaryDirectory(prefix=".sparehash-probe-", dir=_stage_root()) as directory:
         stage = Path(directory)
         stage.chmod(0o755)
         binary = stage / "xmrig"
@@ -197,7 +210,7 @@ def dry_run(request: DryRunRequest, *, root: Path = PROBE_ROOT) -> DryRunResult:
     uid, _ = resolve_probe_identity(root)
     if request.uid != uid:
         raise DeploymentError("probe", "dry-run expectation does not match the resolved probe identity")
-    with tempfile.TemporaryDirectory(prefix=".sparehash-probe-", dir=PROBE_STAGE_ROOT) as directory:
+    with tempfile.TemporaryDirectory(prefix=".sparehash-probe-", dir=_stage_root()) as directory:
         stage = Path(directory)
         stage.chmod(0o755)
         binary, config = stage / "xmrig", stage / "config.json"
