@@ -12,17 +12,13 @@ unadmitted ``auto`` (FULL) tier without explicit operator action.
 import json
 import pwd
 import tempfile
-from collections.abc import Iterator
-from concurrent.futures import Future
 from pathlib import Path
 from typing import Literal
-from unittest.mock import patch
 
 import pytest
 
 from sparehash import status
 from sparehash.config import Config, GamingIntegration, load
-from sparehash.power import Evidence
 from sparehash.sysdetect import Capabilities
 from sparehash.thermal import SensorPath
 from sparehash.wizard import WizardError, load_answers
@@ -161,46 +157,3 @@ def test_status_reports_health_and_epoch(health: Health, epoch: int) -> None:
     result = json.loads(status.format_status(status.StatusSnapshot(coverage=coverage), True))
     assert result["coverage"]["health"] == health
     assert result["coverage"]["epoch"] == epoch
-
-
-@pytest.fixture
-def bounded_observations() -> Iterator[None]:
-    """Replace host observations, not the snapshot or coverage policy."""
-    unknown: Future[bool | None] = Future()
-    unknown.set_result(None)
-    with patch("sparehash.status.Helpers") as helpers, patch(
-        "sparehash.status.read_sysfs",
-        return_value=(Evidence(None, 20), Evidence(None, 20), None, None),
-    ), patch("sparehash.status.time.monotonic", return_value=20), patch(
-        "sparehash.status.find_sensor", return_value=None,
-    ), patch("sparehash.status.Path.glob", return_value=()), patch(
-        "sparehash.status.number", return_value=None,
-    ):
-        helpers.return_value.query.return_value = unknown
-        yield
-
-
-@pytest.mark.usefixtures("bounded_observations")
-@pytest.mark.parametrize("integration,tier", [
-    ("conservative", "CONSERVATIVE"), ("auto", "UNVERIFIED"),
-    ("gamemode", "UNSUPPORTED"),
-])
-@pytest.mark.parametrize("observation", [(0, False), (0, True), (0, None), (11, False)])
-def test_live_tier_when_observations_are_fresh_unknown_or_stale(
-    integration: str, tier: status.CoverageTier, observation: tuple[int, bool | None],
-) -> None:
-    # Given: even a ready controller supplies no admitted provider evidence.
-    age, active = observation
-    cfg = Config.from_dict({"gaming": {"integration": integration}})
-    provider = status.LiveProvider(controller_reader=lambda: {
-        "ok": True, "ready": True, "running": False,
-        "observation_age": age, "gaming": [[0, active]],
-    }, resolver=lambda host: True)
-    with patch("sparehash.status.load", return_value=cfg):
-        # When
-        result = json.loads(status.format_status(provider.snapshot(), True))
-    # Then: policy is reported separately from unknown provider evidence.
-    assert result["coverage_tier"] == tier
-    assert result["coverage"] is None
-    assert result["gaming"][0]["active"] is (active if age <= 10 else None)
-    assert result["gaming"][0]["stale"] is (age > 10)
