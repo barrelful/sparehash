@@ -219,7 +219,7 @@ def test_probe_stages_executable_snapshot_outside_state_directory(
 
     def stage_directory(*, prefix: str, dir: str) -> tempfile.TemporaryDirectory[str]:
         # The application tree is executable; the state tree need not be.
-        assert dir == "/var/tmp/sparehash-probe"
+        assert dir == "/opt/sparehash-probe"
         return temporary_directory(prefix=prefix, dir=application)
 
     def isolated(binary: Path, arguments: tuple[str, ...], *, root: Path) -> tuple[int, str]:

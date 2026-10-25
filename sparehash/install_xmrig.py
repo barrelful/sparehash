@@ -28,7 +28,7 @@ from .xmrig_verify import fetch_signing_key
 
 
 PROBE_USER: Final = "nobody"
-PROBE_STAGE_ROOT: Final = "/var/tmp/sparehash-probe"
+PROBE_STAGE_ROOT: Final = "/opt/sparehash-probe"
 PASSWD_FILES: Final = ("etc/passwd", "usr/lib/passwd", "usr/etc/passwd")
 GROUP_FILES: Final = ("etc/group", "usr/lib/group", "usr/etc/group")
 PROBE_UID: Final = 65534
