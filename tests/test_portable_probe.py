@@ -199,3 +199,73 @@ def test_rejects_unsafe_identity_or_units() -> None:
             "[Service]\nExecStart=+/usr/local/bin/helper\n", encoding="utf-8")
         with pytest.raises(systemd.UnitError):
             systemd.validate_units(root)
+
+
+@pytest.mark.parametrize("probe", ["version", "config"])
+@pytest.mark.parametrize("outcome", ["success", "rejected", "error"])
+def test_probe_stages_executable_snapshot_outside_state_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, probe: str, outcome: str,
+) -> None:
+    # Given protected snapshot bytes and an established executable application root
+    root = identity_root(tmp_path, uid=99, gid=99)
+    application = tmp_path / "opt/sparehash"
+    application.mkdir(parents=True)
+    snapshot = tmp_path / "snapshot"
+    snapshot.write_bytes(b"private candidate snapshot")
+    config = tmp_path / "config.json"
+    config.write_bytes(b'{"http":{"access-token":"' + b"0" * 64 + b'"}}')
+    temporary_directory = tempfile.TemporaryDirectory
+    staged: list[Path] = []
+
+    def stage_directory(*, prefix: str, dir: str) -> tempfile.TemporaryDirectory[str]:
+        # The application tree is executable; the state tree need not be.
+        assert dir == "/opt/sparehash"
+        return temporary_directory(prefix=prefix, dir=application)
+
+    def isolated(binary: Path, arguments: tuple[str, ...], *, root: Path) -> tuple[int, str]:
+        assert root == tmp_path
+        assert binary.parent.parent == application
+        assert binary.read_bytes() == snapshot.read_bytes()
+        assert binary.stat().st_mode & 0o777 == 0o555
+        assert binary.parent.stat().st_mode & 0o777 == 0o755
+        staged.append(binary.parent)
+        if probe == "config":
+            copied_config = Path(arguments[1])
+            assert arguments == ("--config", str(copied_config), "--dry-run")
+            assert copied_config.parent == binary.parent
+            assert copied_config.read_bytes() == config.read_bytes()
+            assert copied_config.stat().st_mode & 0o777 == 0o444
+        else:
+            assert arguments == ("--version",)
+        if outcome == "error":
+            raise DeploymentError("probe", "injected sandbox failure")
+        return (203, "") if outcome == "rejected" else (0, "XMRig 6.26.0")
+
+    monkeypatch.setattr(install_xmrig.tempfile, "TemporaryDirectory", stage_directory)
+    monkeypatch.setattr(install_xmrig, "isolated", isolated)
+
+    def invoke() -> str | None | DryRunResult:
+        if probe == "version":
+            return install_xmrig.version_probe(
+                snapshot, timeout=15, uid=99, required_properties=PROPERTIES, root=root,
+            )
+        return install_xmrig.dry_run(DryRunRequest(snapshot, config, uid=99), root=root)
+
+    # When either production adapter succeeds, rejects, or raises
+    if outcome == "error":
+        with pytest.raises(DeploymentError):
+            invoke()
+    else:
+        result = invoke()
+        if probe == "config":
+            assert result == DryRunResult(
+                203 if outcome == "rejected" else 0, 99, PROPERTIES, True,
+                "" if outcome == "rejected" else "XMRig 6.26.0",
+            )
+        else:
+            assert result == (None if outcome == "rejected" else "XMRig 6.26.0")
+    # Then cleanup occurs for every outcome and the original inputs survive
+    assert len(staged) == 1
+    assert not staged[0].exists()
+    assert snapshot.read_bytes() == b"private candidate snapshot"
+    assert config.exists()

@@ -28,6 +28,7 @@ from .xmrig_verify import fetch_signing_key
 
 
 PROBE_USER: Final = "nobody"
+PROBE_STAGE_ROOT: Final = "/opt/sparehash"
 PASSWD_FILES: Final = ("etc/passwd", "usr/lib/passwd", "usr/etc/passwd")
 GROUP_FILES: Final = ("etc/group", "usr/lib/group", "usr/etc/group")
 PROBE_UID: Final = 65534
@@ -182,7 +183,7 @@ def version_probe(snapshot: Path, *, timeout: int, uid: int, required_properties
     expected, _ = resolve_probe_identity(root)
     if uid != expected or timeout > 15 or set(required_properties) != set(PROPERTIES):
         return None
-    with tempfile.TemporaryDirectory(prefix=".sparehash-probe-", dir="/var/lib/sparehash") as directory:
+    with tempfile.TemporaryDirectory(prefix=".sparehash-probe-", dir=PROBE_STAGE_ROOT) as directory:
         stage = Path(directory)
         stage.chmod(0o755)
         binary = stage / "xmrig"
@@ -196,7 +197,7 @@ def dry_run(request: DryRunRequest, *, root: Path = PROBE_ROOT) -> DryRunResult:
     uid, _ = resolve_probe_identity(root)
     if request.uid != uid:
         raise DeploymentError("probe", "dry-run expectation does not match the resolved probe identity")
-    with tempfile.TemporaryDirectory(prefix=".sparehash-probe-", dir="/var/lib/sparehash") as directory:
+    with tempfile.TemporaryDirectory(prefix=".sparehash-probe-", dir=PROBE_STAGE_ROOT) as directory:
         stage = Path(directory)
         stage.chmod(0o755)
         binary, config = stage / "xmrig", stage / "config.json"
