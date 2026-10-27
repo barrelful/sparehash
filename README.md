@@ -5,6 +5,10 @@
 > README, `SECURITY.md`, `docs/platforms.md`, and the limitations section
 > before installing on a machine you care about.
 
+Current acceptance status and selected source/artifact identities are in the
+[candidate report](docs/release-0.2-candidate.md). For a supervised installation
+and real-game tests, use the [owner checklist](docs/testing-0.2-owner.md).
+
 SpareHash is a CPU-only Monero (RandomX) miner manager for Linux x86_64. It runs
 [XMRig](https://xmrig.com/) in the background using spare CPU cycles, and
 uses best-effort Steam detection and strict thermal/power/manual blockers to

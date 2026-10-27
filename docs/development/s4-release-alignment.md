@@ -1,5 +1,9 @@
 # S4: release-surface and QA alignment
 
+> Historical S4 closure record. The subsequent [candidate report](../release-0.2-candidate.md)
+> tracks S5 verification and supersedes this stage's remaining-blocker status;
+> earlier failures and evidence below are retained, not retroactively relabelled.
+
 **S4 implementation/local gates are complete; final Ubuntu VM QA is blocked by
 the lab guest-agent transport.** Final pinned Bazzite QA passed. This is not
 combined final-image acceptance, a frozen candidate, RC or gameplay certification.
