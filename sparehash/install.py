@@ -539,6 +539,11 @@ def _retired_guidance() -> str:
 
 def _validate_options(args: Arguments) -> str | None:
     """Return a refusal reason for contradictory options, or None when valid."""
+    for flag in ("upgrade", "recover", "complete_upgrade", "reconfigure"):
+        if (args.reconfigure if flag == "reconfigure" else getattr(args, flag) is not None):
+            return (f"--{flag.replace('_', '-')} is unsupported in experimental v0.2.0; "
+                    "in-place upgrades/rollback/reconfiguration are deferred. Preserve "
+                    "migration journals and safety holds; do not delete them to bypass refusal.")
     if args.yes and args.answers is None:
         return "--yes requires an answers file via --answers FILE"
     if args.answers is not None and not args.yes and not args.preflight:
@@ -694,18 +699,18 @@ def main(argv: Sequence[str] | None = None, *, geteuid: Callable[[], int] = os.g
                             help="operation id of the uninstall retirement to resolve "
                                  "(required with --clear-lifecycle-latch when the record carries one)")
     _ = parser.add_argument("--upgrade", metavar="OPERATION_ID",
-                            help="stage and publish a selected local release under a compatible hold")
+                            help="deferred in experimental v0.2; refuses before effects")
     _ = parser.add_argument("--reconfigure", action="store_true",
-                            help="re-apply configuration while preserving token, settings and manual state")
+                            help="deferred in experimental v0.2; refuses before effects")
     _ = parser.add_argument("--bootstrap-created", action="append", metavar="PATH", help=argparse.SUPPRESS)
     _ = parser.add_argument("--recover", metavar="OPERATION_ID",
-                            help="roll a recorded failed publication forward from its private staging")
+                            help="deferred in experimental v0.2; preserve existing journals/holds")
     _ = parser.add_argument("--complete-upgrade", metavar="OPERATION_ID",
-                            help="commit a published upgrade after a fresh empty proof")
+                            help="deferred in experimental v0.2; preserve existing journals/holds")
     _ = parser.add_argument("--no-start", action="store_true",
-                            help="fresh/reconfigure: leave the controller stopped")
+                            help="fresh install: leave the controller stopped")
     _ = parser.add_argument("--no-enable", action="store_true",
-                            help="fresh/reconfigure: leave the controller disabled at boot")
+                            help="fresh install: leave the controller disabled at boot")
     _ = parser.add_argument("--preflight", action="store_true",
                             help="report readiness without host changes")
     _ = parser.add_argument("--json", action="store_true", help="emit the preflight report as JSON")
@@ -727,6 +732,12 @@ def main(argv: Sequence[str] | None = None, *, geteuid: Callable[[], int] = os.g
             return run_preflight(args, caps, cfg)
         if platform.machine() != "x86_64":
             raise DeploymentError("architecture", "x86_64 is required")
+        tree = Tree()
+        if tree.read("/usr/local/bin/sparehash") is not None:
+            print("sparehash: install: in-place installation/reconfiguration is deferred in v0.2; "
+                  "preserve existing receipts and holds. Resolve any partial removal; "
+                  "fresh installation or explicit reinstall after completed removal only.", file=sys.stderr)
+            return 2
         if is_retired():
             if args.clear_lifecycle_latch:
                 try:
@@ -738,7 +749,6 @@ def main(argv: Sequence[str] | None = None, *, geteuid: Callable[[], int] = os.g
             else:
                 print(_retired_guidance(), file=sys.stderr)
                 return 2
-        tree = Tree()
         if args.upgrade is not None or args.recover is not None or args.complete_upgrade is not None:
             selected = [name for name, value in (("--upgrade", args.upgrade), ("--recover", args.recover),
                                                  ("--complete-upgrade", args.complete_upgrade)) if value is not None]

@@ -1,6 +1,7 @@
 """Inhibited local-release upgrade: staged publication, preserved choices, deterministic recovery.
 
-The happy path exercises the real ``install --upgrade``/``--complete-upgrade``
+Historical internal transaction regressions, not supported public CLI workflows.
+The happy path exercises the retained upgrade/completion functions directly;
 entrypoints on a private receipt-owned tree. The failure matrix injects a fault at
 each durable publication boundary and proves the compatible hold and private
 staging survive, then that recovery either rolls forward or refuses a staging it
@@ -118,7 +119,7 @@ class Fixture:
         install.upgrade_install(self.tree, operation_id, source_root=self.source)
 
 
-def run_main(fx: Fixture, argv: list[str], calls: list[tuple[str, ...]]) -> int:
+def run_internal(fx: Fixture, complete: bool, calls: list[tuple[str, ...]]) -> int:
     def command(argv_: tuple[str, ...], timeout: float = 10) -> subprocess.CompletedProcess[str]:
         _ = timeout
         calls.append(argv_)
@@ -130,7 +131,11 @@ def run_main(fx: Fixture, argv: list[str], calls: list[tuple[str, ...]]) -> int:
           mock.patch.object(install, "upgrade_source_root", return_value=fx.source),
           mock.patch.object(install, "empty_proof", return_value=True),
           mock.patch.object(install, "command", side_effect=command)):
-        return install.main(argv, geteuid=lambda: 0)
+        if complete:
+            install.complete_install(fx.tree, OPID)
+        else:
+            install.upgrade_install(fx.tree, OPID, source_root=fx.source)
+        return 0
 
 
 def _no_mutation_calls(calls: list[tuple[str, ...]]) -> bool:
@@ -164,7 +169,7 @@ def test_accepts_complete_local_upgrade(tmp_path: Path) -> None:
     before_units = {path.name: path.read_bytes() for path in (fx.root / "etc/systemd/system").iterdir()}
     calls: list[tuple[str, ...]] = []
     # When the upgrade stages and publishes under a compatible hold
-    assert run_main(fx, ["--upgrade", OPID, "--no-start", "--no-enable"], calls) == 0
+    assert run_internal(fx, False, calls) == 0
     # Then a published journal and a still-present private staging exist
     assert fx.staging(OPID).is_dir()
     assert upgrade.read_journal(fx.root, OPID).phase == "published"
@@ -184,7 +189,7 @@ def test_accepts_complete_local_upgrade(tmp_path: Path) -> None:
     assert by_id["/opt/sparehash/src"].created
     assert not by_id["package-file:beta.py"].created
     # When the explicit completion runs
-    assert run_main(fx, ["--complete-upgrade", OPID], calls) == 0
+    assert run_internal(fx, True, calls) == 0
     # Then staging and the old-tree backup are cleaned only after COMPLETE
     assert not fx.staging(OPID).exists()
     assert not (fx.staging(OPID).parent / (fx.staging(OPID).name + ".old")).exists()

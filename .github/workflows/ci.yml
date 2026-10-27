@@ -14,7 +14,7 @@ jobs:
     runs-on: ubuntu-24.04
     strategy:
       matrix:
-        python-version: ["3.11", "3.12", "3.13"]
+        python-version: ["3.11", "3.12", "3.13", "3.14"]
     steps:
       - uses: actions/checkout@v4
 
@@ -23,19 +23,26 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install pytest mypy
+      - uses: astral-sh/setup-uv@v6
+
+      - name: Install locked development dependencies
+        run: uv sync --locked --python "${{ matrix.python-version }}"
 
       - name: Run unit tests
-        run: python -m pytest tests/ -q
+        run: .venv/bin/python -m pytest tests/ -q
 
       - name: Run README inventory checker
-        run: python qa/check_readme.py
+        run: .venv/bin/python qa/check_readme.py
 
       - name: Type check sparehash package
-        run: python -m mypy sparehash
+        run: .venv/bin/python -m mypy sparehash
+
+      - name: Scoped release lint
+        run: >-
+          .venv/bin/ruff check sparehash/gaming_scan.py sparehash/__main__.py
+          sparehash/preflight.py qa/release_smoke.py qa/check_artifacts.py
+          qa/fixtures/synthetic_xmrig.py tests/test_release_surface.py
+          tests/test_qa_release_smoke.py
 
   package-build:
     runs-on: ubuntu-24.04
@@ -47,11 +54,10 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install build tooling
-        run: python -m pip install build
+      - uses: astral-sh/setup-uv@v6
 
       - name: Build wheel and sdist
-        run: python -m build
+        run: uv build
 
       - name: Verify wheel has no runtime dependencies
         run: |
@@ -62,3 +68,6 @@ jobs:
             exit 1
           fi
           echo 'OK: wheel has no runtime dependencies'
+
+      - name: Verify shipped attribution
+        run: python qa/check_artifacts.py dist

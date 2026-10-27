@@ -57,6 +57,7 @@ class ReinstallClearTests(unittest.TestCase):
         """Run install.main on the fixture latch, stopping at the first probe."""
         captured = io.StringIO()
         with (mock.patch("sparehash.lifecycle.LIFECYCLE_PATH", self.latch),
+              mock.patch("sparehash.install.Tree.read", return_value=None),
               mock.patch("sparehash.install.platform.machine", return_value="x86_64"),
               mock.patch("sparehash.install.Capabilities.detect", side_effect=OSError("injected stop")),
               redirect_stderr(captured)):

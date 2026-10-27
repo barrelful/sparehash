@@ -1,5 +1,10 @@
 # SpareHash Packaging Roadmap
 
+> **Deferred research, not v0.2 distribution channels.** RPM/DEB/Nix/Flatpak and
+> other native deployment proposals below are not implemented or advertised as
+> supported installation routes. No new packaging channel is approved by this
+> document. Experimental v0.2 uses the source installer; see `docs/platforms.md`.
+
 This document describes the architectural boundaries between SpareHash runtime and future native packaging channels. It specifies ownership separation without implementing any package spec, flake, module, or Flatpak manifest.
 
 ## Runtime and deployer separation

@@ -7,7 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.2.0] - 2026-10-25
+### Experimental v0.2 candidate work (not an RC/release declaration)
+
+- Single attributed Lutris-derived best-effort Steam reaper scanner, bounded
+  polling/freshness and independent controller protections; log/completeness
+  experiments retired after verified preservation.
+- Source install/removal/purge/reinstall/reboot passed synthetic disposable Ubuntu
+  24.04 and Bazzite 44 lifecycle checks; staging residue fixed without relaxing
+  foreign-content/receipt checks. Gameplay and physical hardware remain pending.
+- Upgrades/rollback, native packaging, benchmark and in-place reconfiguration
+  deferred; public unsupported paths refuse before effects.
+- Release QA uses explicit VM consent, source SHA-256 and an attributed non-hashing
+  fixture. Python 3.11–3.14 quality gates and shipped licence/notices are required.
+
+### Historical pre-revision-3 branch notes — 2026-10-25 (superseded)
 
 ### Fixed
 

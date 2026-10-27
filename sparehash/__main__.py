@@ -64,9 +64,12 @@ def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="sparehash")
     subparsers = parser.add_subparsers(dest="command", required=True)
     for command in PUBLIC_COMMANDS:
-        command_parser = subparsers.add_parser(command, help=(
-            "requires root; show controller/miner/blocker/power state" if command == "status" else None
-        ))
+        help_text = None
+        if command == "status":
+            help_text = "requires root; show controller/miner/blocker/power state"
+        elif command in ("update", "benchmark", "complete-upgrade"):
+            help_text = "deferred in experimental v0.2; refuses before effects"
+        command_parser = subparsers.add_parser(command, help=help_text)
         if command == "install":
             _ = command_parser.add_argument("--answers", metavar="FILE")
             _ = command_parser.add_argument("--use-existing", action="store_true")
@@ -87,7 +90,7 @@ def _parser() -> argparse.ArgumentParser:
         elif command == "config":
             config_commands = command_parser.add_subparsers(dest="config_command", required=True)
             for action in ("show", "edit"):
-                _ = config_commands.add_parser(action)
+                _ = config_commands.add_parser(action, help="deferred in experimental v0.2" if action == "edit" else "show public configuration")
     for command in GAMING_COMMANDS:
         _ = subparsers.add_parser(command)
     debug = subparsers.add_parser("debug")
@@ -99,6 +102,13 @@ def _parser() -> argparse.ArgumentParser:
 
 def _incomplete(command: str) -> int:
     print(f"sparehash: {command} is unavailable until its implementation is installed", file=sys.stderr)
+    return 2
+
+
+def _unsupported(command: str) -> int:
+    print(f"sparehash: {command} is unsupported in experimental v0.2.0; "
+          "upgrades/rollback and benchmark are deferred. Preserve any existing "
+          "migration journals and safety holds; do not delete them to bypass refusal.", file=sys.stderr)
     return 2
 
 
@@ -142,22 +152,13 @@ def main(
     parsed = _parser().parse_args(arguments, namespace=CliArguments())
     command = parsed.command
     if command == "config" and parsed.config_command == "edit":
-        print("sparehash: config edit is unsupported in experimental v0.1.1", file=sys.stderr)
-        return 2
-    if command == "benchmark":
-        print("sparehash: benchmark is unsupported in experimental v0.1.1", file=sys.stderr)
-        return 2
-    if command == "update":
-        print("sparehash: update is unsupported in experimental v0.1.1", file=sys.stderr)
-        return 2
+        return _unsupported("config edit")
+    if command in ("benchmark", "update", "complete-upgrade"):
+        return _unsupported(command)
     if command == "config":
-        from sparehash.cli_config import edit, show
+        from sparehash.cli_config import show
 
-        return {"show": show, "edit": lambda: edit(geteuid=geteuid)}[parsed.config_command]()
-    if command == "benchmark":
-        from sparehash.cli_config import benchmark
-
-        return benchmark(geteuid=geteuid)
+        return show()
     if command in ("start", "stop", "pause", "resume", "logs"):
         from sparehash.cli_ops import logs, manual, stack
 
@@ -179,10 +180,6 @@ def main(
         from sparehash.gaming import gaming_end, gaming_start
 
         return {"gaming-start": gaming_start, "gaming-end": gaming_end}[command]()
-    if command == "update":
-        from sparehash.cli_lifecycle import update
-
-        return update(geteuid=geteuid)
     if command == "uninstall":
         from sparehash.cli_uninstall import uninstall
 
@@ -198,14 +195,6 @@ def main(
             return 0 if call({"cmd": verb, "blocker": parsed.name}, timeout=1).get("ok") is True else 1
         except IPCError:
             return 1
-    if command == "complete-upgrade":
-        if geteuid() != 0:
-            print("sparehash: complete-upgrade requires root; run: sudo sparehash complete-upgrade <operation_id>",
-                  file=sys.stderr)
-            return 1
-        from sparehash.install import complete_upgrade_main
-
-        return complete_upgrade_main(parsed.operation_id, geteuid=geteuid)
     return _incomplete(command)
 
 

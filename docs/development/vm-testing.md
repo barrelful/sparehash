@@ -258,10 +258,12 @@ After the baseline, iterate against the lab:
   fresh Ubuntu and Bazzite. Verify that Bazzite installs successfully
   when the trusted redirect grammar accepts the host's `../var/usrlocal`
   literal.
-- **Upgrade and migration** (Tasks 19–23, 28): on a snapshot of the
-  v0.1.1 installation, run `--upgrade` with the v0.2.0 source and
-  confirm the old-readable hold, the migration journal, and the
-  complete-upgrade semantics. Foreign sentinels must be unchanged.
+- **Historical upgrade/migration research** (old Tasks 19–23, 28): public
+  upgrades, rollback, reconfiguration and completion are deferred in the
+  revision-3 experimental v0.2 scope. Their CLI flags now refuse before effects.
+  Retain internal private-tree safety tests and historical evidence; do not
+  attempt a privileged migration or clear an old hold to bypass that refusal.
+  See `docs/upgrade-v020.md` for current status.
 - **Systemd lifecycle** (Tasks 11, 12, 18): confirm the unit hardening,
   `BindsTo=`, `ExecCondition=+/...`, and the static miner unit. Verify
   the mining service restarts cleanly across `systemctl daemon-reload`.
@@ -272,7 +274,7 @@ After the baseline, iterate against the lab:
   unlabeled probe identity executes, the `xmrig_config.validate_rendered`
   private-network sandbox holds under enforcing policy, and that AVCs
   are recorded and addressed, not silenced.
-- **Safety blocker behavior** (Wave 3 work in `gaming_state` /
+- **Safety blocker behavior** (`gaming_scan` / controller /
   `runtime`): run the unit-test suite on the host after every change
   that touches the gaming reducer or the controller.
 
