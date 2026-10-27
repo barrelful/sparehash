@@ -97,7 +97,7 @@ mining is allowed. There are four blockers:
 | Blocker | Source | Fail-closed behavior |
 |---|---|---|
 | battery | UPower + `/sys/class/power_supply` | Unknown or stale state inhibits mining |
-| gaming | `gamemoded -s` per configured user | Unknown user/session state inhibits mining |
+| gaming | Lutris-derived Steam reaper scan | Genuine scan failures/stale results inhibit; successful no-match may clear |
 | thermal | CPU sensor (`coretemp`, `k10temp`, `zenpower`) | Default off; when enabled, missing/unreadable sensor inhibits mining |
 | manual | `sparehash pause` / `sparehash resume` | Persists across controller restarts via state file |
 
@@ -174,47 +174,44 @@ retained uninstall lease before removing the retirement latch; it refuses to
 erase an update hold or an unreadable record. Deleting the latch alone doesn't
 clear the sidecar lease.
 
-## GameMode flow
+## Best-effort gaming flow
 
 A gaming user calls `sparehash gaming-start`. The controller records the peer
 UID in a `hooks` set and activates the gaming blocker. The user must later call
-`sparehash gaming-end` to remove their UID from the set. The controller also
-queries `gamemoded -s` independently; if any configured user reports active,
-the gaming blocker stays active regardless of hook state.
+`sparehash gaming-end` to remove their UID from the set. Independently, the
+existing gaming worker scans Steam reaper arguments once per second. Recognised
+games or scan failures keep the gaming blocker active regardless of hook state.
 
 This design trusts gaming users: a member of the `sparehash` group can block
 mining indefinitely by never sending `gaming-end`. Only add users you trust.
 
-### gaming observation module
+### Gaming observation and account modules
 
-`sparehash/gaming.py` implements the gaming observation module with explicit
-filesystem and session inventory seams. The module provides:
+`sparehash/gaming_scan.py` is the single automatic detector: a bounded,
+standard-library-only adaptation of Lutris's pinned Steam reaper function,
+recognising any numeric App ID. See `THIRD_PARTY_NOTICES.md` for GPL attribution.
+`sparehash/gaming.py` retains NSS/name validation and fixed authenticated hooks;
+there is no GameMode polling, session-completeness guard or log-reader fallback.
 
-- **User validation**: Configured accounts are verified against NSS (Name
-  Service Switch) with strict name grammar. Users are never constructed from
-  hooks; hook identity and state belong to the IPC/controller layer.
-- **Probe query**: Bounded worker queries with explicit timeout (10 seconds),
-  fixed PATH for helper resolution, and root-protected helper ancestry checks.
-  The probe queries `gamemoded -s` via `runuser` over the user's D-Bus session
-  bus.
-- **Reconciliation**: Any active wins; otherwise any unknown inhibits, all
-  inactive clears. Advisory inactive values never clear required evidence.
-- **Fresh complete samples**: No cache or hook-state mutation. Every observation
-  is a fresh per-user sample.
+Each immutable scan carries a monotonic timestamp. The controller checks its
+two-second freshness independently of worker completion, slow aggregate samples
+and START authorization. Late out-of-generation CLEAR cannot erase a newer hold.
+Successful no-match scans release only gaming, subject to all other blockers
+and existing restart dwell. Genuine faults/stale results inhibit; normal process
+disappearance is churn. Only one scan may be in flight; no scan backlog is queued.
 
-### Gaming admission status
+`gaming.enabled` controls scanning; `gaming.users` grants existing hook-account
+permissions, not scanner coverage. New setup needs no Steam, Lutris, GameMode,
+session bus, user-home reads or per-game options. Legacy GameMode removal still
+checks receipts and account/path ownership. Migration is documented in
+`docs/gaming-integration-contract.md`; explicit old policies are not silently
+changed into the new detector.
 
-**Task 2 admission: `NO_DEPENDABLE_ROUTE`.** The system has NOT been
-demonstrated for FULL gaming coverage. The implemented mechanism is
-conservative session inhibition (fallback), not full acceptance. FULL coverage
-requires validated producer/version/capability fingerprints, complete
-native/Proton lifetimes, missed-event reconciliation, and recursive empty proof.
-None of these are implemented.
-
-The gaming blocker inhibits mining during covered GameMode sessions but does not
-prove exhaustive negative coverage. Fallback-only status remains reduced-function
-NO-GO pending owner decision. See `docs/gaming-integration-contract.md` for the
-complete admission decision and exact limitations.
+Best-effort misses are accepted limitations, not proof of game absence.
+Non-Steam/unrecognised games, changed markers or surviving children may be missed.
+Low priority does not guarantee zero contention. Actual gameplay, KDE/Gaming Mode
+and hardware behavior remain pending owner testing, not certified by synthetic
+fixtures. Historical completeness/admission investigations remain research only.
 
 ### Latency objectives
 
@@ -335,6 +332,10 @@ rejects symlinks, foreign ownership, or unrecorded directories.
 
 Internal updates add a new version, repoint `current`, and optionally prune old versions.
 Rollback points `current` back to the previous version.
+These are retained internal research mechanisms, not supported public v0.2
+upgrade/rollback workflows. Public upgrade/recovery/completion and in-place
+reconfiguration entrypoints refuse before effects; never remove a hold to bypass
+that refusal. Native packaging and benchmark are also deferred.
 
 ## Why no MSR in v1
 
@@ -355,7 +356,7 @@ rejects any enabled MSR section.
 - `sparehash/cli_uninstall.py`: retirement before receipt-owned removal
 - `sparehash/state.py` — blocker registry
 - `sparehash/ipc.py` — Unix socket transport
-- `sparehash/power.py`, `sparehash/thermal.py`, `sparehash/gaming.py` — blockers
+- `sparehash/power.py`, `sparehash/thermal.py`, `sparehash/gaming_scan.py` — automatic blockers
 - `sparehash/install_ledger.py`, `sparehash/xmrig_manifest.py` — receipts
 - `sparehash/xmrig_paths.py`, `sparehash/xmrig_layout.py` — path trust
 - `systemd/sparehash*.service.in` — unit templates

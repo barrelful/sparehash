@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import grp
 import os
 import pwd
 import subprocess
@@ -27,43 +26,18 @@ from tests.install_startup import StartupTests as StartupTests
 
 @final
 class InstallTests(InstallFixture):
-    def test_gaming_consent_when_interactive_retries_and_honors_answer(self) -> None:
-        # Given
-        cfg = replace(self.cfg, gaming=config.Gaming(True, integration=config.GamingIntegration.GAMEMODE))
-        with mock.patch("sparehash.gaming_install.resolve_helper", return_value=None), mock.patch(
-            "builtins.input", side_effect=["perhaps", " NO ", "", ""]
-        ) as prompt:
-            # When
-            self.execute(cfg, interactive=True)
-        # Then
-        self.assertEqual(prompt.call_count, 4)
-        self.assertFalse(config.load(self.tree.path("/etc/sparehash/config.toml")).gaming.enabled)
-
-    def test_gaming_consent_when_noninteractive_never_reads_stdin(self) -> None:
-        # Given
-        cfg = replace(self.cfg, gaming=config.Gaming(True, integration=config.GamingIntegration.GAMEMODE))
-        with mock.patch("sparehash.gaming_install.resolve_helper", return_value=None), mock.patch(
-            "builtins.input", side_effect=AssertionError("uncontrolled stdin")
-        ):
-            # When
+    def test_gaming_setup_requires_no_packages_or_home_edits(self) -> None:
+        cfg = replace(self.cfg, gaming=config.Gaming(True))
+        with mock.patch("builtins.input", side_effect=AssertionError("uncontrolled stdin")), mock.patch(
+            "sparehash.gaming_ini.edit", side_effect=AssertionError("new install must not edit homes")
+        ), mock.patch("sparehash.gaming.User.from_name", side_effect=AssertionError("no scanner accounts required")):
             self.execute(cfg, interactive=False)
-        # Then
-        self.assertFalse(config.load(self.tree.path("/etc/sparehash/config.toml")).gaming.enabled)
-
-    def test_gaming_consent_when_enter_pressed_accepts_install(self) -> None:
-        # Given
-        cfg = replace(self.cfg, gaming=config.Gaming(True, integration=config.GamingIntegration.GAMEMODE))
-        with mock.patch("sparehash.gaming_install.resolve_helper", side_effect=lambda name: f"/usr/bin/{name}"), mock.patch(
-            "sparehash.gaming_install._run"
-        ) as run, mock.patch("builtins.input", return_value=""):
-            # When
-            self.execute(cfg, interactive=True)
-        # Then
-        self.assertEqual(run.call_args.args[0], ("/usr/bin/apt-get", "install", "-y", "gamemode"))
         self.assertTrue(config.load(self.tree.path("/etc/sparehash/config.toml")).gaming.enabled)
+        self.assertFalse(any(part in {"gamemode", "gamemoded", "usermod", "apt-get", "dnf", "pacman"}
+                             for argv in self.calls for part in argv))
 
     def test_main_when_answers_supplied_disables_interactive_consent(self) -> None:
-        report = install.Preflight("VALIDATED", "READY", "CONSERVATIVE", False, False, True, None, (), (), (), None, ())
+        report = install.Preflight("VALIDATED", "READY", "BEST_EFFORT", False, False, (), (), (), None, ())
         for argv, interactive in (([], True), (["--answers", "answers.toml", "--yes"], False)):
             # Given
             with self.subTest(interactive=interactive), mock.patch.object(install, "is_retired", return_value=False), mock.patch.object(
@@ -226,30 +200,3 @@ class InstallTests(InstallFixture):
         self.assertEqual(mapping(document["randomx"])["wrmsr"], False)
         self.assertEqual(mapping(document["randomx"])["rdmsr"], False)
         self.assertEqual(self.tree.path("/etc/sparehash/xmrig.runtime.json").read_bytes(), self.tree.path("/etc/sparehash/xmrig.json").read_bytes())
-
-    def test_gaming_receipts_when_existing_user_configuration_is_merged(self) -> None:
-        # Given
-        from sparehash import gaming_install
-        from sparehash.install_ledger import Ledger
-        home = self.root / "home/gamer"
-        (home / ".config").mkdir(parents=True)
-        ini = home / ".config/gamemode.ini"
-        _ = ini.write_text("[general]\nrenice=10\n")
-        account = pwd.struct_passwd(("gamer", "x", os.getuid(), os.getgid(), "", str(home), "/bin/bash"))
-        group = grp.struct_group(("sparehash", "x", os.getgid(), ["gamer"]))
-        cfg = replace(self.cfg, gaming=config.Gaming(True, ("gamer",), integration=config.GamingIntegration.GAMEMODE))
-        caps = replace(capabilities(), helper_paths=(("gamemoded", "/usr/bin/gamemoded"),))
-        ledger = Ledger(self.tree)
-        with mock.patch("sparehash.gaming_install.grp.getgrnam", return_value=group):
-            ledger.initialize()
-            with mock.patch("sparehash.gaming_install.pwd.getpwnam", return_value=account), mock.patch.object(gaming_install, "resolve_helper", return_value="/usr/bin/gamemoded"), mock.patch("sparehash.gaming.Probe.query", return_value=False):
-                # When
-                result = gaming_install.configure(cfg, caps, lambda _: False, ledger=ledger)
-        # Then
-        self.assertTrue(result.available)
-        self.assertEqual(len(result.receipts), 3)
-        manifest = parse_manifest(self.tree.trust.manifest_path.read_text())
-        assert manifest is not None and manifest.installer is not None
-        self.assertEqual({artifact.id for artifact in manifest.installer.artifacts}, {"gaming-ini:gamer", "gaming-backup:gamer"})
-        self.assertFalse(manifest.installer.memberships[0].added)
-        self.assertEqual(manifest.installer.actions[-1].state, "applied")

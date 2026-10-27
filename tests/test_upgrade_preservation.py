@@ -101,10 +101,6 @@ def _execute_preserving(root: Path, cfg: config.Config, operation_id: str) -> No
         _ = caps, consent
         return candidate
 
-    def configure(candidate: config.Config, caps: object, consent: object, ledger: object = None) -> object:
-        _ = caps, consent, ledger
-        return type("Configured", (), {"config": candidate})()
-
     def fchown(fd: int, uid: int, gid: int) -> None:
         _ = uid, gid
         original_fchown(fd, os.getuid(), os.getgid())
@@ -113,7 +109,6 @@ def _execute_preserving(root: Path, cfg: config.Config, operation_id: str) -> No
           mock.patch("sparehash.install.grp.getgrnam", side_effect=group),
           mock.patch("sparehash.install.os.fchown", side_effect=fchown),
           mock.patch.object(install, "choose", side_effect=choose),
-          mock.patch.object(install.gaming_install, "configure", side_effect=configure),
           mock.patch.object(install, "isolated", return_value=(0, "XMRig 6.26.0")),
           mock.patch.object(systemd, "verify_units", return_value=""),
           mock.patch.object(xmrig_config, "validate_rendered"),

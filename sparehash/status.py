@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Final, Literal, Protocol
 
 from . import ipc, xmrig_config
-from .config import ConfigError, GamingIntegration, load
+from .config import ConfigError, load
 from .layout import Layout
 from .paths import XMRIG_JSON, physical_path
 from .power import Evidence, Helpers, PowerSample, read_sysfs
@@ -54,39 +54,7 @@ class Gaming:
     stale: bool
 
 
-CoverageTier = Literal["FULL", "CONSERVATIVE", "UNVERIFIED", "UNSUPPORTED"]
-
-
-@dataclass(frozen=True, slots=True)
-class GamingCoverage:
-    """One gaming provider sample with its identity, epoch, health and state."""
-
-    provider: str
-    uid: int
-    epoch: int
-    observed_at: float
-    state: Literal["ACTIVE", "INACTIVE", "UNKNOWN"]
-    health: Literal["OK", "STALE", "DISCONNECTED", "MALFORMED", "OVERFLOW"]
-    producer_version: str | None
-
-
-def coverage_tier(integration: GamingIntegration, *,
-                  guard_decision: Literal["BLOCKED", "UNKNOWN", "CLEAR"] = "UNKNOWN",
-                  full_admitted: bool = False) -> CoverageTier:
-    """Map the configured integration to its reported coverage tier.
-
-    ``auto`` requests an admitted FULL cross-mode producer; without one it can
-    never reach FULL and reports UNVERIFIED. ``conservative`` is the documented
-    reduced-function fallback. ``gamemode`` is conventional legacy coverage and
-    is not a supported cross-mode tier, so it reports UNSUPPORTED.
-    """
-    if integration is GamingIntegration.CONSERVATIVE:
-        return "CONSERVATIVE"
-    if integration is GamingIntegration.GAMEMODE:
-        return "UNSUPPORTED"
-    if full_admitted and guard_decision in ("BLOCKED", "CLEAR"):
-        return "FULL"
-    return "UNVERIFIED"
+CoverageTier = Literal["UNVERIFIED", "BEST_EFFORT", "DISABLED"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -96,8 +64,8 @@ class StatusSnapshot:
     blockers: tuple[tuple[str, str], ...] = ()
     power: PowerSample | None = None
     gaming: tuple[Gaming, ...] = ()
-    coverage: GamingCoverage | None = None
     coverage_tier: CoverageTier = "UNVERIFIED"
+    gaming_detection: ipc.Document | None = None
     thermal_sensor: str | None = None
     temperature_c: float | None = None
     hugepages_actual: int | None = None
@@ -218,6 +186,7 @@ class LiveProvider:
         fresh = type(age) in (int, float) and isinstance(age, (int, float)) and 0 <= age <= 10
         users: list[Gaming] = []
         gaming = raw.get('gaming')
+        detection = raw.get('gaming_detection')
         if isinstance(gaming, list):
             for entry in gaming:
                 if (isinstance(entry, list) and len(entry) == 2 and type(entry[0]) is int
@@ -252,7 +221,9 @@ class LiveProvider:
         running = raw.get('running') is True and raw.get('ready') is True
         result = StatusSnapshot(controller='ready' if raw.get('ready') is True else 'starting',
                                 miner='running/unverified' if running else 'stopped', blockers=blockers,
-                                power=power, gaming=tuple(users), thermal_sensor=str(sensor.path) if sensor else None,
+                                power=power, gaming=tuple(users),
+                                gaming_detection=detection if isinstance(detection, dict) else None,
+                                thermal_sensor=str(sensor.path) if sensor else None,
                                 temperature_c=temperature, numa_nodes=nodes or None,
                                 hugepages_actual=number(Path('/sys/kernel/mm/hugepages/hugepages-2048kB/nr_hugepages')),
                                 scheduler=scheduling() if running else Scheduler())
@@ -262,7 +233,10 @@ class LiveProvider:
             return result
         api = miner_summary(cfg.api.port, lambda: protected_token(self.layout)) if running else StatusSnapshot()
         return replace(result, api=api.api, hashrate=api.hashrate, pool=api.pool,
-                       coverage_tier=coverage_tier(cfg.gaming.integration),
+                       coverage_tier="BEST_EFFORT" if isinstance(detection, dict)
+                       and detection.get('detector') == 'steam-reaper' and detection.get('enabled') is True
+                       else "DISABLED" if isinstance(detection, dict) and detection.get('enabled') is False
+                       else "UNVERIFIED",
                        miner='running' if running and api.api == 'available' else result.miner,
                        hugepages_target=cfg.hugepages.pages,
                        dns_hint=None if self.resolver(cfg.pool.host) else DNS_HINT)

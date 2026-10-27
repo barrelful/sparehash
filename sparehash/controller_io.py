@@ -55,9 +55,9 @@ class Observation:
     Thermal False also represents a disabled or positively unavailable guard.
     Provider adapters must invalidate dead monitors and parse input at the edge.
 
-    ``gaming_authoritative`` carries the decision of the single priority gaming
-    reducer (GamingSessionGuard). When set, it OWNS the gaming blocker: the slow
-    aggregate writer can neither clear nor freshen an independent watcher event.
+    ``gaming_authoritative`` is the legacy priority-gaming boolean, not a claim
+    of complete game coverage. The production controller independently checks
+    its accepted best-effort scan's freshness; an aggregate cannot renew it.
     ``gaming`` remains the legacy per-user aggregate used only when no
     authoritative reducer has spoken.
     """
@@ -199,6 +199,7 @@ class CommandOwner(Protocol):
     def status_external(self, token: str) -> bool: ...
     def end_external(self, token: str, outcome: Outcome) -> bool: ...
     def shutdown(self) -> None: ...
+    def gaming_status(self) -> Document: ...
 
 
 def dispatch(owner: CommandOwner, request: Request, peer: Peer) -> Document:
@@ -256,7 +257,7 @@ def dispatch(owner: CommandOwner, request: Request, peer: Peer) -> Document:
                                 "debug": list(owner.debug), "generation": owner.generation,
                                 "running": owner.running,
                                 "reasons": {name: value[0] for name, value in owner.state.active().items()},
-                                "observation_age": age,
+                                "observation_age": age, "gaming_detection": owner.gaming_status(),
                                 "gaming": [] if observation is None else
                                 [[uid, active] for uid, active in observation.gaming]}
                     case Verb.AUTHORIZE_START:

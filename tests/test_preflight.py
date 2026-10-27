@@ -4,8 +4,8 @@ from dataclasses import replace
 
 import pytest
 
-from sparehash.config import Config, Gaming, GamingIntegration
-from sparehash.preflight import GamingDecision, HostFacts, evaluate
+from sparehash.config import Config, Gaming
+from sparehash.preflight import HostFacts, evaluate
 from sparehash.sysdetect import Capabilities
 
 
@@ -16,12 +16,12 @@ def caps() -> Capabilities:
 
 @pytest.fixture
 def facts() -> HostFacts:
-    return HostFacts("bazzite", "42", atomic=True, dnf_available=True, supporting_facts=("ID=bazzite", "VERSION_ID=42"))
+    return HostFacts("bazzite", "44", atomic=True, dnf_available=True, supporting_facts=("ID=bazzite", "VERSION_ID=44"))
 
 
 def test_selects_safe_strategy(caps: Capabilities, facts: HostFacts) -> None:
-    result = evaluate(facts, caps, Config(), True, gaming_admission_decision="ADMISSIBLE_CANDIDATE", both_mode_coverage_complete=True)
-    assert (result.support, result.gaming, result.readiness) == ("VALIDATED", "FULL", "READY")
+    result = evaluate(facts, caps, Config(), True)
+    assert (result.support, result.gaming, result.readiness) == ("VALIDATED", "BEST_EFFORT", "READY")
     assert result.effects == ()
 
 
@@ -48,34 +48,21 @@ def test_refuses_nixos_and_proxmox(caps: Capabilities, facts: HostFacts) -> None
     assert result.readiness == "REFUSED_UNSUPPORTED"
 
 
-def test_atomic_requires_available_dnf_and_reports_unverified_gaming(caps: Capabilities, facts: HostFacts) -> None:
+def test_atomic_requires_available_dnf_independent_of_gaming(caps: Capabilities, facts: HostFacts) -> None:
     result = evaluate(facts, caps, Config(), True)
-    assert result.gaming == "UNVERIFIED"
-    assert result.readiness == "ACTION_REQUIRED"
+    assert result.gaming == "BEST_EFFORT"
+    assert result.readiness == "READY"
     unavailable = evaluate(replace(facts, dnf_available=False), caps, Config(), True)
     assert unavailable.readiness == "REFUSED_UNSAFE"
     assert "AtomicDnfNotAvailable" in unavailable.reason_codes
 
 
-def test_gaming_requires_complete_admission(caps: Capabilities, facts: HostFacts) -> None:
-    assert evaluate(facts, caps, Config(), True, gaming_admission_decision="ADMISSIBLE_CANDIDATE").gaming == "CONSERVATIVE"
-    assert evaluate(facts, caps, Config(), True, gaming_admission_decision="NO_DEPENDABLE_ROUTE").gaming == "UNSUPPORTED"
-    assert evaluate(facts, caps, Config(gaming=Gaming(enabled=False)), True).gaming == "UNVERIFIED"
-
-
-@pytest.mark.parametrize("integration", (GamingIntegration.CONSERVATIVE, GamingIntegration.GAMEMODE))
-def test_explicit_reduced_coverage_is_accepted_on_bazzite(
-    caps: Capabilities, facts: HostFacts, integration: GamingIntegration,
+@pytest.mark.parametrize("enabled", (True, False))
+def test_explicit_detection_switch_is_not_a_completeness_gate(
+    caps: Capabilities, facts: HostFacts, enabled: bool,
 ) -> None:
-    """An explicit non-auto integration acknowledges reduced coverage and is installable."""
-    result = evaluate(facts, caps, Config(gaming=Gaming(integration=integration)), True)
-    assert (result.gaming, result.readiness) == ("CONSERVATIVE", "READY")
-
-
-def test_auto_integration_still_waits_for_admission_on_bazzite(caps: Capabilities, facts: HostFacts) -> None:
-    """The default posture must not be talked into reduced coverage implicitly."""
-    result = evaluate(facts, caps, Config(gaming=Gaming(enabled=True)), True)
-    assert (result.gaming, result.readiness) == ("UNVERIFIED", "ACTION_REQUIRED")
+    result = evaluate(facts, caps, Config(gaming=Gaming(enabled=enabled)), True)
+    assert (result.gaming, result.readiness) == ("BEST_EFFORT" if enabled else "DISABLED", "READY")
 
 
 def test_missing_facts_are_inconclusive(caps: Capabilities) -> None:
@@ -93,19 +80,3 @@ def test_atomic_without_dnf_refuses_with_either_action(
     # Then neither strategy is ready.
     assert result.readiness == "REFUSED_UNSAFE"
     assert "AtomicDnfNotAvailable" in result.reason_codes
-
-
-@pytest.mark.parametrize(
-    "decision", (None, "NO_DEPENDABLE_ROUTE", "BLOCKED_ENVIRONMENT"),
-)
-def test_complete_coverage_without_admission_is_never_full(
-    caps: Capabilities, facts: HostFacts, decision: GamingDecision | None,
-) -> None:
-    # Given coverage claims without an admissible producer.
-    # When the claims are evaluated independently of admission.
-    result = evaluate(
-        facts, caps, Config(), True,
-        gaming_admission_decision=decision, both_mode_coverage_complete=True,
-    )
-    # Then coverage alone cannot authorize FULL gaming support.
-    assert result.gaming != "FULL"

@@ -1,159 +1,84 @@
-# SPDX-License-Identifier: GPL-3.0-or-later
-# Copyright (c) 2026 SpareHash contributors
+"""Single-detector schema, actionable migration and honest gaming documentation."""
 
-"""Coverage-tier configuration, status and unattended-refusal behavior.
-
-The v0.2.0 gaming model adds ``gaming.integration`` (auto|conservative|gamemode)
-while retaining the public ``enabled``/``users`` keys. Status reports a coverage
-tier and an optional provider sample; unattended installs may not request the
-unadmitted ``auto`` (FULL) tier without explicit operator action.
-"""
-
-import json
-import pwd
-import tempfile
 from pathlib import Path
-from typing import Literal
+from unittest.mock import patch
 
 import pytest
 
-from sparehash import status
-from sparehash.config import Config, GamingIntegration, load
-from sparehash.sysdetect import Capabilities
-from sparehash.thermal import SensorPath
+from sparehash import config, status
 from sparehash.wizard import WizardError, load_answers
-
-WALLET = "4" + "A" * 94
-ACCOUNT = pwd.getpwuid(0).pw_name
-SENSOR = SensorPath(Path("/fixture/temp1_input"), "coretemp", "Package id 0")
-CAPS = Capabilities("x86_64", True, 255, True, "cgroup2", True, True, False,
-                    (0,), (), 8, 8 * 1024**3, None, None, True)
-
-Health = Literal["OK", "STALE", "DISCONNECTED", "MALFORMED", "OVERFLOW"]
+from tests.test_wizard import CAPS, SENSOR, WALLET
 
 
-# --- task-16 documentation-honesty tests (converted from unittest) ---
-
-def test_gaming_contract_documents_admission() -> None:
-    """Gaming contract must document NO_DEPENDABLE_ROUTE admission."""
-    contract_path = Path("docs/gaming-integration-contract.md")
-    assert contract_path.exists(), "gaming-integration-contract.md must exist"
-    content = contract_path.read_text()
-    assert "NO_DEPENDABLE_ROUTE" in content
-    assert "FULL gaming coverage" in content
-    assert "NOT been demonstrated" in content
-    assert "conservative fallback" in content.lower()
-    assert "conservative session inhibition" in content.lower()
-    assert "FULL gaming safety" not in content
-    assert "full support" not in content.lower()
-
-
-def test_gaming_contract_documents_latency_objectives() -> None:
-    """Gaming contract must frame latency as objectives, not guarantees."""
-    content = Path("docs/gaming-integration-contract.md").read_text()
-    assert "1 second" in content
-    assert "5 second" in content
-    assert "engineering objectives" in content.lower()
-    assert "not hard real-time" in content.lower()
-    assert "not zero game-start overlap" in content.lower()
+@pytest.mark.parametrize("enabled", (True, False))
+def test_deprecated_defaults_are_readable_but_never_written(tmp_path: Path, enabled: bool) -> None:
+    text = f'[gaming]\nenabled = {str(enabled).lower()}\nintegration = "auto"\nsteam_log = false\n'
+    path = tmp_path / "config.toml"
+    path.write_text(text)
+    with pytest.warns(UserWarning, match="deprecated") as seen:
+        cfg = config.load(path)
+    assert len(seen) == 2
+    assert cfg.gaming == config.Gaming(enabled=enabled)
+    assert cfg.to_dict()["gaming"] == {"enabled": enabled, "users": []}
+    config.save(cfg, path, warn_overwrite=False)
+    assert "integration" not in path.read_text() and "steam_log" not in path.read_text()
+    assert config.load(path) == cfg
 
 
-def test_gaming_contract_documents_manual_pause_independence() -> None:
-    """Gaming contract must document manual pause independence."""
-    content = Path("docs/gaming-integration-contract.md").read_text()
-    assert "manual pause" in content.lower()
-    assert "independent" in content.lower()
-    assert "cannot bypass" in content.lower()
-
-
-def test_gaming_contract_documents_fallback_only_status() -> None:
-    """Gaming contract must document fallback-only NO-GO status."""
-    content = Path("docs/gaming-integration-contract.md").read_text()
-    assert "NO-GO" in content
-    assert "reduced-function" in content.lower()
-    assert "pending owner decision" in content.lower()
-
-
-def test_gaming_contract_documents_unknowns_and_limitations() -> None:
-    """Gaming contract must document unknowns and limitations."""
-    content = Path("docs/gaming-integration-contract.md").read_text()
-    assert "session bus requirement" in content.lower()
-    assert "lingering teardown" in content.lower()
-    assert "monitor loss" in content.lower()
-    assert "uncovered workloads" in content.lower()
-
-
-def test_readme_documents_admission_status() -> None:
-    """README must document gaming admission status."""
-    content = Path("README.md").read_text()
-    assert "conservative fallback" in content.lower()
-    assert "NOT been demonstrated" in content
-    assert "NO_DEPENDABLE_ROUTE" in content
-    assert "docs/gaming-integration-contract.md" in content
-
-
-def test_security_md_documents_gaming_limitations() -> None:
-    """SECURITY.md must document gaming coverage limitations."""
-    content = Path("SECURITY.md").read_text()
-    assert "conservative fallback" in content.lower()
-    assert "NO_DEPENDABLE_ROUTE" in content
-    assert "NOT been demonstrated" in content
-    assert "docs/gaming-integration-contract.md" in content
-
-
-def test_architecture_documents_gaming_module() -> None:
-    """Architecture doc must document gaming module and admission."""
-    content = Path("docs/architecture.md").read_text()
-    assert "sparehash/gaming.py" in content
-    assert "gaming observation" in content.lower()
-    assert "NO_DEPENDABLE_ROUTE" in content
-    assert "conservative session inhibition" in content.lower()
-    assert "1 second" in content
-    assert "5 second" in content
-
-
-# --- task-17 coverage-tier tests ---
-
-def test_accepts_explicit_coverage_policy() -> None:
-    cfg = Config.from_dict({"gaming": {"enabled": True, "integration": "conservative"}})
-    snapshot = status.StatusSnapshot(coverage_tier=status.coverage_tier(cfg.gaming.integration))
-    result = json.loads(status.format_status(snapshot, True))
-    assert cfg.gaming.integration is GamingIntegration.CONSERVATIVE
-    assert result["coverage_tier"] == "CONSERVATIVE"
-
-
-def test_refuses_silent_downgrade() -> None:
-    with tempfile.TemporaryDirectory() as directory:
-        path = Path(directory) / "answers.toml"
-        _ = path.write_text(
-            f'wallet = "{WALLET}"\n'
-            + '[pool]\nhost = "pool.example"\n'
-            + f'[gaming]\nenabled = true\nusers = ["{ACCOUNT}"]\nintegration = "auto"\n',
-            encoding="utf-8",
-        )
-        with pytest.raises(WizardError) as caught:
-            _ = load_answers(path, CAPS, sensor_probe=lambda: SENSOR, unattended=True)
-        assert caught.value.reason == "no_full_gaming_contract_admitted"
-
-
-def test_v011_migration_pending_acknowledgment() -> None:
-    with tempfile.TemporaryDirectory() as directory:
-        path = Path(directory) / "config.toml"
-        _ = path.write_text('[gaming]\nenabled = false\nintegration = "conservative"\n', encoding="utf-8")
-        cfg = load(path)
-        assert cfg.gaming.migration_pending_acknowledgment is True
-    assert not Config.from_dict({"gaming": {"enabled": True, "integration": "conservative"}}).gaming.migration_pending_acknowledgment
-    assert not Config.from_dict({"gaming": {"enabled": False, "integration": "auto"}}).gaming.migration_pending_acknowledgment
-
-
-@pytest.mark.parametrize("health,epoch", [
-    ("OK", 0), ("STALE", 1), ("DISCONNECTED", 2), ("MALFORMED", 3), ("OVERFLOW", 4),
+@pytest.mark.parametrize("legacy", [
+    'integration = "conservative"', 'integration = "gamemode"',
+    'integration = "other"', 'integration = true',
+    'steam_log = true', 'steam_log = "false"', 'steam_log = 0',
 ])
-def test_status_reports_health_and_epoch(health: Health, epoch: int) -> None:
-    coverage = status.GamingCoverage(
-        provider="logind", uid=1000, epoch=epoch, observed_at=12.5,
-        state="ACTIVE", health=health, producer_version="v1.2.3",
-    )
-    result = json.loads(status.format_status(status.StatusSnapshot(coverage=coverage), True))
-    assert result["coverage"]["health"] == health
-    assert result["coverage"]["epoch"] == epoch
+@pytest.mark.parametrize("enabled", (True, False))
+def test_retired_policy_is_not_silently_replaced(legacy: str, enabled: bool, tmp_path: Path) -> None:
+    path = tmp_path / "config.toml"
+    path.write_text(f'[gaming]\nenabled = {str(enabled).lower()}\n{legacy}\n')
+    with pytest.raises(config.ConfigError, match="retired.*best-effort.*Remove"):
+        config.load(path)
+
+
+@pytest.mark.parametrize("unattended", (True, False))
+def test_answers_accept_best_effort_without_accounts_or_steam(tmp_path: Path, unattended: bool) -> None:
+    path = tmp_path / "answers.toml"
+    path.write_text(f'wallet = "{WALLET}"\n[pool]\nhost = "pool.example"\n')
+    cfg = load_answers(path, CAPS, sensor_probe=lambda: SENSOR, unattended=unattended)
+    assert cfg.gaming == config.Gaming()
+    path.write_text(path.read_text() + '[gaming]\nintegration = "auto"\nsteam_log = false\n')
+    with pytest.warns(UserWarning, match="deprecated"):
+        assert load_answers(path, CAPS, sensor_probe=lambda: SENSOR, unattended=unattended) == cfg
+
+
+@pytest.mark.parametrize("legacy", ['integration = "conservative"', 'integration = "gamemode"', 'steam_log = true'])
+def test_answers_refuse_retired_policy_with_migration_guidance(tmp_path: Path, legacy: str) -> None:
+    path = tmp_path / "answers.toml"
+    path.write_text(f'wallet = "{WALLET}"\n[pool]\nhost = "pool.example"\n[gaming]\n{legacy}\n')
+    with pytest.raises(WizardError, match="retired.*best-effort.*Remove"):
+        load_answers(path, CAPS, unattended=True)
+
+
+def test_disconnected_status_does_not_claim_a_successful_scan() -> None:
+    snapshot = status.StatusSnapshot()
+    assert snapshot.coverage_tier == "UNVERIFIED"
+    assert snapshot.gaming_detection is None
+
+
+@pytest.mark.parametrize("enabled", (True, False))
+def test_public_status_separates_disabled_and_best_effort(enabled: bool) -> None:
+    from sparehash.power import Evidence
+    from tests.test_status import PowerHelper
+
+    raw = {"ok": True, "ready": True, "gaming_detection": {"detector": "steam-reaper", "enabled": enabled}}
+    with patch("sparehash.status.read_sysfs", return_value=(Evidence(False, 0), Evidence(False, 0), None, None)), patch(
+        "sparehash.status.Helpers", PowerHelper,
+    ), patch("sparehash.status.find_sensor", return_value=None), patch("sparehash.status.load", return_value=config.Config()):
+        result = status.LiveProvider(controller_reader=lambda: raw, resolver=lambda _: True).snapshot()
+    assert result.coverage_tier == ("BEST_EFFORT" if enabled else "DISABLED")
+
+
+def test_gaming_contract_is_best_effort_and_preserves_strict_protections() -> None:
+    text = Path("docs/gaming-integration-contract.md").read_text().lower()
+    for phrase in ("best-effort", "steam reaper", "non-steam", "manual pause", "independent",
+                   "1 second", "5 second", "engineering objectives", "not hard real-time",
+                   "not zero game-start overlap", "cannot bypass", "migration"):
+        assert phrase in text

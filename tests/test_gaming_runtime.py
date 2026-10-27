@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from pathlib import Path
 from threading import Event, get_ident
 from unittest.mock import patch
@@ -22,38 +21,12 @@ from sparehash.controller_io import (
     Ports,
     SampleId,
 )
-from sparehash.gaming_session import CgroupEvidence, GamingSessionGuard, InventoryResult
-from sparehash.gaming_state import GamingEvidence
+from sparehash.gaming_scan import ScanResult
 from sparehash.hugepages import LeaseManager
 from sparehash.runtime import Providers
 from sparehash.runtime_jobs import Jobs
 from sparehash.state import BlockerState
 from tests.controller_fixtures import FakePorts
-from tests.test_gaming_session import (
-    EMPTY,
-    FRESH,
-    SESSION,
-    USER_EMPTY,
-    Groups,
-    Inventory,
-    SteamEvidence,
-)
-
-
-@dataclass(frozen=True, slots=True)
-class _InventoryProbe:
-    result: InventoryResult
-
-    def inventory(self) -> InventoryResult:
-        return self.result
-
-
-@dataclass(frozen=True, slots=True)
-class _CgroupProbe:
-    result: tuple[CgroupEvidence, ...]
-
-    def snapshot(self, uids: tuple[int, ...]) -> tuple[CgroupEvidence, ...]:
-        return self.result
 
 
 def _build(tmp_path: Path, dwell: float = 0.0) -> tuple[FakePorts, BlockerState, Controller]:
@@ -229,17 +202,18 @@ def test_jobs_dates_proof_separately_from_cleanup() -> None:
         jobs.close()
 
 
-def test_providers_gaming_path_fails_closed_on_helper_eof() -> None:
-    # Given a priority reducer whose logind helper has disconnected
-    disconnected = InventoryResult((), 0.0, "DISCONNECTED", frozenset(), "helper eof")
-    guard = GamingSessionGuard(_InventoryProbe(disconnected), _CgroupProbe(()), (1000,))
+def test_providers_gaming_path_fails_closed_on_scan_failure() -> None:
+    # Given a scanner that fails, not a successful scan with no matches.
     events: list[tuple[str, int]] = []
     with patch("sparehash.runtime.power.PowerMonitor"), patch(
         "sparehash.runtime.thermal.find_sensor", return_value=None
     ):
+        def failed_scan() -> ScanResult:
+            raise OSError("synthetic fault")
+
         provider = Providers(config.Config(gaming=config.Gaming(enabled=True, users=())),
-                             lambda action: action(), gaming_guard=guard,
-                             gaming_sink=lambda decision, epoch: events.append((decision, epoch)))
+                             lambda action: action(), gaming_scan=failed_scan,
+                             gaming_sink=lambda result, epoch: events.append((result.decision, epoch)))
         try:
             # When the off-loop priority query runs
             provider.collect_gaming(7)
@@ -257,7 +231,7 @@ def test_providers_disabled_gaming_is_inert() -> None:
         "sparehash.runtime.thermal.find_sensor", return_value=None
     ):
         provider = Providers(config.Config(gaming=config.Gaming(enabled=False)), lambda action: action(),
-                             gaming_sink=lambda decision, epoch: events.append((decision, epoch)))
+                             gaming_sink=lambda result, epoch: events.append((result.decision, epoch)))
         try:
             # When the priority query runs
             provider.collect_gaming(0)
@@ -270,30 +244,23 @@ def test_providers_disabled_gaming_is_inert() -> None:
 
 def test_optional_steam_is_evaluated_on_gaming_worker() -> None:
     # Given
-    from dataclasses import replace
-
     called = Event()
     threads: list[int] = []
     events: list[str] = []
 
-    class WorkerSteam(SteamEvidence):
-        def evaluate(self, epoch: int, *, now: float) -> GamingEvidence:
-            threads.append(get_ident())
-            return super().evaluate(epoch, now=now)
+    def scan() -> ScanResult:
+        threads.append(get_ident())
+        return ScanResult("CLEAR", 100.0)
 
-    guard = GamingSessionGuard(Inventory(replace(FRESH, sessions=(SESSION,))),
-                               Groups((EMPTY, USER_EMPTY)), (1000,),
-                               steam_producers=(WorkerSteam(),))
-
-    def deliver(decision: str, epoch: int) -> None:
-        events.append(decision)
+    def deliver(result: ScanResult, epoch: int) -> None:
+        events.append(result.decision)
         called.set()
 
     with patch("sparehash.runtime.power.PowerMonitor"), patch(
         "sparehash.runtime.thermal.find_sensor", return_value=None,
     ), patch("sparehash.runtime.time.monotonic", return_value=100.0):
         provider = Providers(config.Config(), lambda action: action(),
-                             gaming_guard=guard, gaming_sink=deliver)
+                             gaming_scan=scan, gaming_sink=deliver)
         try:
             # When: subscribe (Event) before dispatch, then wait on that exact callback.
             provider.request_gaming(7)

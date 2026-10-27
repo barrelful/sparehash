@@ -10,7 +10,6 @@ import tempfile
 import tomllib
 import warnings
 from dataclasses import asdict, dataclass, field
-from enum import StrEnum
 from pathlib import Path
 from typing import Final, TypedDict, TypeVar, cast
 
@@ -75,38 +74,28 @@ class Power:
     maintenance_mode: bool = False
 
 
-class GamingIntegration(StrEnum):
-    """Coverage policy: auto requests admitted FULL on Bazzite; the rest are explicit limits."""
-
-    AUTO = "auto"
-    CONSERVATIVE = "conservative"
-    GAMEMODE = "gamemode"
-
-
-def _integration(value: str) -> GamingIntegration:
-    try:
-        return GamingIntegration(value)
-    except ValueError as exc:
-        raise ConfigError("gaming.integration must be auto, conservative or gamemode") from exc
+def _legacy_gaming(gaming: dict[str, str | int | bool | list[str] | dict[str, str | int | float | bool]]) -> None:
+    """Read inert old defaults, but never silently replace an explicit policy."""
+    for key, inert in (("integration", "auto"), ("steam_log", False)):
+        if key not in gaming:
+            continue
+        value = gaming[key]
+        if type(value) is not type(inert) or value != inert:
+            raise ConfigError(
+                f"gaming.{key} is retired; v0.2 uses best-effort Steam reaper detection, "
+                "which can miss games. Remove integration/steam_log and explicitly choose "
+                "gaming.enabled=true or false; see docs/gaming-integration-contract.md"
+            )
+        warnings.warn(f"gaming.{key} is deprecated and ignored; remove it from configuration",
+                      UserWarning, stacklevel=3)
 
 
 @dataclass(frozen=True, slots=True)
 class Gaming:
+    """Best-effort scanning switch and existing hook-authorized accounts."""
+
     enabled: bool = True
     users: tuple[str, ...] = ()
-    integration: GamingIntegration = GamingIntegration.AUTO
-    steam_log: bool = False
-
-    @property
-    def migration_pending_acknowledgment(self) -> bool:
-        """True when a reduced/disabled legacy coverage state needs explicit operator acknowledgment.
-
-        A v0.1.1 config may have carried ``enabled=False`` from a silent installer
-        downgrade rather than an intentional choice. Conservative coverage combined
-        with a disabled guard therefore cannot drive unattended Bazzite mining until
-        the operator acknowledges the exact reduced-function state.
-        """
-        return self.integration is GamingIntegration.CONSERVATIVE and not self.enabled
 
 
 @dataclass(frozen=True, slots=True)
@@ -153,7 +142,6 @@ class Config:
     def to_dict(self) -> RawConfig:
         gaming = asdict(self.gaming)
         gaming["users"] = list(self.gaming.users)
-        gaming["integration"] = self.gaming.integration.value
         return cast(RawConfig, cast(object, {**asdict(self), "gaming": gaming}))
 
 
@@ -213,6 +201,7 @@ def _construct(data: RawConfig) -> Config:
         warnings.warn("disabled legacy [msr] settings are ignored", UserWarning, stacklevel=3)
     pool, cpu = _table(data, "pool"), _table(data, "cpu")
     thermal, gaming = _table(data, "thermal"), _table(data, "gaming")
+    _legacy_gaming(gaming)
     power = _table(data, "power")
     _unknown(power, ("maintenance_mode",), "power.")
     hugepages, api = _table(data, "hugepages"), _table(data, "api")
@@ -237,9 +226,7 @@ def _construct(data: RawConfig) -> Config:
             cpu=Cpu(mode=mode, max_threads_percent=_field(cpu, "max_threads_percent", 75, int), custom_json=custom_json),
             thermal=Thermal(enabled=_field(thermal, "enabled", False, bool), pause_c=_field(thermal, "pause_c", 85, int), resume_c=_field(thermal, "resume_c", 75, int)),
             power=Power(maintenance_mode=_field(power, "maintenance_mode", False, bool)),
-            gaming=Gaming(enabled=_field(gaming, "enabled", True, bool), users=tuple(cast(str, user) for user in users),
-                          integration=_integration(_field(gaming, "integration", "auto", str)),
-                          steam_log=_field(gaming, "steam_log", False, bool)),
+            gaming=Gaming(enabled=_field(gaming, "enabled", True, bool), users=tuple(cast(str, user) for user in users)),
             hugepages=Hugepages(enabled=_field(hugepages, "enabled", False, bool), pages=_field(hugepages, "pages", 1280, int)),
             api=Api(port=_field(api, "port", 38087, int)),
             controller=Controller(min_dwell_seconds=_field(controller, "min_dwell_seconds", 60, int), reconcile_seconds=_field(controller, "reconcile_seconds", 30, int)),
@@ -293,7 +280,7 @@ def _serialize(cfg: Config) -> str:
         ("cpu", {"mode": cfg.cpu.mode, "max_threads_percent": cfg.cpu.max_threads_percent, "custom_json": cfg.cpu.custom_json}),
         ("thermal", {"enabled": cfg.thermal.enabled, "pause_c": cfg.thermal.pause_c, "resume_c": cfg.thermal.resume_c}),
         ("power", {"maintenance_mode": cfg.power.maintenance_mode}),
-        ("gaming", {"enabled": cfg.gaming.enabled, "users": cfg.gaming.users, "integration": cfg.gaming.integration.value, "steam_log": cfg.gaming.steam_log}),
+        ("gaming", {"enabled": cfg.gaming.enabled, "users": cfg.gaming.users}),
         ("hugepages", {"enabled": cfg.hugepages.enabled, "pages": cfg.hugepages.pages}),
         ("api", {"port": cfg.api.port}),
         ("controller", {"min_dwell_seconds": cfg.controller.min_dwell_seconds, "reconcile_seconds": cfg.controller.reconcile_seconds}),

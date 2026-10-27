@@ -30,7 +30,7 @@ def _cfg(*, gaming_enabled: bool = True) -> config.Config:
 
 
 def _debian() -> PreflightFacts:
-    return PreflightFacts("debian", "12")
+    return PreflightFacts("ubuntu", "24.04")
 
 
 def _bazzite() -> PreflightFacts:
@@ -45,6 +45,7 @@ def _proxmox() -> PreflightFacts:
 def _patches(facts: PreflightFacts, cfg: config.Config):
     """Wire every host boundary so install.main stays hermetic and root-only."""
     tree = mock.Mock()
+    tree.read.return_value = None
     tree.path.return_value = mock.Mock(exists=mock.Mock(return_value=False))
     with (
         mock.patch.object(install, "is_retired", return_value=False),
@@ -61,14 +62,14 @@ def _patches(facts: PreflightFacts, cfg: config.Config):
         yield
 
 
-@pytest.mark.parametrize("integration", (config.GamingIntegration.CONSERVATIVE, config.GamingIntegration.GAMEMODE))
-def test_preflight_answers_are_used_for_readiness(integration: config.GamingIntegration, tmp_path: Path) -> None:
+@pytest.mark.parametrize("enabled", (True, False))
+def test_preflight_answers_are_used_for_readiness(enabled: bool, tmp_path: Path) -> None:
     """A dry preflight must report the posture the operator actually supplied."""
     # Given a Bazzite host and answers naming an explicit reduced coverage
     cfg = config.Config(
         wallet=WALLET,
         pool=config.Pool(host="127.0.0.1"),
-        gaming=config.Gaming(enabled=True, users=("gamer",), integration=integration),
+        gaming=config.Gaming(enabled=enabled),
     )
     answers = tmp_path / "answers.toml"
     _ = answers.write_text("wallet = 'unused'\n", encoding="utf-8")
@@ -79,7 +80,7 @@ def test_preflight_answers_are_used_for_readiness(integration: config.GamingInte
     # Then the report reflects the explicit coverage instead of the default auto posture
     report = json.loads(machine.getvalue())
     assert code == 0
-    assert (report["gaming"], report["readiness"]) == ("CONSERVATIVE", "READY")
+    assert (report["gaming"], report["readiness"]) == ("BEST_EFFORT" if enabled else "DISABLED", "READY")
 
 
 @pytest.mark.parametrize("mode", ["interactive", "unattended"])
@@ -115,8 +116,8 @@ def test_accepts_interactive_and_unattended_consent(mode: str, tmp_path: Path) -
     report = json.loads(machine.getvalue())
     assert report["readiness"] == "READY"
     assert report["support"] == "VALIDATED"
-    assert report["gaming"] == "CONSERVATIVE"
-    for field in ("support: VALIDATED", "readiness: READY", "gaming: CONSERVATIVE"):
+    assert report["gaming"] == "BEST_EFFORT"
+    for field in ("support: VALIDATED", "readiness: READY", "gaming: BEST_EFFORT"):
         assert field in human.getvalue()
 
 
@@ -146,13 +147,12 @@ def test_refuses_unsafe_or_unapproved_install(tmp_path: Path) -> None:
     assert code == 2
     assert "no input available" in err.getvalue()
 
-    # Unverified gaming integration refuses unattended install.
+    # Explicitly disabled detection is reported, not silently re-enabled.
     with _patches(_debian(), _cfg(gaming_enabled=False)):
         err = io.StringIO()
         with redirect_stderr(err):
             code = install.main(["--answers", str(answers), "--yes"], geteuid=lambda: 0)
-    assert code == 2
-    assert "gaming" in err.getvalue()
+    assert code == 0
 
     # Unsupported Proxmox host is refused with a REFUSED_UNSUPPORTED report.
     with _patches(_proxmox(), _cfg()):
@@ -166,11 +166,11 @@ def test_refuses_unsafe_or_unapproved_install(tmp_path: Path) -> None:
 def test_merge_forwards_bootstrap_preservation_and_startup_options(tmp_path: Path) -> None:
     with _patches(_debian(), _cfg()):
         assert install.main(["--answers", str(tmp_path / "answers.toml"), "--yes",
-                             "--reconfigure", "--no-start", "--no-enable"],
+                             "--no-start", "--no-enable"],
                             geteuid=lambda: 0) == 0
         kwargs = install.execute.call_args.kwargs
         assert kwargs["source_root"] == install.launcher_source_root()
-        assert kwargs["preserve"] is True
+        assert kwargs["preserve"] is False
         assert kwargs["approved"] is True
         assert kwargs["boot"] is False
         assert kwargs["now"] is False

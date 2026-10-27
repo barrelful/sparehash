@@ -25,7 +25,7 @@ from types import FrameType
 from typing import Final
 from uuid import uuid4
 
-from . import config, gaming_install, host, ipc, lifecycle, systemd, upgrade, wizard, xmrig_config
+from . import config, host, ipc, lifecycle, systemd, upgrade, wizard, xmrig_config
 from .bootstrap import Bootstrapper, ConsentRefused, staging_path
 from .deployment import ENV, DeploymentError, Tree, checked, command
 from .install_ledger import Ledger
@@ -453,15 +453,6 @@ def execute(tree: Tree, caps: Capabilities, cfg: config.Config, *, use_existing:
     finally:
         _ = signal.setitimer(signal.ITIMER_REAL, *timer)
         _ = signal.signal(signal.SIGALRM, alarm)
-    def consent(prompt: str) -> bool:
-        choices = {"": True, "y": True, "yes": True, "n": False, "no": False}
-        while True:
-            answer = input(prompt).strip().lower()
-            if answer in choices:
-                return choices[answer]
-            print("Please answer yes or no.")
-    result = gaming_install.configure(cfg, caps, consent if interactive else None, ledger=ledger)
-    cfg = result.config
     install_config(ledger, cfg, token)
     install_units(ledger, caps)
     if interactive:
@@ -602,7 +593,6 @@ def evaluate_report(caps: Capabilities, cfg: config.Config) -> Preflight:
     """Run the pure preflight decision; no I/O, subprocesses, or effect runners."""
     return evaluate_preflight(
         collect_facts(caps), caps, cfg, has_no_new_install_action=False,
-        gaming_admission_decision=None, both_mode_coverage_complete=False,
         unverified_acknowledged=False, proxmox_pvecluster_present=False,
     )
 
@@ -615,8 +605,6 @@ def report_to_dict(report: Preflight) -> dict[str, object]:
         "gaming": report.gaming,
         "proxmox_or_nixos_hypervisor": report.proxmox_or_nixos_hypervisor,
         "proxmox_pvecluster_present": report.proxmox_pvecluster_present,
-        "gaming_integration_attempted": report.gaming_integration_attempted,
-        "gaming_admission_decision": report.gaming_admission_decision,
         "required_evidence_missing": list(report.required_evidence_missing),
         "reason_codes": list(report.reason_codes),
         "unsafe_reasons": list(report.unsafe_reasons),
@@ -638,19 +626,17 @@ def remediate(report: Preflight) -> tuple[str, ...]:
     """One-line remediations per non-ready outcome; never a bypass instruction."""
     items: list[str] = []
     if report.readiness == "REFUSED_UNSUPPORTED":
-        items.append("host is unsupported by this installer; use a supported distribution or a native packaging channel")
+        items.append("host is unsupported by this installer; use a tested image. Native packaging is deferred in v0.2")
     if report.readiness == "REFUSED_UNSAFE":
         items.append("unsafe host conditions must be resolved before install: " + ", ".join(report.unsafe_reasons))
     if report.readiness == "INCONCLUSIVE":
         items.append("required host evidence is missing or inconclusive; inspect os-release and systemd and retry")
     if report.readiness == "ACTION_REQUIRED":
-        items.append("operator action is required; resolve compatibility acknowledgment or gaming coverage first")
-    if report.gaming == "UNVERIFIED":
-        items.append("gaming protection is not verified; unattended installation is refused")
-    if report.gaming == "UNSUPPORTED":
-        items.append("gaming integration has no dependable route on this host")
-    if report.gaming == "CONSERVATIVE":
-        items.append("gaming coverage is reduced-function: conservative fallback, not full idle-versus-gameplay coverage")
+        items.append("operator action is required; resolve compatibility acknowledgment first")
+    if report.gaming == "BEST_EFFORT":
+        items.append(wizard.GAMING_NOTICE)
+    if report.gaming == "DISABLED":
+        items.append("gaming.enabled=false: automatic gaming detection is disabled")
     return tuple(items)
 
 
@@ -784,10 +770,6 @@ def main(argv: Sequence[str] | None = None, *, geteuid: Callable[[], int] = os.g
         if report.readiness != "READY":
             print(f"sparehash: install: readiness is {report.readiness}; no effects applied", file=sys.stderr)
             return PREFLIGHT_EXIT[report.readiness]
-        if args.answers is not None and report.gaming in {"UNVERIFIED", "UNSUPPORTED"}:
-            print("sparehash: install: unattended installation requires verified gaming integration; "
-                  "refusing to install without gaming protection", file=sys.stderr)
-            return 2
         if not caps.cpuweight_idle:
             if systemd.probe_cpuweight_idle(ENV):
                 caps = replace(caps, cpuweight_idle=True)

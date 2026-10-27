@@ -8,7 +8,7 @@ build-backend = "hatchling.build"
 [project]
 name = "sparehash"
 version = "0.2.0"
-description = "Fail-closed XMRig controller for safe CPU-only Monero mining on Linux."
+description = "Low-priority XMRig controller with best-effort Steam detection and strict safety blockers."
 readme = "README.md"
 license = { text = "GPL-3.0-or-later" }
 requires-python = ">=3.11"
@@ -26,6 +26,7 @@ classifiers = [
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Topic :: System :: Systems Administration",
 ]
 # Runtime is standard-library only. Do not add runtime dependencies here.
@@ -51,6 +52,7 @@ packages = ["sparehash"]
 
 [tool.hatch.build.targets.wheel.force-include]
 systemd = "systemd"
+"THIRD_PARTY_NOTICES.md" = "sparehash/THIRD_PARTY_NOTICES.md"
 
 [tool.hatch.build.targets.sdist]
 include = [
@@ -61,6 +63,7 @@ include = [
     "/install.sh",
     "/README.md",
     "/LICENSE",
+    "/THIRD_PARTY_NOTICES.md",
     "/SECURITY.md",
     "/CONTRIBUTING.md",
     "/CHANGELOG.md",

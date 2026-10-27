@@ -12,6 +12,7 @@ from typing import Final, assert_never, final
 
 from .controller_io import (Action, Completion, Generation, Job, LifecycleBusy, Mode, Observation,
                             Operation, Ports, SampleId, SafetyBlocker, StaleToken, dispatch)
+from .gaming_scan import ScanResult
 from .ipc import Document, Outcome, Peer, Request, Uid
 from .lifecycle import is_retired, retire
 from .lifecycle_lease import ActiveLease, LeaseError, LeaseStore, Purpose
@@ -26,7 +27,8 @@ class Controller:
     """Mutable safety accumulator; only the selector owner may call these methods."""
 
     def __init__(self, state: BlockerState, ports: Ports, *,
-                 lease_store: LeaseStore | None = None, retire_writer: Callable[[], None] | None = None) -> None:
+                 lease_store: LeaseStore | None = None, retire_writer: Callable[[], None] | None = None,
+                 gaming_enabled: bool = False) -> None:
         self.state, self.ports = state, ports
         self.store = LeaseStore() if lease_store is None else lease_store
         self.retire_writer = retire if retire_writer is None else retire_writer
@@ -55,6 +57,9 @@ class Controller:
         self.launch_permitted = False
         self.external: ActiveLease | None = None
         self.permanent_hold = False
+        self.gaming_enabled = gaming_enabled
+        self.gaming_result: ScanResult | None = None
+        self.gaming_success_at: float | None = None
         # C4 objective instrumentation: one monotonic host clock, owner-thread only.
         self.trigger_received_at: float | None = None
         self.safety_callback_at: float | None = None
@@ -98,6 +103,8 @@ class Controller:
         self.observation = observation
         self.next_refresh = self.ports.clock() + 30
         self.real = dict(observation.blockers())
+        if self.gaming_enabled:
+            self.real["gaming"] = self._gaming_blocked()
         self.sync()
         self.observed_generation = self.generation
         if not self.ready and not self.stopping:
@@ -185,8 +192,47 @@ class Controller:
         self.apply()
         self.refresh()
 
+    def _gaming_blocked(self) -> bool:
+        result = self.gaming_result
+        return result is None or result.decision != "CLEAR" or not result.fresh(self.ports.clock())
+
+    def gaming_sample(self, result: ScanResult, epoch: Generation) -> None:
+        """Accept scanner output on the owner thread; never revive an old CLEAR."""
+        if not self.gaming_enabled:
+            return
+        if result.decision == "CLEAR" and epoch != self.generation:
+            return
+        self.gaming_result = result
+        if result.reason == "ok" and result.fresh(self.ports.clock()):
+            self.gaming_success_at = result.observed_at
+        blocked = self._gaming_blocked()
+        if blocked != self.real["gaming"]:
+            self.safety("gaming", blocked, source="gaming", epoch=epoch)
+
+    def _expire_gaming(self) -> None:
+        # Independent of worker completion and slow aggregate timestamps. This
+        # also runs synchronously at START authorization, not just on loop ticks.
+        if self.gaming_enabled and self._gaming_blocked() and not self.real["gaming"]:
+            self.safety("gaming", True, source="gaming")
+
+    def gaming_status(self) -> Document:
+        result = self.gaming_result
+        now = self.ports.clock()
+        fresh = result is not None and result.fresh(now)
+        return {"detector": "steam-reaper", "best_effort": True, "enabled": self.gaming_enabled,
+                "state": "disabled" if not self.gaming_enabled else "unknown" if not fresh else
+                "detected" if result is not None and result.decision == "BLOCKED" else
+                "not_detected" if result is not None and result.decision == "CLEAR" else "unknown",
+                "reason": "disabled" if not self.gaming_enabled else "not_scanned" if result is None else
+                result.reason if fresh else "stale_scan",
+                "scan_age": None if result is None else max(0.0, now - result.observed_at),
+                "last_successful_scan_age": None if self.gaming_success_at is None else now - self.gaming_success_at,
+                "duration": None if result is None else result.duration,
+                "matches": 0 if result is None else result.matches}
+
     def apply(self) -> None:
         """Queue at most one ordered job; never wait for stop/start completion."""
+        self._expire_gaming()
         allowed = self.ready and not self.stopping and not self.excluded and self.state.mining_allowed() and not self.debug
         if not allowed:
             if self.mode is Mode.BENCHMARK and not self.excluded:
@@ -257,6 +303,7 @@ class Controller:
         Wrapper must compare this generation again before exec (Todo24). No token
         survives invalidation. Benchmark permission is one-use, no auto-loop.
         """
+        self._expire_gaming()
         fresh = self.observation is not None and 0 <= self.ports.clock() - self.observation.at <= 1
         allowed = (fresh and self.observed_generation == self.generation and self.launch_permitted
                    and not self.collecting and self.ready and not self.stopping and not self.excluded

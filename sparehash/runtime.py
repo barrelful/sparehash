@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import logging
 import os
-import pwd
 import signal
 import sys
 import threading
@@ -26,8 +25,7 @@ from .controller import Controller
 from .controller_io import Generation, Observation, Ports, SampleId
 from .deployment import Tree, checked
 from .deployment_spec import DeploymentSpec, DeploymentSpecError
-from .gaming_producer import build_producer
-from .gaming_session import CgroupwalkProbe, GamingSessionGuard, LogindSessionProbe
+from .gaming_scan import ScanResult, scan_steam_games
 from .hugepages import LeaseManager
 from .paths import STATE_FILE
 from .runtime_jobs import Jobs, empty
@@ -39,23 +37,15 @@ GAMING_POLL_SECONDS: Final = 1.0
 PRODUCTION_ROOT: Final = Path("/")
 
 
-def _home(uid: int) -> str:
-    try:
-        entry = pwd.getpwuid(uid)
-    except KeyError:
-        return ""
-    return entry.pw_dir
-
-
-def _discard_gaming(_decision: str, _epoch: int) -> None:
+def _discard_gaming(_result: ScanResult, _epoch: int) -> None:
     return
 
 
 @final
 class Providers:
     def __init__(self, cfg: config.Config, enqueue: Callable[[Callable[[], None]], None], *,
-                 gaming_guard: GamingSessionGuard | None = None,
-                 gaming_sink: Callable[[str, int], None] | None = None) -> None:
+                 gaming_scan: Callable[[], ScanResult] = scan_steam_games,
+                 gaming_sink: Callable[[ScanResult, int], None] | None = None) -> None:
         self.cfg, self.enqueue = cfg, enqueue
         self.worker = ThreadPoolExecutor(max_workers=1, thread_name_prefix="observation")
         self.gaming_worker = ThreadPoolExecutor(max_workers=1, thread_name_prefix="gaming-guard")
@@ -67,22 +57,16 @@ class Providers:
         self.users = tuple(gaming.User.from_name(name) for name in cfg.gaming.users) if cfg.gaming.enabled else ()
         self.finish: Callable[[Observation], None] = lambda _: None
         self.gaming_enabled = cfg.gaming.enabled
-        # Fail closed until the priority reducer speaks; disabled gaming is inert.
-        self.gaming_blocked = cfg.gaming.enabled
+        self.gaming_result: ScanResult | None = None
+        self.gaming_scan = gaming_scan
         self.gaming_busy = False
-        self.gaming_sink: Callable[[str, int], None] = gaming_sink if gaming_sink is not None else _discard_gaming
-        if gaming_guard is not None:
-            self.gaming_guard: GamingSessionGuard | None = gaming_guard
-        elif cfg.gaming.enabled and self.users:
-            producers = tuple(
-                producer for user in self.users
-                if (producer := build_producer(_home(user.uid), user.uid)) is not None
-            ) if cfg.gaming.steam_log else ()
-            self.gaming_guard = GamingSessionGuard(LogindSessionProbe(), CgroupwalkProbe(),
-                                                   tuple(user.uid for user in self.users),
-                                                   steam_producers=producers)
-        else:
-            self.gaming_guard = None
+        self.gaming_sink = gaming_sink if gaming_sink is not None else _discard_gaming
+
+    @property
+    def gaming_blocked(self) -> bool:
+        result = self.gaming_result
+        return self.gaming_enabled and (result is None or result.decision != "CLEAR"
+                                       or not result.fresh(time.monotonic()))
 
     def temperature(self) -> bool:
         with self.guard_lock:
@@ -99,20 +83,19 @@ class Providers:
         _ = self.gaming_worker.submit(self.collect_gaming, epoch)
 
     def collect_gaming(self, epoch: int) -> None:
-        """Supervised reducer call; any helper EOF/stale/disconnect yields UNKNOWN."""
+        """One bounded best-effort scan, never on the controller owner loop."""
         try:
             started = time.monotonic()
-            guard = self.gaming_guard
-            if guard is None:
-                decision = "BLOCKED" if self.gaming_enabled else "CLEAR"
+            if not self.gaming_enabled:
+                result = ScanResult("CLEAR", started, reason="disabled")
             else:
                 try:
-                    decision = guard.evaluate(started)
+                    result = self.gaming_scan()
                 except Exception:
-                    LOGGER.exception("gaming guard failed; holding inhibition")
-                    decision = "UNKNOWN"
-            self.gaming_blocked = decision != "CLEAR"
-            self.gaming_sink(decision, epoch)
+                    # Do not log exception bytes from process-controlled input.
+                    result = ScanResult("UNKNOWN", started, reason="scanner_failed")
+            self.gaming_result = result
+            self.gaming_sink(result, epoch)
         finally:
             self.gaming_busy = False
 
@@ -218,12 +201,13 @@ def run(state_path: Path = STATE_FILE) -> int:
     jobs = Jobs(cfg, messages.put)
     state = BlockerState(Path(os.environ.get("SPAREHASH_STATE_FILE", str(state_path))),
                          min_dwell_seconds=cfg.controller.min_dwell_seconds)
-    owner = Controller(state, Ports(providers, jobs, Lifecycle(bound, notify_socket), time.monotonic))
+    owner = Controller(state, Ports(providers, jobs, Lifecycle(bound, notify_socket), time.monotonic),
+                       gaming_enabled=cfg.gaming.enabled)
     providers.finish, jobs.finish = owner.observe, owner.complete
     jobs.finished = owner.benchmark_finished
     jobs.authorize = lambda: owner.authorize(consume=False)
-    providers.gaming_sink = (lambda decision, epoch: safety.put(
-        partial(owner.safety, "gaming", decision != "CLEAR", source="gaming", epoch=Generation(epoch))))
+    providers.gaming_sink = (lambda result, epoch: safety.put(
+        partial(owner.gaming_sample, result, Generation(epoch))))
     failures: list[str] = []
 
     def handle(request: ipc.Request, peer: ipc.Peer) -> ipc.Document:

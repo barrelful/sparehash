@@ -1,7 +1,10 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (c) 2026 SpareHash contributors
 
-"""Bounded, rootless C1 admission probe for full cross-mode gaming integration.
+"""Historical rootless C1 completeness research, not a v0.2 readiness gate.
+
+Revision 3 selected best-effort Steam reaper detection; no production or installed
+QA path depends on this probe. It is retained to reproduce prior research only.
 
 This is a QA-only discovery tool, not a production provider. It never starts a
 real Steam session, never patches Steam, never requires per-game setup, adds no
@@ -18,7 +21,7 @@ Decision semantics (plan section C1):
   one required invariant. ``admission.json`` names every reason code.
 * ``BLOCKED_ENVIRONMENT`` -- no authorized capture surface was supplied, so no
   contract could be evaluated. This is a valid research outcome and still
-  blocks Wave 2 / full support.
+   blocked the historical Wave 2 / full-support objective.
 
 Capture is deliberately out of band. Real capture requires an authorized,
 disposable Bazzite/Steam surface and is gated behind ``--capture-source`` (a
