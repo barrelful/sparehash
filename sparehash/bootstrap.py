@@ -7,8 +7,9 @@
 the first trust boundary: it records explicit consent, copies the selected local
 release into a private root-owned staging directory using no-follow reads, verifies
 that staging against the source inventory, enforces the 128-module cap, and only
-then publishes the staged payload through the installer ledger. It never removes a
-foreign entry and never writes outside its own managed protected paths.
+then publishes the staged payload through the installer ledger. Successful
+publication consumes only its verified staging copy. It never removes a foreign
+entry and never writes outside its own managed protected paths.
 
 Publication is deliberately not one atomic rename: each artifact and its receipt
 is an individually fsynced step on the single canonical store, so an interruption
@@ -238,8 +239,7 @@ class Bootstrapper:
         """Publish the verified staging tree through the ledger; never delete foreign entries."""
         self._require_consent("source publication")
         staged = _collect_source(staging_root, self.module_cap)
-        for path in staged.values():
-            _ = source_digest(path)
+        verified = {relative: source_digest(path) for relative, path in staged.items()}
         for name in MANAGED_DIRECTORIES:
             self._ensure_directory(ledger, name, context)
         gid = self.group
@@ -254,3 +254,23 @@ class Bootstrapper:
                 identity = "unit-template:" + leaf
             self._install_file(ledger, target, identity, data, 0o644, gid, context)
         self._install_file(ledger, SHIM_PATH, SHIM_PATH, self._shim(), 0o755, gid, context)
+        # A completed publication no longer needs its private copy. Leaving it
+        # under /opt/sparehash makes strict receipt-based removal refuse. Keep
+        # interrupted publication recoverable, and never recursively delete an
+        # unexpected entry or changed snapshot during successful cleanup.
+        expected = {PACKAGE_SUBDIR, TEMPLATE_SUBDIR}
+        if set(os.listdir(staging_root)) != expected:
+            raise DeploymentError("staging", "unexpected staging content; retained for inspection")
+        for subdirectory in expected:
+            directory = staging_root / subdirectory
+            leaves = {Path(relative).name for relative in staged if relative.startswith(subdirectory + "/")}
+            if directory.is_symlink() or set(os.listdir(directory)) != leaves:
+                raise DeploymentError("staging", "unexpected staging content; retained for inspection")
+        if any(source_digest(path) != verified[relative] for relative, path in staged.items()):
+            raise DeploymentError("staging", "staging changed during publication; retained for inspection")
+        for path in staged.values():
+            path.unlink()
+        for subdirectory in expected:
+            (staging_root / subdirectory).rmdir()
+        staging_root.rmdir()
+        self._fsync_directory(staging_root.parent)

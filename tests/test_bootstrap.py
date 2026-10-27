@@ -64,8 +64,7 @@ def test_accepts_consented_protected_bootstrap(tmp_path: Path) -> None:
     staged = boot.stage_source(source, tmp_path / "staging")
     boot.publish(staged, ledger)
 
-    for relative in ("sparehash/alpha.py", "sparehash/__main__.py", "systemd/sparehash.service.in"):
-        assert (staged / relative).read_bytes() == (source / relative).read_bytes()
+    assert not staged.exists()
     for name in ("__init__.py", "__main__.py", "alpha.py"):
         assert tree.path(PACKAGE_DIR + "/" + name).read_bytes() == (source / "sparehash" / name).read_bytes()
     assert tree.path(TEMPLATE_DIR + "/sparehash.service.in").read_bytes() == (source / "systemd/sparehash.service.in").read_bytes()
@@ -84,6 +83,51 @@ def test_accepts_consented_protected_bootstrap(tmp_path: Path) -> None:
         capped.stage_source(oversized, tmp_path / "big-staging")
     assert not (tmp_path / "big-staging").exists()
     assert not tree.path(PACKAGE_DIR + "/m0.py").exists()
+
+
+def test_interrupted_publication_retains_verified_staging(tmp_path: Path) -> None:
+    source = make_source(tmp_path / "source")
+    tree = make_tree(tmp_path / "host")
+    ledger = Ledger(tree)
+    ledger.initialize()
+    boot = Bootstrapper(tree)
+    boot.consent(True)
+    staged = boot.stage_source(source, tmp_path / "staging")
+    before = snapshot(staged)
+    with mock.patch.object(Bootstrapper, "_install_file", side_effect=DeploymentError("fixture", "publication interrupted")), pytest.raises(
+        DeploymentError, match="publication interrupted",
+    ):
+        boot.publish(staged, ledger)
+    assert snapshot(staged) == before
+
+
+@pytest.mark.parametrize("change", ["foreign", "snapshot"])
+def test_staging_cleanup_refuses_unexpected_or_changed_content(tmp_path: Path, change: str) -> None:
+    source = make_source(tmp_path / "source")
+    tree = make_tree(tmp_path / "host")
+    ledger = Ledger(tree)
+    ledger.initialize()
+    boot = Bootstrapper(tree)
+    boot.consent(True)
+    staged = boot.stage_source(source, tmp_path / "staging")
+    original = Bootstrapper._install_file
+    foreign = staged / "foreign-sentinel"
+
+    def publish_then_change(self, ledger, name, identity, data, mode, gid, context):
+        original(self, ledger, name, identity, data, mode, gid, context)
+        if name == bootstrap.SHIM_PATH:
+            if change == "foreign":
+                foreign.write_bytes(b"preserve foreign content")
+            else:
+                (staged / "sparehash/alpha.py").write_bytes(b"changed snapshot")
+
+    with mock.patch.object(Bootstrapper, "_install_file", publish_then_change), pytest.raises(DeploymentError, match="retained for inspection"):
+        boot.publish(staged, ledger)
+    assert staged.exists() and (staged / "sparehash/__main__.py").exists()
+    if change == "foreign":
+        assert foreign.read_bytes() == b"preserve foreign content"
+    else:
+        assert (staged / "sparehash/alpha.py").read_bytes() == b"changed snapshot"
 
 
 def test_refuses_without_mutation(tmp_path: Path) -> None:
@@ -115,6 +159,7 @@ def test_refuses_without_mutation(tmp_path: Path) -> None:
     assert snapshot(tree.root) == before
 
     with (mock.patch.object(install, "Tree", return_value=tree),
+          mock.patch.object(install, "collect_facts", return_value=install.PreflightFacts("ubuntu", "24.04")),
           mock.patch.object(install.Capabilities, "detect", return_value=capabilities()),
           mock.patch.object(install.pwd, "getpwnam", side_effect=KeyError),
           mock.patch.object(install.grp, "getgrnam", side_effect=KeyError),

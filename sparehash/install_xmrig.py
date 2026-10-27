@@ -28,7 +28,7 @@ from .xmrig_verify import fetch_signing_key
 
 
 PROBE_USER: Final = "nobody"
-PROBE_STAGE_ROOT: Final = "/opt/sparehash-probe"
+PROBE_STAGE_ROOT: Final = "/opt"
 PASSWD_FILES: Final = ("etc/passwd", "usr/lib/passwd", "usr/etc/passwd")
 GROUP_FILES: Final = ("etc/group", "usr/lib/group", "usr/etc/group")
 PROBE_UID: Final = 65534
@@ -179,15 +179,13 @@ def isolated(binary: Path, arguments: tuple[str, ...], *, root: Path = PROBE_ROO
 
 
 def _stage_root() -> str:
-    """Return the probe staging directory, creating it when running as root.
+    """Use an existing executable parent outside receipt-managed trees.
 
-    The probe binary must sit on an executable filesystem that is outside every
-    receipt-managed installation tree, otherwise the uninstaller refuses with
-    unrecorded content. The sticky /var/tmp parent keeps it out of reach of
-    unprivileged renames, and tests never create it because they do not run as root.
+    Each probe owns only its exclusive TemporaryDirectory, removed on success or
+    failure. Do not create a permanent unreceipted staging root. /opt is already
+    trust-checked by installer preflight (including Atomic OS redirects), and
+    unlike /tmp or /var/tmp it remains visible inside the PrivateTmp sandbox.
     """
-    if os.geteuid() == 0:
-        Path(PROBE_STAGE_ROOT).mkdir(mode=0o755, exist_ok=True)
     return PROBE_STAGE_ROOT
 
 

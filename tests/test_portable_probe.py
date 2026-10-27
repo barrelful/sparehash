@@ -206,9 +206,9 @@ def test_rejects_unsafe_identity_or_units() -> None:
 def test_probe_stages_executable_snapshot_outside_state_directory(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, probe: str, outcome: str,
 ) -> None:
-    # Given protected snapshot bytes and an established executable application root
+    # Given protected snapshot bytes and an existing executable system parent
     root = identity_root(tmp_path, uid=99, gid=99)
-    application = tmp_path / "var/tmp/sparehash-probe"
+    application = tmp_path / "opt"
     application.mkdir(parents=True)
     snapshot = tmp_path / "snapshot"
     snapshot.write_bytes(b"private candidate snapshot")
@@ -218,8 +218,8 @@ def test_probe_stages_executable_snapshot_outside_state_directory(
     staged: list[Path] = []
 
     def stage_directory(*, prefix: str, dir: str) -> tempfile.TemporaryDirectory[str]:
-        # The application tree is executable; the state tree need not be.
-        assert dir == "/opt/sparehash-probe"
+        # PrivateTmp hides /var/tmp; never stage under managed install/state trees.
+        assert dir == "/opt"
         return temporary_directory(prefix=prefix, dir=application)
 
     def isolated(binary: Path, arguments: tuple[str, ...], *, root: Path) -> tuple[int, str]:
@@ -267,5 +267,6 @@ def test_probe_stages_executable_snapshot_outside_state_directory(
     # Then cleanup occurs for every outcome and the original inputs survive
     assert len(staged) == 1
     assert not staged[0].exists()
+    assert not list(application.iterdir())  # No permanent staging root/residue.
     assert snapshot.read_bytes() == b"private candidate snapshot"
     assert config.exists()
