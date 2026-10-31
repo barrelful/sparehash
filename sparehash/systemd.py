@@ -17,7 +17,7 @@ from typing import Final, Protocol, TypedDict
 from uuid import uuid4
 
 from .paths import CLI_PATH, UNIT_CONTROLLER, UNIT_MINER
-from .sysdetect import Capabilities, FIXED_PATH
+from .sysdetect import FIXED_PATH, Capabilities
 
 MARKER: Final = "# Managed by SpareHash"
 TEMPLATES: Final = Path(__file__).resolve().parent.parent / "systemd"
@@ -250,7 +250,9 @@ def probe_cpuweight_idle(env: Mapping[str, str], runner: Runner = _run,
     """
     _ = env
     ctx = context if context is not None else ProbeContext.host()
-    if ctx.euid != 0 or not ctx.cgroup_v2 or not (ctx.cgroup_root / "cpu.idle").is_file():
+    # cpu.idle is a non-root control. Only the transient unit's child cgroup
+    # below can establish effective kernel + manager support.
+    if ctx.euid != 0 or not ctx.cgroup_v2:
         return False
     unit = f"sparehash-idle-probe-{uuid4().hex}.service"
     safe_env = {"PATH": FIXED_PATH, "LANG": "C"}

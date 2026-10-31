@@ -181,7 +181,6 @@ class ProbeTests(unittest.TestCase):
             root = Path(tmp)
             cgroup = root / "sys/fs/cgroup"
             cgroup.mkdir(parents=True)
-            _ = (cgroup / "cpu.idle").write_text("0")
             effective = cgroup / "system.slice/probe"
             effective.mkdir(parents=True)
             _ = (effective / "cpu.idle").write_text("1")
@@ -202,7 +201,6 @@ class ProbeTests(unittest.TestCase):
         # Given
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            _ = (root / "cpu.idle").write_text("0")
             group = root / "system.slice/probe"
             group.mkdir(parents=True)
             _ = (group / "cpu.idle").write_text("1")
@@ -234,13 +232,26 @@ class ProbeTests(unittest.TestCase):
         # Given
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            for uid, v2 in ((1000, True), (0, False), (0, True)):
+            for uid, v2 in ((1000, True), (0, False)):
                 runner = ProbeRunner()
                 # When
                 result = systemd.probe_cpuweight_idle({}, runner, systemd.ProbeContext(uid, root, v2))
                 # Then
                 self.assertFalse(result)
                 self.assertEqual(runner.calls, [])
+
+    def test_child_kernel_evidence_is_required_without_root_idle(self) -> None:
+        for text in (None, "0\n", "unknown\n", "1\n"):
+            with self.subTest(text=text), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                group = root / "system.slice/probe"
+                group.mkdir(parents=True)
+                if text is not None:
+                    (group / "cpu.idle").write_text(text)
+                runner = ProbeRunner()
+                self.assertEqual(systemd.probe_cpuweight_idle({}, runner, systemd.ProbeContext(0, root, True)),
+                                 text == "1\n")
+                self.assertEqual(runner.calls[-1][1], "stop")
 
 
 class AnalyzerTests(unittest.TestCase):

@@ -27,7 +27,8 @@ def work(seconds: float) -> dict:
         count += 1
     return {"mib": count * len(data) / 2**20, "elapsed": time.monotonic() - started,
             "cpu_seconds": time.process_time() - cpu, "policy": os.sched_getscheduler(0),
-            "nice": os.getpriority(os.PRIO_PROCESS, 0)}
+            "nice": os.getpriority(os.PRIO_PROCESS, 0), "pid": os.getpid(),
+            "cgroup": Path("/proc/self/cgroup").read_text()}
 
 
 def temperatures() -> list[dict]:

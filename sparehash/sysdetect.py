@@ -18,10 +18,10 @@ import re
 import shutil
 import subprocess
 import sys
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Protocol
+from typing import Protocol
 
 from . import paths
 
@@ -81,9 +81,9 @@ def _parse_busctl_boolean(text: str | None) -> bool | None:
 
 
 def _cpuweight_probe(*, manager_probe: ManagerProbe | None, env: Mapping[str, str], euid: int,
-                     cgroup_cpu_idle: bool) -> bool:
-    """Require root, kernel support, and an explicit conclusive manager probe."""
-    if euid != 0 or not cgroup_cpu_idle:
+                     cgroup_v2: bool) -> bool:
+    """Require root, v2, and an explicit probe of effective child-cgroup support."""
+    if euid != 0 or not cgroup_v2:
         return False
     return manager_probe(env) is True if manager_probe is not None else False
 
@@ -118,7 +118,7 @@ class Capabilities:
         python_version: tuple[int, int] | None = None,
         euid: int | None = None,
         manager_probe: ManagerProbe | None = None,
-    ) -> "Capabilities":
+    ) -> Capabilities:
         env = dict(os.environ if environ is None else environ)
         base = Path(root)
         sysfs = Path(env.get(paths.SPAREHASH_SYSFS_ROOT, str(base / "sys")))
@@ -139,8 +139,6 @@ class Capabilities:
             hierarchy = "cgroup2" if " - cgroup2 " in mounts else ("cgroup1" if " - cgroup " in mounts else None)
         if cgroup is None and hierarchy is None:
             hierarchy = None
-        cpu_idle_path = sysfs / "fs/cgroup/cpu.idle"
-        cpu_idle = hierarchy == "cgroup2" and _read(cpu_idle_path) is not None
 
         helpers = ("gdbus", "busctl", "gamemoded", "gamemoderun", "steam", "gpg", "ss", "runuser",
                    "stress-ng", "systemctl", "systemd-run", "nproc", "upower", "dpkg-query", "rpm")
@@ -231,7 +229,8 @@ class Capabilities:
             memory_bytes=memory,
             xmrig_path=xmrig_path,
             xmrig_package=xmrig_package,
-            cpuweight_idle=_cpuweight_probe(manager_probe=manager_probe, env=env, euid=uid, cgroup_cpu_idle=cpu_idle),
+            cpuweight_idle=_cpuweight_probe(manager_probe=manager_probe, env=env, euid=uid,
+                                           cgroup_v2=hierarchy == "cgroup2"),
         )
 
     def summary(self) -> dict[str, object]:
