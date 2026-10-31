@@ -29,7 +29,7 @@ jobs:
         run: uv sync --locked --python "${{ matrix.python-version }}"
 
       - name: Run unit tests
-        run: .venv/bin/python -m pytest tests/ -q
+        run: .venv/bin/python -m pytest tests/ -q -ra
 
       - name: Run README inventory checker
         run: .venv/bin/python qa/check_readme.py

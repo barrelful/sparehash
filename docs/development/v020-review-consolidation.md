@@ -37,6 +37,11 @@ inventoried, not backed up as unique research. New verification evidence lives
 under gitignored `.omo/evidence/v020/review-consolidation/` and is kept private.
 No archive, host controller, token or personal network detail belongs in the PR.
 
+Recovery was also verified in an isolated temporary bare repository: T0 plus the
+two incremental Git bundles reconstruct the published review implementation;
+`git fsck --full` passed. Every original ref and all seven stash IDs remained
+unchanged. This verifies recovery without repeating the original T0 backup.
+
 ### Branch dispositions
 
 Unique counts below compare the original branch tips with pre-cleanup `af7f2cf`;
@@ -158,12 +163,16 @@ No additional feature, distribution channel or safety relaxation was added.
 | README inventory | Passed: 16 commands, 16 flags, 22 config keys |
 | Local Markdown references | All 44 checked links resolve |
 | Wheel/sdist | Offline build and source/GPL/notices/no-runtime-dependency checks passed |
-| Secrets | Gitleaks 8.30.1 reported no leaks in the initial outgoing-history scan; final history/tree checks are retained privately |
-| Hosted CI | Triggered by the review PR; authoritative current-head results are its GitHub Checks, not old local matrix results |
+| Secrets | Gitleaks 8.30.1: no leaks in outgoing history or the exported source tree; raw reports retained privately |
+| Hosted CI | [Run 41204318369](https://github.com/barrelful/sparehash/actions/runs/41204318369) passed on `69126df`: Python 3.11–3.14 and packaging; each interpreter reported 1,090 passed, 1 skipped, 605 subtests passed |
 
 Local development dependencies were installed with `uv sync --locked`. The
 hosted workflow covers Python 3.11–3.14, typing, scoped lint, docs inventory and
-packaging. Existing global Ruff findings are not relabelled clean: remaining
+packaging. Hosted runners reported one existing environment-prerequisite skip
+per interpreter, not a new skip added by consolidation. The full local run
+exercised all 1,091 tests. CI now prints skip reasons (`-ra`) rather than hiding
+the distinction; current-head status is authoritative in the PR checks.
+Existing global Ruff findings are not relabelled clean: remaining
 older code includes an unused import in `install.py`, nested-context style in
 `test_cli.py` and pre-existing security-diagnostic style findings.
 
@@ -199,7 +208,8 @@ by an old candidate's final VM pass. No workstation installation is modified.
 
 The published development branch is
 [`review/v0.2-pre-rc`](https://github.com/barrelful/sparehash/tree/review/v0.2-pre-rc).
-The PR targets remote `main`; its head commit/check links identify the exact
+The [review PR is #1](https://github.com/barrelful/sparehash/pull/1), targeting
+remote `main`; its head commit/check links identify the exact
 reviewed state. No merge, release tag, force-push or historical branch deletion
 is authorised or performed by this task.
 
