@@ -214,7 +214,7 @@ def guard(digest: str) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("phase", choices=("install", "verify"))
+    parser.add_argument("phase", choices=("install", "verify", "exercise"))
     parser.add_argument("--source-sha256", required=True)
     parser.add_argument("--evidence", type=Path, default=Path("/var/tmp/sparehash-acceptance"))
     args = parser.parse_args()
@@ -243,24 +243,29 @@ def main() -> None:
             assert smoke.prop("sparehash.service", "UnitFileState") == "enabled"
             smoke.check("enabled_for_disposable_reboot")
         else:
-            assert Path("/proc/sys/kernel/random/boot_id").read_text().strip() != smoke.result["boot_before"]
+            rebooted = Path("/proc/sys/kernel/random/boot_id").read_text().strip() != smoke.result["boot_before"]
+            if args.phase == "verify":
+                assert rebooted, "verify requires an actual reboot"
+            else:
+                assert not rebooted, "exercise is the explicitly non-reboot subset"
             smoke.wait(lambda r: r.get("running"), 40)
             smoke.verify_payload()
-            smoke.check("actual_reboot_autostart_and_exact_payload")
+            smoke.check("actual_reboot_autostart_and_exact_payload" if rebooted else "non_reboot_subset_exact_payload")
             smoke.contention()
             smoke.operate()
             smoke.extra_sensors()
             smoke.blocked_worker()
             smoke.hugepages()
             smoke.remove()
-            smoke.result["complete"] = True
+            smoke.result["non_reboot_complete"] = True
+            smoke.result["complete"] = rebooted
     except Exception as error:
         smoke.result["failure"] = type(error).__name__ + ": " + str(error)
         smoke.result["complete"] = False
         raise
     finally:
         smoke.save()
-        if args.phase == "verify" or "failure" in smoke.result:
+        if args.phase != "install" or "failure" in smoke.result:
             try:
                 smoke.close()
             except Exception as error:
