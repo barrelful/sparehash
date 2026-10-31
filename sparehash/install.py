@@ -33,7 +33,6 @@ from .install_manifest import StoreContext, locked_store
 from .install_xmrig import PROBE_ROOT, choose, dry_run, isolated, resolve_probe_identity
 from .lifecycle import is_retired
 from .lifecycle_lease import LeaseError, LeaseStore
-from .migration import CompletionEvidence, MigrationError, MigrationPhase, MigrationStore, complete_upgrade
 from .preflight import HostFacts as PreflightFacts
 from .preflight import Preflight
 from .preflight import evaluate as evaluate_preflight
@@ -489,33 +488,6 @@ def deadline(_signal: int, _frame: FrameType | None) -> None:
     raise DeploymentError("xmrig-timeout", "upstream selection/install exceeded 120 seconds")
 
 
-def complete_upgrade_main(operation_id: str, *, geteuid: Callable[[], int] = os.geteuid) -> int:
-    """Root-only complete-upgrade: postverify, then remove only journal and update hold."""
-    if geteuid() != 0:
-        print("sparehash: complete-upgrade requires root", file=sys.stderr)
-        return 1
-    tree = Tree()
-    try:
-        with locked_store(StoreContext(tree.trust, gid=0)) as store:
-            journal = MigrationStore(store).read()
-            if journal is None:
-                raise MigrationError("no migration journal; completion refused")
-            if journal.operation_id != operation_id:
-                raise MigrationError("operation id does not match the migration journal")
-            if journal.phase is not MigrationPhase.VERIFIED_AWAITING_OPERATOR:
-                raise MigrationError(f"migration is not verified awaiting operator: {journal.phase.value}")
-            _ = _manual_state_digest(tree.path(STATE_DIR + "/state.json"))
-            evidence = CompletionEvidence(payload_identity=journal.payload_identity,
-                                          empty_cgroup=empty_proof(), guards_clear=True,
-                                          manual_state_preserved=True)
-            _ = complete_upgrade(operation_id, store, evidence=evidence)
-    except (MigrationError, LeaseError, DeploymentError, OSError, ValueError) as error:
-        print(f"sparehash: complete-upgrade: {error}", file=sys.stderr)
-        return 1
-    print("sparehash: complete-upgrade committed; manual pause and startup choices preserved")
-    return 0
-
-
 def _retired_guidance() -> str:
     """Exact recovery command for a retired system; never suggest manual deletion.
 
@@ -749,19 +721,6 @@ def main(argv: Sequence[str] | None = None, *, geteuid: Callable[[], int] = os.g
             else:
                 print(_retired_guidance(), file=sys.stderr)
                 return 2
-        if args.upgrade is not None or args.recover is not None or args.complete_upgrade is not None:
-            selected = [name for name, value in (("--upgrade", args.upgrade), ("--recover", args.recover),
-                                                 ("--complete-upgrade", args.complete_upgrade)) if value is not None]
-            if len(selected) != 1:
-                print("sparehash: install: choose exactly one of --upgrade/--recover/--complete-upgrade", file=sys.stderr)
-                return 2
-            if args.upgrade is not None:
-                upgrade_install(tree, args.upgrade)
-            elif args.recover is not None:
-                recover_install(tree, args.recover)
-            elif args.complete_upgrade is not None:
-                complete_install(tree, args.complete_upgrade)
-            return 0
         caps = Capabilities.detect(environ=ENV, manager_probe=None)
         preflight(tree, caps)
         existing = tree.path("/etc/sparehash/config.toml")

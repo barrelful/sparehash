@@ -28,7 +28,7 @@ def test_deferred_workflows_have_no_effects(arguments: list[str], uid: int) -> N
         install, "is_retired",
     ) as retired, patch.object(install.Capabilities, "detect") as detect, patch.object(
         install.lifecycle, "clear_lifecycle_latch",
-    ) as clear, patch.object(install, "complete_upgrade_main") as complete:
+    ) as clear, patch.object(install, "complete_install") as complete:
         assert main(arguments, geteuid=lambda: uid) == 2
     for boundary in (tree, retired, detect, clear, complete):
         boundary.assert_not_called()

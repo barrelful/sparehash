@@ -13,7 +13,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from sparehash import cli_config, cli_lifecycle
+from sparehash import cli_config
 from sparehash.__main__ import main
 from sparehash.status import StatusSnapshot
 
@@ -183,15 +183,13 @@ class CliTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0)
 
     def test_config_edit_refused_root_and_nonroot(self) -> None:
-        """sparehash config edit is unsupported in experimental v0.1.1, exit 2, root and nonroot identical."""
+        """Deferred editing refuses before the read-only configuration module runs."""
         for geteuid_fn, uid in [(os.geteuid, 0), (lambda: 1000, 1000)]:
             with self.subTest(geteuid=uid):
                 captured = io.StringIO()
                 with contextlib.redirect_stderr(captured):
-                    with patch.object(cli_config, "edit", side_effect=AssertionError("edit should not be called")):
-                        with patch.object(cli_config, "benchmark", side_effect=AssertionError("benchmark should not be called")):
-                            with patch.object(cli_lifecycle, "update", side_effect=AssertionError("update should not be called")):
-                                result = main(["config", "edit"], geteuid=geteuid_fn)
+                    with patch.object(cli_config, "show", side_effect=AssertionError("show should not be called")):
+                        result = main(["config", "edit"], geteuid=geteuid_fn)
                 self.assertEqual(result, 2)
                 self.assertIn(
                     "sparehash: config edit is unsupported in experimental v0.2.0",
