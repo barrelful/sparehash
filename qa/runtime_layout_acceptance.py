@@ -19,6 +19,16 @@ from release_smoke import SOURCE, Smoke
 from vm_acceptance import blocked_override, guard
 
 
+def unknown_proof_command() -> list[str]:
+    # Hide manager directories in this transient helper's namespace, not socket
+    # inodes (mounting over individual sockets is not portable across policies).
+    return ["systemd-run", "--unit=qa-layout-unknown", "--wait", "--pipe",
+            "--property=RuntimeMaxSec=15", "--property=NoNewPrivileges=yes",
+            "--property=ProtectSystem=strict",
+            "--property=TemporaryFileSystem=/run/systemd:ro /run/dbus:ro",
+            "/usr/local/bin/sparehash", "__cleanup__"]
+
+
 class LayoutAcceptance(Smoke):
     pages = Path("/sys/kernel/mm/hugepages/hugepages-2048kB/nr_hugepages")
     lease = Path("/var/lib/sparehash/hugepages.json")
@@ -112,24 +122,6 @@ class LayoutAcceptance(Smoke):
         assert int(self.pages.read_text()) == 32 and self.control.exists()
         self.check("nonempty_cgroup_refuses_before_state_mutation")
 
-        self.run(["systemctl", "kill", "--kill-whom=main", "--signal=SIGSTOP", "sparehash.service"])
-        try:
-            self.run(["systemctl", "stop", "sparehash-xmrig.service"])
-            assert self.empty()
-            self.run(["systemd-run", "--unit=qa-layout-unknown", "--wait", "--pipe", "--collect",
-                      "--property=NoNewPrivileges=yes", "--property=ProtectSystem=strict",
-                      "--property=InaccessiblePaths=/run/systemd/private /run/dbus/system_bus_socket",
-                      "/usr/local/bin/sparehash", "__cleanup__"], expected=1)
-            assert self.lease.read_bytes() == lease and self.operation.read_bytes() == operation
-            assert int(self.pages.read_text()) == 32 and self.control.exists()
-            self.check("unverifiable_cgroup_refuses_with_actual_empty_miner")
-        finally:
-            self.run(["systemctl", "kill", "--kill-whom=main", "--signal=SIGCONT", "sparehash.service"])
-        self.call({"cmd": "pause"})
-        self.wait(self.stopped)
-        self.call({"cmd": "resume"})
-        self.running()
-
         self.snapshot("before_sigkill_active_lease")
         self.run(["systemctl", "kill", "--kill-whom=main", "--signal=SIGKILL", "sparehash.service"])
         self.wait_inactive(12)
@@ -171,6 +163,7 @@ class LayoutAcceptance(Smoke):
         self.run(["systemctl", "start", "sparehash.service"])
         self.running()
         self.foreign_preserved()
+        self.unverifiable()
         self.remove_overlay()
         assert int(self.pages.read_text()) == 0
         # Withdraw only these exact nested fixture sentinels before account
@@ -187,6 +180,30 @@ class LayoutAcceptance(Smoke):
         assert int(self.pages.read_text()) == 0 and not self.lease.exists()
         assert not self.operation.exists() and not self.control.exists()
         self.check("uninstall_reinstall_purge_preserve_foreign_state")
+
+    def unverifiable(self) -> None:
+        lease, operation = self.lease.read_bytes(), self.operation.read_bytes()
+        self.run(["systemctl", "kill", "--kill-whom=main", "--signal=SIGSTOP", "sparehash.service"])
+        try:
+            self.run(["systemctl", "stop", "sparehash-xmrig.service"])
+            assert self.empty()
+            proc = subprocess.run(unknown_proof_command(), capture_output=True, text=True, timeout=30)
+            (self.evidence / "unknown-proof-command.log").write_text(proc.stdout + proc.stderr)
+            shown = self.run(["systemctl", "show", "qa-layout-unknown.service",
+                              "--property=ExecMainCode,ExecMainStatus,ExecStart,Result"])
+            self.run(["journalctl", "-b", "-u", "qa-layout-unknown.service", "--no-pager"])
+            assert proc.returncode == 1 and "ExecMainCode=1\n" in shown and "ExecMainStatus=1\n" in shown, shown
+            self.run(["systemctl", "stop", "qa-layout-unknown.service"])
+            self.run(["systemctl", "reset-failed", "qa-layout-unknown.service"])
+            assert self.lease.read_bytes() == lease and self.operation.read_bytes() == operation
+            assert int(self.pages.read_text()) == 32 and self.control.exists()
+            self.check("unverifiable_cgroup_refuses_with_actual_empty_miner")
+        finally:
+            self.run(["systemctl", "kill", "--kill-whom=main", "--signal=SIGCONT", "sparehash.service"])
+        self.call({"cmd": "pause"})
+        self.wait(self.stopped)
+        self.call({"cmd": "resume"})
+        self.running()
 
     def wait_inactive(self, seconds: float) -> None:
         deadline = time.monotonic() + seconds
@@ -221,7 +238,6 @@ def main() -> None:
     try:
         run.prepare()
         run.exercises()
-        run.audit()
         run.result["complete"] = True
     except Exception as error:
         run.result["failure"] = type(error).__name__ + ": " + str(error)
@@ -229,6 +245,7 @@ def main() -> None:
     finally:
         try:
             run.close()
+            run.audit()
         except Exception as error:
             run.result["complete"] = False
             run.result["cleanup_failure"] = type(error).__name__ + ": " + str(error)

@@ -174,6 +174,11 @@ def test_vm_fixture_handles_initial_stop_before_sentinel_creation(monkeypatch, t
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    command = module.unknown_proof_command()
+    assert "--property=TemporaryFileSystem=/run/systemd:ro /run/dbus:ro" in command
+    assert "--property=NoNewPrivileges=yes" in command
+    assert "--property=ProtectSystem=strict" in command
+    assert command[-2:] == ["/usr/local/bin/sparehash", "__cleanup__"]
     fake = SimpleNamespace(result={})
     module.LayoutAcceptance.foreign_preserved(fake)
     marker = tmp_path / "foreign"

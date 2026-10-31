@@ -103,7 +103,7 @@ cleanup before deleting payload/accounts and refuse an altered cleanup CLI or
 failed helper. Existing operation/benchmark validation, IPC and signal/worker
 tests also run unchanged apart from relocated fixtures.
 
-Full local suite: **1,192 passed + 619 subtests**. Mypy is clean on 56 production
+Full local suite: **1,193 passed + 619 subtests**. Mypy is clean on 56 production
 modules; scoped Ruff, README inventory, offline wheel/sdist, artifact attribution/
 runtime-dependency and whitespace checks passed. No runtime dependency was added.
 
@@ -123,3 +123,30 @@ treats the pre-sentinel phase as an empty inventory, with a regression also
 ensuring later changed sentinels still fail. Both guest archives were collected
 and both clones discarded; later lifecycle/abnormal tests were not reached in
 that attempt. Records remain under `round1/` and are not overwritten.
+
+## Second attempt: Ubuntu full PASS, Bazzite fault-injector limitation
+
+Source archive `d0957168d47d31cf75a48077781eea204df3c5cd`, production inventory
+`cb20973431ccdc7937c0c2a731458e152b85e2cf0e86dfd156bbf75d87b84f5a`, archive hash
+`c4010a7c0272fe8ab67cf0cdc023062083c0f1fc9e3e82fe4df62c992c4d01df`:
+
+- Ubuntu completed the full driver with guest exit 0, `complete=true`, and no
+  relevant audit denial. Original trusted hook exit 0 restored 32 → 0 pages and
+  removed lease/operation/socket artifacts after both SIGKILL and blocked-worker
+  nonzero exit. The latter took **12.2674 seconds**. Normal lifecycle, exact
+  layout/permissions, nonempty and genuinely unverifiable cgroup refusal,
+  foreign-state retention, non-purge reinstall and purge all passed.
+- Bazzite passed installation, normal start/restart/stop and nonempty-cgroup
+  refusal. The temporary unknown-proof injector tried masking individual manager
+  socket inodes with InaccessiblePaths; its setup exited **226/NAMESPACE** before
+  the cleanup helper ran. That is **BLOCKED/QA fixture failure**, not a successful
+  unknown-proof test or evidence of an application cleanup failure. Later checks
+  were not reached. Both clones were collected and discarded.
+- The revised injector uses empty read-only tmpfs mounts over manager directories
+  in only its own transient helper namespace, preserving NoNewPrivileges and
+  ProtectSystem. The real trusted helper and real systemctl remain unchanged.
+  Its actual ExecMainCode/ExecMainStatus and journal are captured; status 226
+  cannot be mistaken for the helper's expected refusal status 1. Fixture checks
+  cover its command contract. Audit evidence is now captured in finalization
+  even if an earlier scenario fails. This modifies only QA, not production code
+  or the controller sandbox.
