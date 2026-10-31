@@ -115,18 +115,21 @@ class Acceptance(Smoke):
         self.run(["systemctl", "stop", "sparehash.service"])
         assert self.empty()
         rows = {}
+        contender_started = False
         try:
             for label in ("stopped", "mining"):
                 if label == "mining":
                     self.run(["systemd-run", "--unit=sparehash-qa-contention",
                               "--property=User=nobody", "--property=Nice=19",
+                              "--property=WorkingDirectory=/var/tmp",
                               "--property=CPUSchedulingPolicy=idle", "--property=RuntimeMaxSec=120",
                               "--property=KillMode=control-group", "/usr/bin/python3", "-c",
                               "import subprocess,time; "
                               "p=[subprocess.Popen(['/usr/bin/python3','-c',"
                               "'while True: sum(range(10000))']) for _ in range(4)]; time.sleep(110)"])
+                    contender_started = True
                 target = Path(f"/var/tmp/sparehash-contention-{label}.json")
-                self.run(["runuser", "-u", "nobody", "--", "/usr/bin/python3",
+                self.run(["runuser", "-u", "nobody", "--", "/usr/bin/env", "--chdir=/var/tmp", "/usr/bin/python3",
                           str(SOURCE / "qa/cpu_contention.py"), "--label", label,
                           "--output", str(target), "--workers", "4", "--seconds", "3"])
                 rows[label] = json.loads(target.read_text())
@@ -146,7 +149,8 @@ class Acceptance(Smoke):
             result["scope"] = "4-vCPU VM; independent non-hashing idle/nice19 synthetic contender, not RandomX"
             self.check("quantitative_cpu_contention", result)
         finally:
-            self.run(["systemctl", "stop", "sparehash-qa-contention.service"])
+            if contender_started:
+                self.run(["systemctl", "stop", "sparehash-qa-contention.service"])
         self.run(["systemctl", "start", "sparehash.service"])
         self.wait(lambda r: r.get("running"))
 

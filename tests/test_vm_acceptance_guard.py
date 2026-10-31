@@ -39,3 +39,19 @@ def test_guard_refuses_physical_host_before_filesystem_effects(harness, monkeypa
     with pytest.raises(ValueError, match="non-VM"):
         harness.guard("0" * 64)
     harness.subprocess.run.assert_called_once_with(["systemd-detect-virt", "--vm", "--quiet"], check=False)
+
+
+def test_foreground_fixture_uses_accessible_cwd_and_preserves_original_failure(harness, tmp_path):
+    fake = Mock()
+    fake.evidence = tmp_path
+    fake.empty.return_value = True
+
+    def command(argv):
+        if argv[0] == "runuser":
+            assert argv[4:7] == ["/usr/bin/env", "--chdir=/var/tmp", "/usr/bin/python3"]
+            raise RuntimeError("original foreground failure")
+
+    fake.run.side_effect = command
+    with pytest.raises(RuntimeError, match="original foreground failure"):
+        harness.Acceptance.contention(fake)
+    assert fake.run.call_count == 2  # Never stop a contender that was not started.
