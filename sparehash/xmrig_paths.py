@@ -12,13 +12,17 @@ from contextlib import ExitStack
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Final
+
 from .layout import Layout, LayoutError
 from .paths import physical_path, pin_prefix
-
-from .xmrig_manifest import MANIFEST_ROOT as MANIFEST_ROOT, Manifest as Manifest, VersionRecord as VersionRecord, parse_manifest as parse_manifest
+from .xmrig_manifest import MANIFEST_ROOT as MANIFEST_ROOT
+from .xmrig_manifest import MAX_METADATA_BYTES_V2
+from .xmrig_manifest import Manifest as Manifest
+from .xmrig_manifest import VersionRecord as VersionRecord
+from .xmrig_manifest import parse_manifest as parse_manifest
 
 MAX_BINARY_BYTES: Final = 128 * 1024 * 1024
-MAX_METADATA_BYTES: Final = 64 * 1024
+MAX_MARKER_BYTES: Final = 64
 DIRECTORY_FLAGS: Final = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
 FILE_FLAGS: Final = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
 MARKER_NAME: Final = ".sparehash-managed"
@@ -119,12 +123,12 @@ class PathTrust:
             marker_text = self._metadata(self.marker_path)
             if marker_text is None or marker_text.strip() != MANIFEST_ROOT:
                 return None
-            manifest_text = self._metadata(self.manifest_path)
+            manifest_text = self._metadata(self.manifest_path, limit=MAX_METADATA_BYTES_V2)
             return None if manifest_text is None else parse_manifest(manifest_text)
         except (OSError, UnicodeError, ValueError, LayoutError):
             return None
 
-    def _metadata(self, path: Path, parent_fd: int | None = None) -> str | None:
+    def _metadata(self, path: Path, parent_fd: int | None = None, *, limit: int = MAX_MARKER_BYTES) -> str | None:
         """Read only the pinned, fstat-verified regular file and protected parents."""
         with ExitStack() as stack:
             if parent_fd is None:
@@ -136,11 +140,12 @@ class PathTrust:
             before = tuple(os.fstat(fd) for fd in descriptors)
             if (not all(self._protected(info) for info in before)
                     or not stat.S_ISREG(before[-1].st_mode)
-                    or not 0 < before[-1].st_size <= MAX_METADATA_BYTES):
+                    or before[-1].st_nlink != 1
+                    or not 0 < before[-1].st_size <= limit):
                 return None
             with os.fdopen(os.dup(descriptors[-1]), "rb") as source:
-                contents = source.read(MAX_METADATA_BYTES + 1)
-            if len(contents) > MAX_METADATA_BYTES or not _unchanged(before, descriptors):
+                contents = source.read(limit + 1)
+            if len(contents) != before[-1].st_size or len(contents) > limit or not _unchanged(before, descriptors):
                 return None
             return contents.decode("utf-8")
 
@@ -151,7 +156,7 @@ class PathTrust:
             return False
         try:
             marker_text = self._metadata(marker, root_fd)
-            manifest_text = self._metadata(manifest)
+            manifest_text = self._metadata(manifest, limit=MAX_METADATA_BYTES_V2)
             parsed = parse_manifest(manifest_text) if manifest_text is not None else None
             recorded = (marker_text is not None and marker_text.strip() == MANIFEST_ROOT
                         and parsed is not None and path.parent.name in parsed.names

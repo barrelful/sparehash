@@ -57,6 +57,7 @@ jobs:
           sparehash/ipc.py sparehash/cli_uninstall.py tests/test_runtime_layout.py
           tests/test_runtime_spec.py tests/test_cli_uninstall.py qa/runtime_layout_acceptance.py
           qa/contention_safety.py qa/run_cpu_contention.py tests/test_supervised_contention.py
+          sparehash/xmrig_paths.py tests/test_manifest_read_limits.py
 
   package-build:
     runs-on: ubuntu-24.04
