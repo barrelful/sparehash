@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import os
 import io
+import os
 import tempfile
 import unittest
 from contextlib import redirect_stderr
@@ -65,8 +65,8 @@ def make_tree(root: Path) -> Tree:
 
 @final
 class UninstallTests(unittest.TestCase):
-    def __init__(self, methodName: str = "runTest") -> None:
-        super().__init__(methodName)
+    def __init__(self, method_name: str = "runTest") -> None:
+        super().__init__(method_name)
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
@@ -99,7 +99,7 @@ class UninstallTests(unittest.TestCase):
 
     def run_uninstall(self, *, purge: bool = False, root: int = 0, empty: bool = True,
                       legacy: bool = False, build: bool = True, stop_failure: bool = False,
-                      groupdel_exit: int | None = None) -> tuple[int, Client, FakeInfrastructure]:
+                      groupdel_exit: int | None = None, cleanup_failure: bool = False) -> tuple[int, Client, FakeInfrastructure]:
         """Use a private tree and reject every controller call, including abort/release."""
         if build:
             self.build(legacy=legacy)
@@ -114,6 +114,11 @@ class UninstallTests(unittest.TestCase):
                 self.assertTrue(self.tree.path(PACKAGE_LEAF).exists())
             if stop_failure and argv[:2] == ("/usr/bin/systemctl", "stop"):
                 raise DeploymentError("helper", "injected stop failure")
+            if argv == ("/usr/local/bin/sparehash", "__cleanup__"):
+                self.assertTrue(self.tree.path(PACKAGE_LEAF).exists())
+                self.assertTrue(self.tree.path("/usr/local/bin/sparehash").exists())
+                if cleanup_failure:
+                    raise DeploymentError("helper", "cleanup safely deferred")
             if groupdel_exit is not None and argv[0] == "/usr/sbin/groupdel":
                 raise DeploymentError("helper", f"{argv[0]} exited {groupdel_exit}: groupdel: fixture failure")
 
@@ -145,6 +150,7 @@ class UninstallTests(unittest.TestCase):
                                           ("empty",), ("hugepages",)])
         calls = self.commands(fake)
         self.assertIn(("hugepages",), fake.calls)
+        self.assertEqual(fake.calls[4], ("/usr/local/bin/sparehash", "__cleanup__"))
         self.assertIn(("/usr/sbin/userdel", "xmrig"), calls)
         self.assertIn(("/usr/sbin/groupdel", "sparehash"), calls)
         self.assertEqual(calls[-1], ("/usr/bin/systemctl", "daemon-reload"))
@@ -156,6 +162,20 @@ class UninstallTests(unittest.TestCase):
         # Then the configuration is removed too
         self.assertEqual(result, 0)
         self.assertFalse(self.tree.path(CONFIG).exists())
+
+    def test_cleanup_refusal_retains_payload_and_accounts(self) -> None:
+        result, _, fake = self.run_uninstall(cleanup_failure=True)
+        self.assertEqual(result, 1)
+        self.assertTrue(self.tree.path(PACKAGE_LEAF).exists())
+        self.assertFalse(any(call[0] == "/usr/sbin/userdel" for call in fake.calls))
+
+    def test_changed_cli_is_not_executed_for_cleanup(self) -> None:
+        self.build()
+        self.tree.path("/usr/local/bin/sparehash").write_text("foreign replacement")
+        result, _, fake = self.run_uninstall(build=False)
+        self.assertEqual(result, 1)
+        self.assertNotIn(("/usr/local/bin/sparehash", "__cleanup__"), fake.calls)
+        self.assertTrue(self.tree.path(PACKAGE_LEAF).exists())
 
     def test_retains_artifacts_when_cgroup_is_not_empty(self) -> None:
         # Given a miner cgroup that is not empty

@@ -134,7 +134,7 @@ Group=xmrig
 
 ## IPC trust and authorization
 
-The control socket is a Unix domain socket at `/run/sparehash/control.sock`,
+The control socket is a Unix domain socket at `/run/sparehash/ipc/control.sock`,
 owned `root:sparehash` with mode `0660`. The server uses `SO_PEERCRED` to learn
 the caller's UID/GID.
 
@@ -281,7 +281,8 @@ Runtime reads:
 Runtime manages:
 
 - `/var/lib/sparehash/` (runtime state, leases, manifests)
-- `/run/sparehash/` (IPC socket, operation spec)
+- `/run/sparehash/ipc/` (protected IPC socket)
+- `/run/sparehash-miner/private/` (protected operation spec/benchmark config)
 - systemd unit lifecycle (start/stop/authorize)
 
 Runtime does not:

@@ -10,10 +10,11 @@ import json
 import os
 import stat
 import subprocess
-from contextlib import ExitStack
+from collections.abc import Callable
+from contextlib import ExitStack, suppress
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Final
+from typing import Final
 from uuid import uuid4
 
 from .layout import Layout
@@ -100,12 +101,13 @@ class Tree:
         if not path.is_absolute() or ".." in path.parts:
             raise DeploymentError("path", "expected fixed absolute deployment path")
         fd, components = pin_prefix(stack, self.root / name.removeprefix("/"), self.root, self.layout)
-        for component in (*components, ""):
+        for index, component in enumerate((*components, "")):
             info = os.fstat(fd)
             if info.st_uid != self.uid or info.st_mode & 0o022:
                 raise DeploymentError("ownership", f"unsafe ancestor of {name}")
             if component:
-                fd = os.open(component, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+                access = os.O_RDONLY if index == len(components) - 1 else os.O_PATH
+                fd = os.open(component, access | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
                 _ = stack.callback(os.close, fd)
         return fd
 
@@ -125,10 +127,8 @@ class Tree:
     def directory(self, name: str, gid: int) -> None:
         with ExitStack() as stack:
             parent = self.pin(stack, str(Path(name).parent))
-            try:
+            with suppress(FileExistsError):
                 os.mkdir(Path(name).name, 0o755, dir_fd=parent)
-            except FileExistsError:
-                pass
             fd = self.pin(stack, name)
             os.fchown(fd, self.uid, gid)
             os.fchmod(fd, 0o755)
@@ -151,10 +151,8 @@ class Tree:
                 os.replace(temp, Path(name).name, src_dir_fd=parent, dst_dir_fd=parent)
                 os.fsync(parent)
             finally:
-                try:
+                with suppress(FileNotFoundError):
                     os.unlink(temp, dir_fd=parent)
-                except FileNotFoundError:
-                    pass
 
     def receipt(self, name: str, created: bool, *, identity: str | None = None) -> Artifact:
         """Describe one pinned artifact; identity and content come from a single descriptor."""

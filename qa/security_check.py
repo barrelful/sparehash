@@ -128,7 +128,7 @@ assert os.geteuid() == int(sys.argv[1]) != 0
 with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
     connection.settimeout(2)
     try:
-        connection.connect('/run/sparehash/control.sock')
+        connection.connect('/run/sparehash/ipc/control.sock')
         connection.sendall(b'{"cmd":"pause"}\\n')
     except OSError as error:
         sys.exit(0 if error.errno == errno.EACCES else 2)
@@ -200,8 +200,9 @@ def main() -> int:
         for name, mode, gid in (("config.toml", 0o644, spare_gid), ("xmrig.json", 0o640, spare_gid),
                                 ("xmrig.runtime.json", 0o640, grp.getgrnam("xmrig").gr_gid)):
             check_permissions(Path("/etc/sparehash") / name, (mode, 0, gid), stat.S_IFREG)
-        check_permissions(Path("/run/sparehash/control.sock"), (0o660, 0, spare_gid), stat.S_IFSOCK)
-        check_permissions(Path("/run/sparehash"), (0o750, 0, spare_gid), stat.S_IFDIR)
+        check_permissions(Path("/run/sparehash/ipc/control.sock"), (0o660, 0, spare_gid), stat.S_IFSOCK)
+        check_permissions(Path("/run/sparehash/ipc"), (0o750, 0, spare_gid), stat.S_IFDIR)
+        check_permissions(Path("/run/sparehash"), (0o711, 0, 0), stat.S_IFDIR)
         cfg = config.load()
         for tree in (Path("/opt/sparehash"), Path("/opt/xmrig")):
             check_tree(tree)

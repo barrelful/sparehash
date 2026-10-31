@@ -71,7 +71,7 @@ the controller runs as root, the miner only as unprivileged `xmrig`.
 | Public `config.toml` | root:`sparehash`, 0644 |
 | API-bearing `xmrig.json` | root:`sparehash`, 0640 |
 | Miner fallback `xmrig.runtime.json` | root:`xmrig`, 0640 |
-| Controller socket | root:`sparehash`, 0660 in protected `/run/sparehash` |
+| Controller socket | root:`sparehash`, 0660 in protected `/run/sparehash/ipc` (0750); systemd parent stays root:root/0711 |
 | Installed source/CLI/units | Root-owned; unprivileged callers cannot alter them |
 
 Group access is powerful: trusted peers may pause/resume and send gaming hooks.

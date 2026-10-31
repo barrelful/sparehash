@@ -25,7 +25,7 @@ from pathlib import Path
 from threading import Event
 from typing import Final, Literal, NewType, TypeAlias, TypeGuard
 
-from .paths import RUN_DIR
+from .paths import CONTROL_SOCK
 from .state import BLOCKERS
 
 Json: TypeAlias = None | bool | int | float | str | list["Json"] | dict[str, "Json"]
@@ -231,7 +231,7 @@ def socket_path() -> Path:
     """Environment override is an explicit QA seam, confined to private temp storage."""
     override = os.environ.get("SPAREHASH_RUN_DIR")
     if override is None:
-        return RUN_DIR / "control.sock"
+        return CONTROL_SOCK
     directory = Path(override)
     resolved = directory.resolve(strict=True)
     info = directory.lstat()

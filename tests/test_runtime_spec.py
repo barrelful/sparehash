@@ -16,7 +16,7 @@ from unittest.mock import patch
 import pytest
 
 from sparehash import config, runtime_spec
-from sparehash.deployment import Tree
+from sparehash.deployment import DeploymentError, Tree
 from sparehash.layout import probe
 from sparehash.xmrig_config import (
     PROPERTIES,
@@ -36,8 +36,9 @@ class Publication:
 
 @pytest.fixture
 def publication(tmp_path: Path) -> Iterator[Publication]:
-    for directory in ("opt", "usr", "usr/local", "run", "run/sparehash-miner"):
+    for directory in ("opt", "usr", "usr/local", "run", "run/sparehash-miner", "run/sparehash-miner/private"):
         (tmp_path / directory).mkdir(mode=0o755)
+    (tmp_path / "run/sparehash-miner/private").chmod(0o750)
     candidate = tmp_path / "opt/xmrig"
     marker = tmp_path / "executed"
     _ = candidate.write_text(f'#!/bin/sh\ntouch "{marker}"\nexit 0\n', encoding="utf-8")
@@ -71,6 +72,35 @@ def test_benchmark_refuses_when_runner_missing(publication: Publication, stale: 
     assert tree.read(runtime_spec.SPEC) == (previous if stale else None)
     assert tree.read(runtime_spec.BENCHMARK) is None
     assert not publication.marker.exists()
+
+
+def test_publication_creates_child_without_changing_manager_parent(publication: Publication) -> None:
+    tree = publication.tree
+    child = tree.path(runtime_spec.DIRECTORY)
+    child.rmdir()
+    child.parent.chmod(0o711)
+    parent = child.parent.stat()
+    runtime_spec.publish(publication.cfg, 4, "mine", tree=tree, layout=tree.layout)
+    assert child.parent.stat().st_uid == parent.st_uid
+    assert child.parent.stat().st_gid == parent.st_gid
+    assert child.parent.stat().st_mode == parent.st_mode
+    assert child.stat().st_mode & 0o777 == 0o750
+    assert tree.path(runtime_spec.SPEC).stat().st_mode & 0o777 == 0o640
+    assert not (child.parent / "operation.json").exists()
+
+
+@pytest.mark.parametrize("fault", ["mode", "symlink"])
+def test_publication_refuses_unsafe_existing_child(publication: Publication, fault: str) -> None:
+    tree = publication.tree
+    child = tree.path(runtime_spec.DIRECTORY)
+    if fault == "mode":
+        child.chmod(0o755)
+    else:
+        child.rmdir()
+        child.symlink_to(child.parent)
+    with pytest.raises((OSError, DeploymentError)):
+        runtime_spec.publish(publication.cfg, 4, "mine", tree=tree, layout=tree.layout)
+    assert not (child.parent / "operation.json").exists()
 
 
 def test_benchmark_uses_supplied_runner_when_publishing(publication: Publication) -> None:

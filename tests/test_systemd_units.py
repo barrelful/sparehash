@@ -61,7 +61,8 @@ class UnitTests(unittest.TestCase):
             "ExecStart": "/usr/local/bin/sparehash __controller__",
             "ExecStopPost": "/usr/local/bin/sparehash __cleanup__", "Restart": "on-failure", "RestartSec": "5s",
             "StateDirectory": "sparehash", "RuntimeDirectory": "sparehash sparehash-miner",
-            "RuntimeDirectoryMode": "0750", "Environment": "PYTHONDONTWRITEBYTECODE=1",
+            "RuntimeDirectoryMode": "0711", "RuntimeDirectoryPreserve": "yes",
+            "Environment": "PYTHONDONTWRITEBYTECODE=1",
             "NoNewPrivileges": "yes", "ProtectSystem": "strict",
             "ProtectHome": "read-only", "PrivateTmp": "yes", "RestrictAddressFamilies": "AF_UNIX AF_INET AF_INET6"}.items()})
         self.assertEqual(dict(unit["Install"]), {"wantedby": "multi-user.target"})

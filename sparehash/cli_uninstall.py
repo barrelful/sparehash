@@ -27,10 +27,10 @@ from .install_manifest import StoreContext, locked_store
 from .lifecycle import retire
 from .lifecycle_lease import LeaseError, LeaseStore
 from .runtime_jobs import empty
-from .xmrig_ledger import Artifact, GroupIdentity, Installer, UserIdentity
 from .xmrig_layout import InstallError
-from .xmrig_remove import remove_leaf_receipts, remove_owned_versions
+from .xmrig_ledger import Artifact, GroupIdentity, Installer, UserIdentity
 from .xmrig_paths import PathTrust
+from .xmrig_remove import remove_leaf_receipts, remove_owned_versions
 
 UNITS: Final = "/etc/systemd/system"
 CONTROLLER_UNIT: Final = UNITS + "/sparehash.service"
@@ -284,6 +284,10 @@ def uninstall(*, purge: bool = False, geteuid: Callable[[], int] = os.geteuid, t
         if not infra.cgroup_empty():
             raise LifecycleError("cgroup", "miner cgroup is not empty; artifacts retained")
         _ = infra.free_hugepages()
+        shim = next((artifact for artifact in installer.artifacts if artifact.path == SHIM), None)
+        if shim is None or _identity(tree.receipt(SHIM, shim.created)) != _identity(shim):
+            raise LifecycleError("receipt", "trusted cleanup CLI differs from its receipt")
+        infra.run((SHIM, "__cleanup__"))
         for artifact in installer.artifacts:
             if artifact.created and artifact.id.startswith("gaming-ini:"):
                 _ = infra.unmerge(artifact.id.removeprefix("gaming-ini:"))

@@ -5,15 +5,19 @@
 
 from __future__ import annotations
 
+import errno
+import grp
 import logging
 import os
+import pwd
 import signal
+import stat
 import sys
 import threading
 import time
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import ExitStack
+from contextlib import ExitStack, suppress
 from functools import partial
 from pathlib import Path
 from queue import Empty, Queue
@@ -27,9 +31,9 @@ from .deployment import Tree, checked
 from .deployment_spec import DeploymentSpec, DeploymentSpecError
 from .gaming_scan import ScanResult, scan_steam_games
 from .hugepages import LeaseManager
-from .paths import STATE_FILE
+from .paths import CONTROL_SOCK, RUN_DIR, STATE_FILE
 from .runtime_jobs import Jobs, empty
-from .runtime_spec import DIRECTORY, SPEC
+from .runtime_spec import BENCHMARK, DIRECTORY, SPEC
 from .state import BlockerState
 
 LOGGER: Final = logging.getLogger(__name__)
@@ -167,21 +171,51 @@ def initialize(state: BlockerState, ports: Ports, *,
     return owner
 
 
+def _remove_runtime(tree: Tree, directory: str, gid: int, names: tuple[str, ...], *, socket_file: bool = False) -> None:
+    """Remove only validated fixed artifacts; preserve foreign entries/parents."""
+    try:
+        with ExitStack() as stack:
+            child = tree.pin(stack, directory)
+            info = os.fstat(child)
+            if info.st_gid != gid or stat.S_IMODE(info.st_mode) != 0o750:
+                raise OSError("unsafe protected runtime directory")
+            present = []
+            for name in names:
+                try:
+                    info = os.stat(name, dir_fd=child, follow_symlinks=False)
+                except FileNotFoundError:
+                    continue
+                kind = stat.S_ISSOCK(info.st_mode) if socket_file else stat.S_ISREG(info.st_mode)
+                mode = 0o660 if socket_file else 0o640
+                if not kind or info.st_uid != tree.uid or info.st_gid != gid or stat.S_IMODE(info.st_mode) != mode:
+                    raise OSError("unsafe protected runtime artifact")
+                present.append(name)
+            for name in present:
+                os.unlink(name, dir_fd=child)
+            os.fsync(child)
+            parent = tree.pin(stack, str(Path(directory).parent))
+            try:
+                os.rmdir(Path(directory).name, dir_fd=parent)
+            except OSError as error:
+                if error.errno not in (errno.ENOTEMPTY, errno.EEXIST):
+                    raise
+            os.fsync(parent)
+    except FileNotFoundError:
+        pass
+
+
 def cleanup() -> int:
     if os.geteuid() != 0 or not empty():
         return 1
     result = LeaseManager(empty_proof=empty).cleanup()
-    try:
-        with ExitStack() as stack:
-            parent = Tree().pin(stack, DIRECTORY)
-            try:
-                os.unlink(Path(SPEC).name, dir_fd=parent)
-            except FileNotFoundError:
-                pass
-            os.fsync(parent)
-    except FileNotFoundError:
-        pass
-    return 1 if result.warning else 0
+    if result.warning:
+        return 1
+    tree = Tree()
+    _remove_runtime(tree, DIRECTORY, pwd.getpwnam("xmrig").pw_gid,
+                    (Path(SPEC).name, Path(BENCHMARK).name))
+    _remove_runtime(tree, str(RUN_DIR), grp.getgrnam("sparehash").gr_gid,
+                    (CONTROL_SOCK.name,), socket_file=True)
+    return 0
 
 
 def _close_workers(jobs: Jobs, providers: Providers, threads: tuple[threading.Thread, ...]) -> None:
@@ -252,7 +286,7 @@ def run(state_path: Path = STATE_FILE) -> int:
 
     def serve() -> None:
         try:
-            ipc.serve("/run/sparehash/control.sock", handle, stop, bound=bound)
+            ipc.serve(CONTROL_SOCK, handle, stop, bound=bound)
         except ipc.IPCError as error:
             failures.append(str(error))
             stop.set()
@@ -295,10 +329,8 @@ def run(state_path: Path = STATE_FILE) -> int:
         while not stop.is_set() and not owner.stopping:
             while not safety.empty():
                 safety.get_nowait()()
-            try:
+            with suppress(Empty):
                 messages.get(timeout=0.05)()
-            except Empty:
-                pass
             owner.tick()
         return 1 if failures else 0
     finally:

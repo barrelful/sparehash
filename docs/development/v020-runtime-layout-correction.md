@@ -46,6 +46,11 @@ protected metadata; unsafe, non-directory or symlink paths fail closed rather
 than being adopted. Existing descriptor-anchored ancestor checks, exact file
 ownership/mode/schema and executable/config binding remain in force.
 
+Descriptor traversal uses Linux `O_PATH|O_DIRECTORY|O_NOFOLLOW` for intermediate
+ancestors and a readable directory descriptor only at the requested leaf. This
+lets xmrig traverse the 0711 scaffolding without adding directory-read permission;
+every ancestor still undergoes the same root-ownership/no-write checks.
+
 Use the distro's existing inherited runtime labels (expected `var_run_t` in
 Bazzite), with **no chcon, restorecon exception, custom type or policy change**.
 Mixed-group child files may keep their existing labels because systemd no longer

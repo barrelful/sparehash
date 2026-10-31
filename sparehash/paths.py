@@ -85,9 +85,9 @@ STATE_FILE: Final = Path("/var/lib/sparehash/state.json")
 STATE_DIR: Final = STATE_FILE.parent
 HUGEPAGE_LEASE_FILE: Final = STATE_DIR / "hugepage-lease.json"
 INSTALL_MANIFEST_FILE: Final = STATE_DIR / "install-manifest.json"
-RUN_DIR: Final = Path("/run/sparehash")
+RUN_DIR: Final = Path("/run/sparehash/ipc")
 CONTROL_SOCK: Final = RUN_DIR / "control.sock"
-MINER_RUN_DIR: Final = Path("/run/sparehash-miner")
+MINER_RUN_DIR: Final = Path("/run/sparehash-miner/private")
 
 OPT_DIR: Final = Path("/opt/sparehash")
 OPT_SRC: Final = OPT_DIR / "src"

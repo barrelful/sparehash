@@ -14,12 +14,14 @@ from pathlib import Path
 from typing import Final
 
 from . import config
-from .deployment import ENV, LOAD_JSON, DeploymentError, Tree, binary as binary
+from .deployment import ENV, LOAD_JSON, DeploymentError, Tree
+from .deployment import binary as binary
 from .layout import Layout
+from .paths import MINER_RUN_DIR
 from .xmrig_config import IsolatedRunner
 from .xmrig_ledger import integer, keys, mapping, text
 
-DIRECTORY: Final = "/run/sparehash-miner"
+DIRECTORY: Final = str(MINER_RUN_DIR)
 SPEC: Final = DIRECTORY + "/operation.json"
 FALLBACK: Final = "/etc/sparehash/xmrig.runtime.json"
 BENCHMARK: Final = DIRECTORY + "/benchmark.json"
@@ -33,9 +35,21 @@ def publish(cfg: config.Config, generation: int, mode: str, *,
     gid = pwd.getpwnam("xmrig").pw_gid
     anchor = Tree(layout=layout) if tree is None else tree
     with ExitStack() as stack:
+        parent = anchor.pin(stack, str(Path(DIRECTORY).parent))
+        created = True
+        try:
+            os.mkdir(Path(DIRECTORY).name, 0o700, dir_fd=parent)
+        except FileExistsError:
+            created = False
         fd = anchor.pin(stack, DIRECTORY)
-        os.fchown(fd, 0, gid)
-        os.fchmod(fd, 0o750)
+        if created:
+            os.fchown(fd, anchor.uid, gid)
+            os.fchmod(fd, 0o750)
+        info = os.fstat(fd)
+        if info.st_uid != anchor.uid or info.st_gid != gid or stat.S_IMODE(info.st_mode) != 0o750:
+            raise DeploymentError("operation", "incorrect protected operation directory")
+        os.fsync(fd)
+        os.fsync(parent)
     target = FALLBACK if mode == "mine" else BENCHMARK
     executable = binary(cfg.xmrig.binary, layout=layout)
     if mode == "benchmark":

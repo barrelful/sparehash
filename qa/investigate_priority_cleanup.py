@@ -80,7 +80,7 @@ class Investigation(Smoke):
                 self.run(["ls", "-alZ", str(directory)])
         row["hugepages"] = self.read(Path("/sys/kernel/mm/hugepages/hugepages-2048kB/nr_hugepages"))
         row["lease_exists"] = Path("/var/lib/sparehash/hugepages.json").exists()
-        row["operation_exists"] = Path("/run/sparehash-miner/operation.json").exists()
+        row["operation_exists"] = Path("/run/sparehash-miner/private/operation.json").exists()
         (self.evidence / (label + ".json")).write_text(json.dumps(row, indent=2))
         return row
 
