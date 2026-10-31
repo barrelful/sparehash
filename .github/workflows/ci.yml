@@ -48,6 +48,8 @@ jobs:
           sparehash/power.py tests/test_power_scope.py
           qa/cpu_contention.py qa/vm_acceptance.py qa/fixtures/blocked_controller.py
           tests/test_cpu_contention.py tests/test_vm_acceptance_guard.py
+          sparehash/systemd.py sparehash/sysdetect.py tests/test_systemd_units.py tests/test_sysdetect.py
+          qa/investigate_priority_cleanup.py
 
   package-build:
     runs-on: ubuntu-24.04

@@ -7,6 +7,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import pwd
 import time
 from dataclasses import replace
 from pathlib import Path
@@ -16,6 +17,45 @@ from vm_acceptance import guard
 
 
 class Investigation(Smoke):
+    sibling_foreground = False
+
+    def ownership_control(self) -> None:
+        """Same transient service and file label, varying only directory GID drift."""
+        self.result["ownership_controls"] = []
+        gid = pwd.getpwnam("xmrig").pw_gid
+        for drift in (False, True):
+            name = "qa-runtime-reown"
+            unit = name + ".service"
+            directory = Path("/run") / name
+            program = ("import os,pathlib,time; d=pathlib.Path('/run/qa-runtime-reown'); "
+                       "p=d/'operation.json'; p.write_text('{}'); "
+                       + f"os.chown(p,0,{gid}); os.chmod(p,0o640); "
+                       + (f"os.chown(d,0,{gid}); " if drift else "")
+                       + "(d/'ready').touch(); time.sleep(30)")
+            self.run(["systemd-run", "--unit=" + unit, "--property=Type=exec",
+                      "--property=User=root", "--property=Group=root", "--property=RuntimeDirectory=" + name,
+                      "--property=RuntimeDirectoryMode=0750", "--property=RuntimeMaxSec=40",
+                      "--property=ExecStopPost=/usr/bin/true", "--property=ProtectSystem=strict",
+                      "--property=PrivateTmp=yes", "--property=NoNewPrivileges=yes",
+                      "/usr/bin/python3", "-c", program])
+            try:
+                deadline = time.monotonic() + 5
+                while not (directory / "ready").exists() and time.monotonic() < deadline:
+                    time.sleep(.05)
+                assert (directory / "ready").exists()
+                self.run(["ls", "-alZd", str(directory), str(directory / "operation.json")])
+                self.run(["systemctl", "kill", "--kill-whom=main", "--signal=SIGKILL", unit])
+                deadline = time.monotonic() + 8
+                while self.prop(unit, "ActiveState") in ("active", "deactivating") and time.monotonic() < deadline:
+                    time.sleep(.05)
+                row = {"directory_gid_drift": drift, "exec_stop_post": self.prop(unit, "ExecStopPost")}
+                self.result["ownership_controls"].append(row)
+                self.run(["journalctl", "-b", "-u", unit, "--no-pager", "-n", "30"])
+                self.run(["journalctl", "-b", "_TRANSPORT=audit", "--no-pager", "-n", "40"])
+                self.check("ownership_control_" + str(drift), row)
+            finally:
+                self.run(["systemctl", "stop", unit])
+                self.run(["systemctl", "reset-failed", unit])
     def read(self, path: Path) -> str | None:
         try:
             return path.read_text()
@@ -111,9 +151,15 @@ class Investigation(Smoke):
                     assert len(before["processes"]) == 5
                     assert all(p["policy"] == os.SCHED_IDLE and p["nice"] == 19 for p in before["processes"])
                 target = Path(f"/var/tmp/priority-{index}.json")
-                self.run(["runuser", "-u", "nobody", "--", "env", "--chdir=/var/tmp", "python3",
-                          str(SOURCE / "qa/cpu_contention.py"), "--label", "stopped" if mode == "baseline" else "mining",
-                          "--workers", "4", "--seconds", "3", "--output", str(target)])
+                command = ["/usr/bin/python3", str(SOURCE / "qa/cpu_contention.py"),
+                           "--label", "stopped" if mode == "baseline" else "mining",
+                           "--workers", "4", "--seconds", "3", "--output", str(target)]
+                if self.sibling_foreground:
+                    self.run(["systemd-run", "--unit=qa-priority-foreground", "--wait", "--collect",
+                              "--property=User=nobody", "--property=WorkingDirectory=/var/tmp",
+                              "--property=CPUWeight=100", "--property=RuntimeMaxSec=45", *command])
+                else:
+                    self.run(["runuser", "-u", "nobody", "--", "env", "--chdir=/var/tmp", *command])
                 data = json.loads(target.read_text())
                 data.update(mode=mode, contender_before=before, contender_after=self.cgroup(group) if group else None)
                 # Observe foreground ancestry without moving tasks or altering limits.
@@ -140,10 +186,9 @@ class Investigation(Smoke):
 
         self.run(["systemctl", "stop", "sparehash.service"])
         self.run(["systemctl", "reset-failed", "sparehash.service"])
-        overlay = self.evidence / "hugepages.toml"
-        config.save(replace(config.load(), hugepages=config.Hugepages(enabled=True, pages=32)), overlay)
+        config.save(replace(config.load(), hugepages=config.Hugepages(enabled=True, pages=32)))
         self.drop.parent.mkdir()
-        self.drop.write_text(f"[Service]\nBindReadOnlyPaths={overlay}:/etc/sparehash/config.toml\nRestart=no\n")
+        self.drop.write_text("[Service]\nRestart=no\n")
         self.run(["systemctl", "daemon-reload"])
         self.run(["systemctl", "cat", "sparehash.service"])
         self.run(["systemctl", "start", "sparehash.service"])
@@ -164,12 +209,17 @@ class Investigation(Smoke):
         self.run(["journalctl", "-b", "_PID=1", "--no-pager", "-n", "150"])
         if Path("/var/log/audit/audit.log").exists():
             self.run(["tail", "-n", "100", "/var/log/audit/audit.log"])
+        self.run(["/usr/local/bin/sparehash", "__cleanup__"])
+        recovered = self.snapshot("after-trusted-recovery")
+        assert int(recovered["hugepages"]) == 0 and not recovered["lease_exists"]
+        self.check("existing_trusted_cleanup_recovers_abnormal_lease")
         self.check("abnormal_exit_diagnostics_collected")
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source-sha256", required=True)
+    parser.add_argument("--sibling-foreground", action="store_true")
     parser.add_argument("--evidence", type=Path, default=Path("/var/tmp/priority-cleanup"))
     args = parser.parse_args()
     guard(args.source_sha256)
@@ -179,11 +229,13 @@ def main() -> None:
         if os.path.lexists(path):
             parser.error("fresh disposable required")
     probe = Investigation(args.evidence, args.source_sha256)
+    probe.sibling_foreground = args.sibling_foreground
     try:
         probe.capabilities()
         probe.prepare()
         probe.contention()
         probe.cleanup_diagnostics()
+        probe.ownership_control()
     except Exception as error:
         probe.result["failure"] = type(error).__name__ + ": " + str(error)
         raise

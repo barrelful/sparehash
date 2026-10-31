@@ -245,8 +245,9 @@ def probe_cpuweight_idle(env: Mapping[str, str], runner: Runner = _run,
 
     Never call from render/status. The callback argument matches sysdetect's
     API, but production helper environment is fixed, not inherited from it.
-    An active/exited oneshot retains the unit for inspection; no --wait (which
-    would wait indefinitely with RemainAfterExit). All calls are bounded.
+    A bounded live sleeper retains the child cgroup for inspection. An exited
+    oneshot can remain active while systemd has already removed its cgroup.
+    Type=exec waits for successful exec, not process exit; no --wait is used.
     """
     _ = env
     ctx = context if context is not None else ProbeContext.host()
@@ -260,20 +261,21 @@ def probe_cpuweight_idle(env: Mapping[str, str], runner: Runner = _run,
     cleaned = True
     try:
         started = runner(("/usr/bin/systemd-run", f"--unit={unit}",
-                          "--property=Type=oneshot", "--property=RemainAfterExit=yes",
+                          "--property=Type=exec", "--property=RuntimeMaxSec=30s",
                           "--property=CPUWeight=idle", "--property=TimeoutStartSec=5s",
                           "--property=CollectMode=inactive-or-failed",
-                          "--property=TimeoutStopSec=3s", "/usr/bin/true"),
+                          "--property=TimeoutStopSec=3s", "/usr/bin/sleep", "30"),
                          timeout=TIMEOUT, env=safe_env)
         if started.returncode == 0:
             shown = runner(("/usr/bin/systemctl", "show", unit,
-                            "--property=Result,ExecMainCode,ExecMainStatus,ControlGroup,CPUWeight,ActiveState"),
+                            "--property=Result,MainPID,SubState,ControlGroup,CPUWeight,ActiveState"),
                            timeout=TIMEOUT, env=safe_env)
             properties = dict(line.split("=", 1) for line in shown.stdout.splitlines() if "=" in line)
             group = properties.get("ControlGroup", "")
             parts = Path(group).parts
             if (shown.returncode == 0 and properties.get("Result") == "success"
-                    and properties.get("ExecMainCode") == "1" and properties.get("ExecMainStatus") == "0"
+                    and properties.get("MainPID", "").isdigit() and int(properties["MainPID"]) > 0
+                    and properties.get("SubState") == "running"
                     and properties.get("ActiveState") == "active"
                     and properties.get("CPUWeight") in {"idle", "0"}
                     and group.startswith("/") and len(parts) > 1 and ".." not in parts):
