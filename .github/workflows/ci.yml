@@ -46,6 +46,8 @@ jobs:
           tests/test_qa_release_smoke.py
           tests/test_runtime_shutdown.py
           sparehash/power.py tests/test_power_scope.py
+          qa/cpu_contention.py qa/vm_acceptance.py qa/fixtures/blocked_controller.py
+          tests/test_cpu_contention.py tests/test_vm_acceptance_guard.py
 
   package-build:
     runs-on: ubuntu-24.04

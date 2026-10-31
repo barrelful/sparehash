@@ -27,6 +27,7 @@ class Acceptance(Smoke):
 
         self.run(["systemctl", "stop", "sparehash.service"])
         assert self.empty()
+        self.run(["systemctl", "reset-failed", "sparehash.service"])
         pages = Path("/sys/kernel/mm/hugepages/hugepages-2048kB/nr_hugepages")
         baseline = int(pages.read_text())
         assert baseline == 0, "fresh guest hugepage ownership must be unambiguous"
@@ -54,6 +55,7 @@ class Acceptance(Smoke):
     def blocked_worker(self) -> None:
         self.run(["systemctl", "stop", "sparehash.service"])
         assert self.empty()
+        self.run(["systemctl", "reset-failed", "sparehash.service"])
         drop = Path("/run/systemd/system/sparehash.service.d/qa-blocked.conf")
         drop.parent.mkdir()
         drop.write_text("[Service]\nEnvironment=SPAREHASH_QA_DISPOSABLE_VM=YES\n"
@@ -145,6 +147,7 @@ class Acceptance(Smoke):
         sensor = self.evidence / "hwmon/hwmon0/temp1_input"
         self.run(["systemctl", "stop", "sparehash.service"])
         assert self.empty()
+        self.run(["systemctl", "reset-failed", "sparehash.service"])
         self.drop.parent.mkdir()
         self.drop.write_text("[Service]\n" + "".join(f"BindReadOnlyPaths={src}:{dst}\n" for src, dst in (
             (battery.parent, "/sys/class/power_supply"),
@@ -245,7 +248,13 @@ def main() -> None:
     finally:
         smoke.save()
         if args.phase == "verify" or "failure" in smoke.result:
-            smoke.close()
+            try:
+                smoke.close()
+            except Exception as error:
+                smoke.result["complete"] = False
+                smoke.result["cleanup_failure"] = type(error).__name__ + ": " + str(error)
+                smoke.save()
+                raise
         assert source_sha256() == args.source_sha256
 
 
