@@ -72,7 +72,7 @@ class LayoutAcceptance(Smoke):
         self.check(label, {"pages": 0, "hook": hook, "owned_state_removed": True})
 
     def foreign_preserved(self) -> None:
-        for name in self.result["foreign"]:
+        for name in self.result.get("foreign", ()):
             assert Path(name).read_text() == "foreign runtime-layout fixture\n", name
 
     def exercises(self) -> None:

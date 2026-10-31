@@ -90,3 +90,36 @@ Evidence stays gitignored under `.omo/evidence/v020/task-2/runtime-layout/`.
 
 This document records the proposal before production implementation. Results and
 any evidence-justified adjustments will be appended rather than inferred.
+
+## Local regression evidence
+
+The proposal was committed before implementation in `bf73b58`; the implementation
+candidate is `7c23abd`. Focused coverage checks new exact paths, unchanged manager
+parent metadata, restrictive child/file modes, stale-socket cleanup, foreign
+entry preservation, unsafe artifact/child refusal, no-follow O_PATH traversal
+with unsafe-ancestor rejection, non-root/nonempty/unknown cleanup refusal, and
+runtime-state preservation when hugepage cleanup warns. Uninstall tests require
+cleanup before deleting payload/accounts and refuse an altered cleanup CLI or
+failed helper. Existing operation/benchmark validation, IPC and signal/worker
+tests also run unchanged apart from relocated fixtures.
+
+Full local suite: **1,192 passed + 619 subtests**. Mypy is clean on 56 production
+modules; scoped Ruff, README inventory, offline wheel/sdist, artifact attribution/
+runtime-dependency and whitespace checks passed. No runtime dependency was added.
+
+VM results below must establish actual hook execution, zero restored pages,
+removed lease/operation/socket state, preserved foreign files and clean relevant
+audit evidence independently; local mocks alone do not establish those outcomes.
+
+## Preliminary VM attempt (retained QA failure)
+
+At candidate `7c23abdc521c977b6b552e7cc6b85060d61433a4`, both distributions
+installed successfully with the relocated layout and unprivileged idle miner.
+The initial normal-stop snapshot had an executed, successful cleanup hook and
+removed owned runtime artifacts. The driver then failed while checking a
+not-yet-created foreign-sentinel manifest (`KeyError: foreign`). This is a
+**QA harness FAIL**, not a product failure or full acceptance pass. The check now
+treats the pre-sentinel phase as an empty inventory, with a regression also
+ensuring later changed sentinels still fail. Both guest archives were collected
+and both clones discarded; later lifecycle/abnormal tests were not reached in
+that attempt. Records remain under `round1/` and are not overwritten.

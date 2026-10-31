@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib.util
 import os
 import socket
 from contextlib import ExitStack
@@ -12,7 +13,7 @@ from unittest.mock import Mock, patch
 import pytest
 
 from sparehash import runtime
-from sparehash.deployment import Tree
+from sparehash.deployment import DeploymentError, Tree
 from sparehash.paths import CONTROL_SOCK, MINER_RUN_DIR, RUN_DIR
 
 
@@ -50,6 +51,18 @@ def test_traversal_uses_path_descriptors_without_weakening_ancestor_checks(tree:
     leaf = [flags for name, flags in opened if name == "private"]
     assert leaf and not leaf[-1] & os.O_PATH
     assert leaf[-1] & os.O_DIRECTORY and leaf[-1] & os.O_NOFOLLOW
+
+
+@pytest.mark.parametrize("fault", ["writable", "symlink"])
+def test_path_descriptors_still_refuse_unsafe_intermediate_ancestors(tree: Tree, fault: str):
+    ancestor = tree.path("/run/sparehash-miner")
+    if fault == "writable":
+        ancestor.chmod(0o777)
+    else:
+        ancestor.rename(ancestor.with_name("foreign"))
+        ancestor.symlink_to(ancestor.with_name("foreign"))
+    with pytest.raises((OSError, DeploymentError)), ExitStack() as stack:
+        tree.pin(stack, str(MINER_RUN_DIR))
 
 
 def test_cleanup_removes_only_validated_artifacts_and_preserves_foreign_state(tree: Tree):
@@ -142,3 +155,31 @@ def test_page_cleanup_warning_preserves_runtime_evidence():
           patch.object(runtime, "_remove_runtime") as remove):
         assert runtime.cleanup() == 1
         remove.assert_not_called()
+
+
+def test_nonroot_cleanup_never_queries_or_mutates():
+    with (patch.object(runtime.os, "geteuid", return_value=1000),
+          patch.object(runtime, "empty") as empty,
+          patch.object(runtime, "LeaseManager") as pages,
+          patch.object(runtime, "_remove_runtime") as remove):
+        assert runtime.cleanup() == 1
+        empty.assert_not_called()
+        pages.assert_not_called()
+        remove.assert_not_called()
+
+
+def test_vm_fixture_handles_initial_stop_before_sentinel_creation(monkeypatch, tmp_path: Path):
+    monkeypatch.syspath_prepend(str(Path("qa").resolve()))
+    spec = importlib.util.spec_from_file_location("layout_acceptance", Path("qa/runtime_layout_acceptance.py"))
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    fake = SimpleNamespace(result={})
+    module.LayoutAcceptance.foreign_preserved(fake)
+    marker = tmp_path / "foreign"
+    marker.write_text("foreign runtime-layout fixture\n")
+    fake.result["foreign"] = [str(marker)]
+    module.LayoutAcceptance.foreign_preserved(fake)
+    marker.write_text("changed")
+    with pytest.raises(AssertionError):
+        module.LayoutAcceptance.foreign_preserved(fake)
