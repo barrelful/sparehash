@@ -4,6 +4,12 @@ This report distinguishes instrumented disposable-VM evidence, owner-reported
 physical observations, and untested hardware claims. PR #1 remains experimental;
 this is not an RC declaration or merge approval.
 
+Follow-up root-cause evidence and corrections are tracked in the
+[idle-cgroup/cleanup investigation](v020-priority-cleanup-investigation.md).
+In particular, the older kernel-only AVC filters below were incomplete: the
+follow-up found a decisive SELinux denial in the audit transport/file. Retain
+these historical outcomes, but do not read those filters as full SELinux clearance.
+
 ## Reproduction
 
 Read `docs/development/vm-testing.md` first. Use the established external lab

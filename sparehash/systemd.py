@@ -274,7 +274,7 @@ def probe_cpuweight_idle(env: Mapping[str, str], runner: Runner = _run,
             group = properties.get("ControlGroup", "")
             parts = Path(group).parts
             if (shown.returncode == 0 and properties.get("Result") == "success"
-                    and properties.get("MainPID", "").isdigit() and int(properties["MainPID"]) > 0
+                    and re.fullmatch(r"[1-9][0-9]{0,19}", properties.get("MainPID", "")) is not None
                     and properties.get("SubState") == "running"
                     and properties.get("ActiveState") == "active"
                     and properties.get("CPUWeight") in {"idle", "0"}

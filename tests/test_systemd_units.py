@@ -175,6 +175,8 @@ class ProbeRunner:
             output = output.replace("MainPID=123", "MainPID=0").replace("SubState=running", "SubState=exited")
         if self.outcome == "empty-group":
             output = output.replace("ControlGroup=/system.slice/probe", "ControlGroup=")
+        if self.outcome == "malformed-pid":
+            output = output.replace("MainPID=123", "MainPID=²")
         return subprocess.CompletedProcess(argv, code, output, "rejected" if code else "")
 
 
@@ -260,7 +262,7 @@ class ProbeTests(unittest.TestCase):
                 self.assertEqual(runner.calls[-1][1], "stop")
 
     def test_exited_or_untracked_probe_cannot_claim_support(self) -> None:
-        for outcome in ("exited", "empty-group", "cleanup", "garbage", "traversal"):
+        for outcome in ("exited", "empty-group", "cleanup", "garbage", "traversal", "malformed-pid"):
             with self.subTest(outcome=outcome), tempfile.TemporaryDirectory() as tmp:
                 root = Path(tmp)
                 group = root / "system.slice/probe"
