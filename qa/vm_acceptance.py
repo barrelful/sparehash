@@ -212,6 +212,15 @@ def guard(digest: str) -> None:
     sys.path.insert(0, str(SOURCE))
 
 
+def checked_reboot(phase: str, before: str, current: str) -> bool:
+    rebooted = current != before
+    if phase == "verify":
+        assert rebooted, "verify requires an actual reboot"
+    else:
+        assert phase == "exercise" and not rebooted, "exercise is the explicitly non-reboot subset"
+    return rebooted
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("phase", choices=("install", "verify", "exercise"))
@@ -243,11 +252,8 @@ def main() -> None:
             assert smoke.prop("sparehash.service", "UnitFileState") == "enabled"
             smoke.check("enabled_for_disposable_reboot")
         else:
-            rebooted = Path("/proc/sys/kernel/random/boot_id").read_text().strip() != smoke.result["boot_before"]
-            if args.phase == "verify":
-                assert rebooted, "verify requires an actual reboot"
-            else:
-                assert not rebooted, "exercise is the explicitly non-reboot subset"
+            rebooted = checked_reboot(args.phase, smoke.result["boot_before"],
+                                     Path("/proc/sys/kernel/random/boot_id").read_text().strip())
             smoke.wait(lambda r: r.get("running"), 40)
             smoke.verify_payload()
             smoke.check("actual_reboot_autostart_and_exact_payload" if rebooted else "non_reboot_subset_exact_payload")

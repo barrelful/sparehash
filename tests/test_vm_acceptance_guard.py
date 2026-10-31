@@ -55,3 +55,14 @@ def test_foreground_fixture_uses_accessible_cwd_and_preserves_original_failure(h
     with pytest.raises(RuntimeError, match="original foreground failure"):
         harness.Acceptance.contention(fake)
     assert fake.run.call_count == 2  # Never stop a contender that was not started.
+
+
+@pytest.mark.parametrize("phase,current,expected", [("verify", "new", True), ("exercise", "old", False)])
+def test_reboot_gate_and_non_reboot_subset_are_distinct(harness, phase, current, expected):
+    assert harness.checked_reboot(phase, "old", current) is expected
+
+
+@pytest.mark.parametrize("phase,current", [("verify", "old"), ("exercise", "new"), ("other", "old")])
+def test_reboot_gate_cannot_silently_degrade_to_non_reboot(harness, phase, current):
+    with pytest.raises(AssertionError):
+        harness.checked_reboot(phase, "old", current)
