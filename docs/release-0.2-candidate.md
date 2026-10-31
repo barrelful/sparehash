@@ -1,5 +1,10 @@
 # Experimental v0.2 candidate acceptance
 
+> Historical candidate `f79718d`, not the identity of the later consolidated
+> review branch. See the [consolidation report](development/v020-review-consolidation.md)
+> for current changes and validation. Old source/artifact hashes below must not
+> be used as hashes of the consolidated branch.
+
 **Implementation complete; candidate-wide VM acceptance blocked by Ubuntu's
 guest-agent transport. No RC or production-readiness declaration.**
 

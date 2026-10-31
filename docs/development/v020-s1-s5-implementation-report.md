@@ -1,5 +1,9 @@
 # SpareHash v0.2 — S1–S5 implementation and release-readiness report
 
+> Historical implementation snapshot through `af7f2cf`. Subsequent cleanup and
+> branch integration are recorded in the [review consolidation report](v020-review-consolidation.md).
+> File-presence, test-count and publication statements below describe that snapshot.
+
 Date: 2026-10-27. Purpose: independent code and release-readiness review.
 This is a report of existing implementation and recorded tests, not a new
 acceptance run, security audit, feature change or RC declaration.

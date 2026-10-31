@@ -41,6 +41,7 @@ jobs:
         run: >-
           .venv/bin/ruff check sparehash/gaming_scan.py sparehash/__main__.py
           sparehash/preflight.py qa/release_smoke.py qa/check_artifacts.py
+          sparehash/cli_config.py tests/test_cli_config.py tests/test_qa_local_pool.py
           qa/fixtures/synthetic_xmrig.py tests/test_release_surface.py
           tests/test_qa_release_smoke.py
 

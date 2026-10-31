@@ -107,9 +107,10 @@ never weaken another blocker to make a diagnostic disappear.
 
 The former Steam-log replay manager, session-completeness guard and evidence
 reducer were retired in S2 after caller audit and verified preservation. Their
-research remains in the [G1 report](development/g1-feasibility.md),
-[evidence model](development/gaming-evidence-model.md) and
-[inventory investigation](development/steam-inventory-investigation.md).
+research is preserved outside the shipped project and in
+[the pre-consolidation Git history](https://github.com/barrelful/sparehash/tree/af7f2cf/docs/development).
+The current [consolidation report](development/v020-review-consolidation.md)
+records its disposition; the experiments are not alternative production paths.
 Historical FULL/admission requirements and `NO_DEPENDABLE_ROUTE` conclusions
 describe that rejected completeness objective, not a current readiness gate.
 There is one live detector, no automatic fallback chain or root-log activation.

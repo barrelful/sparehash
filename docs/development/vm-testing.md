@@ -185,6 +185,10 @@ the guest before running the installer (see §5 for the `put` syntax).
 
 ## 7. Running the v0.1.1 baseline
 
+This is the historical initial-baseline procedure. Its verified records already
+exist; do not repeat preservation or baseline tests on every cleanup/review task.
+Subsequent tests must identify their own selected source and disposable image.
+
 Before resuming v0.2.0 implementation, establish a v0.1.1 baseline so
 regressions are detectable.
 

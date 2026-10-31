@@ -241,8 +241,9 @@ battery) is allowed to mine.
 ## Deferred optional workflows
 
 Public `config edit`, `update`, and `benchmark` are unsupported in experimental
-v0.1.1: dispatch exits 2 before workflow imports or effects. `config show` remains
-supported. The internal benchmark mechanism remains, but is not public release
+v0.2: dispatch exits 2 before workflow imports or effects. `config show` remains
+supported; unused CLI edit/benchmark adapters were removed during consolidation.
+The internal benchmark mechanism remains, but is not public release
 acceptance. Its controller flow is:
 
 1. Calls `authorize()` to verify all blockers are clear.
@@ -290,8 +291,9 @@ Runtime does not:
 - Invoke `install.sh` or wizard
 - Claim ownership of `/usr`, `/opt`, `/etc` package content
 
-See `docs/packaging-roadmap.md` for future native packaging boundaries (RPM,
-NixOS, Proxmox, Flatpak).
+Native packaging remains deferred; the former proposal is preserved in
+[Git history](https://github.com/barrelful/sparehash/blob/af7f2cf/docs/packaging-roadmap.md),
+not shipped as an approved distribution channel.
 
 ## Hugepage lease and restore
 
@@ -337,11 +339,11 @@ upgrade/rollback workflows. Public upgrade/recovery/completion and in-place
 reconfiguration entrypoints refuse before effects; never remove a hold to bypass
 that refusal. Native packaging and benchmark are also deferred.
 
-## Why no MSR in v1
+## Why no MSR in v0.2
 
 MSR access would require either a kernel module, a setuid helper, or privileged
 instructions. All of these increase the attack surface and could affect other
-workloads. SpareHash v1 deliberately excludes MSR optimisation. The rendered
+workloads. SpareHash v0.2 deliberately excludes MSR optimisation. The rendered
 XMRig config sets `rdmsr: false` and `wrmsr: false`, and the config schema
 rejects any enabled MSR section.
 

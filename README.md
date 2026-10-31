@@ -34,7 +34,7 @@ Licensed under GPL-3.0-or-later. See `LICENSE` and `THIRD_PARTY_NOTICES.md`.
 - **Does not:** mine as root.
 - **Does not:** change DNS, firewall, SELinux, AppArmor, sysctl, or bootloader
   settings.
-- **Does not:** enable MSR optimisation, GPU mining, or 1GiB hugepages in v1.
+- **Does not:** enable MSR optimisation, GPU mining, or 1GiB hugepages in v0.2.
 - **Does not:** provide public pool presets or calculate mining profitability.
 
 ## Supported platforms
@@ -234,7 +234,7 @@ Never share it.
 
 ### MSR
 
-MSR (model-specific register) access is unavailable in v1. The rendered XMRig
+MSR (model-specific register) access is unavailable in v0.2. The rendered XMRig
 configuration sets `rdmsr: false` and `wrmsr: false`. No kernel module, no
 sysctl drop-in, and no MSR helper is installed or required. The `[msr]` config
 section accepts only `enabled = false`; any other value is rejected.
@@ -382,7 +382,7 @@ Key constraints:
   cgroup is empty. If the kernel does not honor the reduction, the lease is
   marked degraded
 - **1GiB pages remain disabled**: `randomx.1gb-pages` is set to `false`. The
-  incremental 1-3% gain from 1GiB pages is distinct and not pursued in v1
+  incremental 1-3% gain from 1GiB pages is distinct and not pursued in v0.2
 
 ## Thermal guard
 

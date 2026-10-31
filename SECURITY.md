@@ -75,7 +75,7 @@ SpareHash is designed around these security properties:
   service.
 
 - **No privileged optimisation.** MSR access, kernel modules, sysctl drop-ins,
-  and 1GiB hugepages are not implemented in v1. The miner runs with standard
+  and 1GiB hugepages are not implemented in v0.2. The miner runs with standard
   idle scheduling and optional 2MiB hugepages.
 
 - **Gaming detection is best effort.** The Lutris-derived Steam reaper scanner

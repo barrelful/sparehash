@@ -59,7 +59,7 @@ them, it must be discussed explicitly in the issue or pull request.
 - **Unprivileged miner.** XMRig must never run as root.
 - **Controller loss stops mining.** `BindsTo=` and cleanup paths must keep this
   true.
-- **No MSR/kernel/firewall changes in v1.**
+- **No MSR/kernel/firewall changes in v0.2.**
 - **Localhost-only XMRig API.**
 - **Receipt-authoritative install/uninstall.** Files, units, and identities are
   removed only if the install ledger records them as created by SpareHash.
