@@ -19,6 +19,12 @@ from pathlib import Path
 from release_smoke import SOURCE, Smoke, source_sha256
 
 
+def blocked_override(source: Path) -> str:
+    return ("[Service]\nEnvironment=SPAREHASH_QA_DISPOSABLE_VM=YES\n"
+            + f"BindReadOnlyPaths={source / 'qa/fixtures/blocked_controller.py'}:/run/sparehash/qa-controller.py\n"
+            + "ExecStart=\nExecStart=/usr/bin/python3 /run/sparehash/qa-controller.py\n")
+
+
 class Acceptance(Smoke):
     def hugepages(self) -> None:
         from dataclasses import replace
@@ -58,9 +64,7 @@ class Acceptance(Smoke):
         self.run(["systemctl", "reset-failed", "sparehash.service"])
         drop = Path("/run/systemd/system/sparehash.service.d/qa-blocked.conf")
         drop.parent.mkdir()
-        drop.write_text("[Service]\nEnvironment=SPAREHASH_QA_DISPOSABLE_VM=YES\n"
-                        "ExecStart=\nExecStart=/usr/bin/python3 "
-                        + str(SOURCE / "qa/fixtures/blocked_controller.py") + "\n")
+        drop.write_text(blocked_override(SOURCE))
         block = Path("/var/lib/sparehash/qa-block")
         entered = Path("/var/lib/sparehash/qa-entered")
         self.run(["systemctl", "daemon-reload"])
@@ -217,13 +221,13 @@ def checked_reboot(phase: str, before: str, current: str) -> bool:
     if phase == "verify":
         assert rebooted, "verify requires an actual reboot"
     else:
-        assert phase == "exercise" and not rebooted, "exercise is the explicitly non-reboot subset"
+        assert phase in ("exercise", "tail") and not rebooted, "exercise/tail are explicitly non-reboot subsets"
     return rebooted
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("phase", choices=("install", "verify", "exercise"))
+    parser.add_argument("phase", choices=("install", "verify", "exercise", "tail"))
     parser.add_argument("--source-sha256", required=True)
     parser.add_argument("--evidence", type=Path, default=Path("/var/tmp/sparehash-acceptance"))
     args = parser.parse_args()
@@ -257,13 +261,14 @@ def main() -> None:
             smoke.wait(lambda r: r.get("running"), 40)
             smoke.verify_payload()
             smoke.check("actual_reboot_autostart_and_exact_payload" if rebooted else "non_reboot_subset_exact_payload")
-            smoke.contention()
-            smoke.operate()
-            smoke.extra_sensors()
+            if args.phase != "tail":
+                smoke.contention()
+                smoke.operate()
+                smoke.extra_sensors()
             smoke.blocked_worker()
             smoke.hugepages()
             smoke.remove()
-            smoke.result["non_reboot_complete"] = True
+            smoke.result["tail_complete" if args.phase == "tail" else "non_reboot_complete"] = True
             smoke.result["complete"] = rebooted
     except Exception as error:
         smoke.result["failure"] = type(error).__name__ + ": " + str(error)
