@@ -107,6 +107,15 @@ Full local suite: **1,193 passed + 619 subtests**. Mypy is clean on 56 productio
 modules; scoped Ruff, README inventory, offline wheel/sdist, artifact attribution/
 runtime-dependency and whitespace checks passed. No runtime dependency was added.
 
+One later local full-suite run reported missing pre-created temporary files in
+existing XMRig current/manifest test classes (31 failures, including duplicated
+class/subtest reports). Its complete failure log is retained as
+`local/tests-delivery.log`. The affected cluster passed **53 tests + 64 subtests**
+in isolation, and an immediate unchanged full rerun passed **1,193 + 619** in
+24.46 seconds. No assertion, safety gate or skip was relaxed to obtain that
+result. The intermittent fixture-loss cause is **not diagnosed**; retain it as
+test-harness stability debt rather than claiming every local invocation passed.
+
 VM results below must establish actual hook execution, zero restored pages,
 removed lease/operation/socket state, preserved foreign files and clean relevant
 audit evidence independently; local mocks alone do not establish those outcomes.
@@ -150,3 +159,101 @@ Source archive `d0957168d47d31cf75a48077781eea204df3c5cd`, production inventory
   cover its command contract. Audit evidence is now captured in finalization
   even if an earlier scenario fails. This modifies only QA, not production code
   or the controller sandbox.
+
+## Final scoped VM acceptance — PASS on both distributions
+
+Bazzite's full rerun used archive
+`f02c76745b8e4788324a552cbb2a08a227d9780d`, archive SHA-256
+`c2f61dfbd6f7c003d1989a31f116387c15dfc5a401fab959153a6c4696a3347c`.
+Ubuntu's full run used the `d095716` archive pinned above. Both share the exact
+same production source/unit/installer inventory digest
+`cb20973431ccdc7937c0c2a731458e152b85e2cf0e86dfd156bbf75d87b84f5a`.
+Only the QA fault injector/ordering and documentation differ between archives.
+Both returned guest exit **0**, **14 recorded checks**, `complete=true`, and
+`relevant_audit_denials=[]`. Complete controller journals contain no repeated
+`233/RUNTIME_DIRECTORY` failure.
+
+| Required property | Bazzite 44 | Ubuntu Noble |
+|---|---|---|
+| Install, exact payload, actual unprivileged miner execution | PASS | PASS |
+| Exact parent/child ownership and modes; no legacy path fallback | PASS | PASS |
+| Normal start, stop, restart and successful original trusted hook | PASS | PASS |
+| SIGKILL with live miner, 32 pages, ledger/operation/socket present | PASS | PASS |
+| SIGKILL hook actually executes and exits 0 | PASS | PASS |
+| After SIGKILL: pages 0; lease, operation, socket absent; miner empty | PASS | PASS |
+| Clean manual restart after SIGKILL | PASS | PASS |
+| Blocked scanner worker with live miner and active 32-page lease | PASS | PASS |
+| Bounded main-process exit status 1 | PASS, 12.2563 s | PASS, 12.2674 s |
+| Blocked-worker original hook actually executes and exits 0 | PASS | PASS |
+| After worker exit: pages 0; lease, operation, socket absent; miner empty | PASS | PASS |
+| Nonempty-cgroup cleanup refusal before page/runtime mutations | PASS | PASS |
+| Genuinely unverifiable manager with actual empty miner: helper exit 1, state retained | PASS | PASS |
+| Foreign runtime-child/top-level files preserved across lifecycle | PASS | PASS |
+| Foreign persistent state and top-level runtime files preserved through uninstall/purge | PASS | PASS |
+| Foreign source-content refusal; non-purge config/manual-state retention | PASS | PASS |
+| Explicit reinstall preserves pause until resume; subsequent purge | PASS | PASS |
+| Relevant audit transport denials | None | None |
+| SELinux | Enforcing throughout | Not applicable to this baseline |
+
+For each abnormal termination, the **before** snapshot independently records
+`pages=32`, `lease=true`, `operation=true`, `socket=true`, `empty=false`. The
+**after** snapshot records `pages=0`, `lease=false`, `operation=false`,
+`socket=false`, `empty=true`, plus the trusted hook's executed PID, timestamps,
+`code=exited` and `status=0`. This is not an inference from cgroup emptiness.
+Bazzite kernel and full audit transport were both checked; no relabel or policy
+exception was used. Root-owned 0711 parents retained their expected group while
+mixed-group children were published/read by the real unprivileged miner.
+
+Foreign child sentinels are retained through abnormal/normal cleanup and restart.
+Before account removal/recreation, the driver withdraws **only its own exact
+nested fixture sentinels**, then removes their empty child directories; this
+avoids conflating recycled test account GIDs with an in-place ownership migration.
+Top-level foreign runtime files and an unrelated persistent-state sentinel remain
+through non-purge removal, reinstall and purge. No runtime directory is recursively
+deleted. A pre-existing protected child with mismatched metadata is refused,
+not silently re-owned; unknown entries, including interrupted temporary files,
+are not adopted as runtime authority or broadly removed.
+
+### Reproduction
+
+Read `docs/development/vm-testing.md`. On one fresh, isolated, networkless clone
+at a time, stage a Git archive of the identified source under
+`/var/tmp/investigation-source` using the established external launcher's `put`.
+Record the full archive hash and production digest, then inside the guest run:
+
+```sh
+SPAREHASH_QA_DISPOSABLE_VM=YES python3 \
+  /var/tmp/investigation-source/qa/runtime_layout_acceptance.py \
+  --source-sha256 SOURCE_DIGEST
+```
+
+The driver requires guest root, explicit consent, virtualisation, no guest NIC,
+a matching source digest and a fresh installation/runtime hierarchy. It uses
+only the owned non-hashing loopback fixture and disposable config. Bundle
+`/var/tmp/runtime-layout-evidence`, collect it within the lab's 8 MiB limit, then
+force off/discard only the owned clone. Repeat against the other baseline. No
+reboot, host share, passthrough, external pool or production credential is needed.
+Detailed evidence and hash manifest remain private/gitignored in
+`.omo/evidence/v020/task-2/runtime-layout/`.
+
+### Disposition and remaining limits
+
+- **PASS:** the scoped runtime-layout correction and required two-image checks
+  above. The previously diagnosed mixed-ownership cleanup failure/32-page leak
+  is corrected in these tested cases.
+- **FAIL, retained historical QA evidence:** missing initial sentinel inventory
+  and the first Bazzite namespace injector; neither is promoted to acceptance.
+  The corrected driver completed on a new clone without changing product code.
+- **BLOCKED, separate prior work:** the dual-image reboot/transport gate remains
+  unresolved; no guest reboot was attempted here. Desktop cgroup hierarchy /
+  foreground contention remains a separate investigation, not tuned or cleared.
+- **NOT TESTED:** physical-workstation deployment/upgrade, physical faults,
+  arbitrary partial-publication crash windows, or in-place runtime migration from
+  the prior layout. Unsafe partial/pre-existing metadata fails closed; there is
+  no new migration or legacy-path adoption mechanism.
+
+All five owned clones across the three attempts were collected where available,
+forced off and discarded. Final lab status had no running domains. Both physical
+services were independently verified inactive/dead at the beginning and end;
+no physical service, installation, configuration, permission or security change
+was performed. No VM attempts remain pending. No merge, release tag or RC.

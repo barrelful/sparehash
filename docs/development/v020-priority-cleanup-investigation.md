@@ -4,6 +4,11 @@ Base: `83cf1e8092348729ec923f43127a72f5a5b3fd9f`, PR #1. This follows the
 [previous acceptance report](v020-current-acceptance.md); it does not clear the
 blocked dual-image reboot gate. No disposable guest reboot is required here.
 
+Follow-up: the owner-approved [protected runtime layout correction](v020-runtime-layout-correction.md)
+now has scoped two-image crash/active-lease acceptance. The failures and approval
+blocker below describe this investigation's earlier source, not the corrected
+layout. Historical evidence is retained rather than rewritten.
+
 ## Root-cgroup capability bug
 
 The [kernel cgroup-v2 documentation](https://docs.kernel.org/admin-guide/cgroup-v2.html#cpu-interface-files)
