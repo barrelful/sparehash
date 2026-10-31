@@ -84,6 +84,7 @@ class Acceptance(Smoke):
             while not entered.exists() and time.monotonic() < deadline:
                 time.sleep(.05)
             assert entered.exists()
+            assert not self.empty(), "blocked-worker SIGTERM test requires a live miner"
             started = time.monotonic()
             self.run(["systemctl", "stop", "--no-block", "sparehash.service"])
             while not self.empty() and time.monotonic() - started < 5:
@@ -133,7 +134,15 @@ class Acceptance(Smoke):
             pid = int(self.prop("sparehash-qa-contention.service", "MainPID"))
             assert os.sched_getscheduler(pid) == os.SCHED_IDLE
             assert os.getpriority(os.PRIO_PROCESS, pid) == 19
+            group = Path("/sys/fs/cgroup") / self.prop("sparehash-qa-contention.service", "ControlGroup").lstrip("/")
+            pids = [int(value) for value in (group / "cgroup.procs").read_text().split()]
+            assert len(pids) == 5  # One sleeping parent and four actual contenders.
+            scheduling = [{"pid": child, "policy": os.sched_getscheduler(child),
+                           "nice": os.getpriority(os.PRIO_PROCESS, child)} for child in pids]
+            assert all(row["policy"] == os.SCHED_IDLE and row["nice"] == 19 for row in scheduling)
             result = compare(rows["stopped"], rows["mining"])
+            result["contender_scheduling"] = scheduling
+            result["contender_cpu_stat"] = (group / "cpu.stat").read_text()
             result["scope"] = "4-vCPU VM; independent non-hashing idle/nice19 synthetic contender, not RandomX"
             self.check("quantitative_cpu_contention", result)
         finally:
