@@ -76,13 +76,29 @@ Actual reboot acceptance is separately recorded in the S3 report. This smoke
 does not reboot the guest automatically. The maintainer must discard failed and
 successful guests and preserve private evidence under `.omo/evidence/v020/`.
 
-## Historical/broader QA
+## Additional retained diagnostics
 
-`run_all.sh`, the other `qa_*.sh` suites, GameMode shims, contention/local-pool
-fixtures and `probe_gaming.py` remain archived research/broader test tools, not
-required v0.2 release gates or installed dependencies. Do not infer current
-gameplay coverage from them. The current entrypoint above is the supported
-minimal acceptance route; do not run older destructive suites indiscriminately.
+- `qa_atomic_probe.sh` and `atomic_probe*.py`: independently authorised,
+  disposable-Atomic-VM-only **non-mining feasibility** diagnostics. They require
+  a root-owned environment manifest, pinned offline executable/source identities,
+  no networking and enforcing SELinux. Read `bash qa/qa_atomic_probe.sh --help`
+  before use. The reviewed harness branch fixes for NSS absence, audit keyword/
+  raw no-match handling and installed-policy context comparison are integrated.
+  A FEASIBLE result is not release acceptance or a hashing test.
+- `security_check.py`: optional read-only installed-VM permissions, API/process
+  and signature diagnostics, with hermetic regression tests. It is not a
+  replacement for the pinned release smoke.
+- `local_pool.py` and `spin.py`: deferred local-only synthetic-work/foreground
+  utilities with pure contract tests. They are not run by release smoke and
+  their presence does not prove actual XMRig hashing or foreground performance.
+- `fixtures/answers.toml`: an illustrative answers template; replace its wallet
+  placeholder privately. The release driver creates its own synthetic answers.
+
+Obsolete `run_all.sh`, GameMode/session/admission QA, old fixture overlays/shims,
+their stale shell entrypoints and exclusive helper tests have been archived
+outside the active project and removed. Their original bytes remain in Git
+history; do not copy old procedures back as current gates. See the
+[consolidation report](../docs/development/v020-review-consolidation.md).
 
 ## Non-destructive checks
 

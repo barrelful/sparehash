@@ -2,7 +2,8 @@
 # requires-python = ">=3.11"
 # dependencies = []
 # ///
-# How to run: sudo bash qa/qa_security.sh (installed disposable VM only).
+# Optional read-only diagnostic: sudo python3 qa/security_check.py
+# Run only in an installed disposable VM; not a release-smoke substitute.
 """Fail-closed QA assertions; no host installation or service lifecycle changes."""
 from __future__ import annotations
 

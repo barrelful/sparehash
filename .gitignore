@@ -1,11 +1,15 @@
 # OpenCode / agent internals
 .omo/
+/E/
 
 # Git worktrees
 .worktrees/
 
 # Python
 __pycache__/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
 *.py[cod]
 *$py.class
 *.so
