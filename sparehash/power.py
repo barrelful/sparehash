@@ -84,7 +84,11 @@ def blocked(sample: PowerSample, *, maintenance_mode: bool = False) -> bool:
 
 
 def read_sysfs(root: Path, now: float) -> tuple[Evidence, Evidence, bool | None, float | None]:
-    """A partial inventory cannot prove absence or absence of online mains."""
+    """Inventory system batteries, excluding only explicit device-scoped batteries.
+
+    Missing scope is a legacy system battery, not evidence of absence. Failed or
+    ambiguous scope/type reads leave the inventory incomplete and fail closed.
+    """
     try:
         entries = tuple((root / "class/power_supply").iterdir())
     except OSError:
@@ -95,9 +99,21 @@ def read_sysfs(root: Path, now: float) -> tuple[Evidence, Evidence, bool | None,
     rates: list[float | None] = []
     for entry in entries:
         kind = _read(entry / "type")
-        if not kind:
+        if kind not in EXTERNAL and kind not in ("Battery", "UPS"):
             complete = False
+            continue
         if kind == "Battery":
+            try:
+                with (entry / "scope").open("r", encoding="ascii", newline="") as field:
+                    scope = field.read(32)
+            except FileNotFoundError:
+                scope = "System"  # Older system-battery drivers omit this attribute.
+            except (OSError, UnicodeError):
+                scope = None
+            if scope in ("Device", "Device\n"):
+                continue  # Peripheral presence/status/rate cannot affect system power.
+            if scope not in ("System", "System\n"):
+                complete = False
             installed = _read(entry / "present")
             if installed not in ("0", "1"):
                 complete = False
