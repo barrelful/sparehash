@@ -11,6 +11,10 @@ findings, see [current acceptance](development/v020-current-acceptance.md).
 The separate [owner-run CPU comparison](development/cpu-contention.md) needs no
 reinstallation or configuration changes; it must not be run by the assistant on
 the physical workstation.
+From a reviewed checkout, run `python3 qa/run_cpu_contention.py` as your ordinary
+user. It guides stopped/mining/stopped measurements and saved-session comparison;
+only you manually start/stop mining. It never deploys the checkout or updates an
+installation. See the linked guide for thermal aborts and interpretation limits.
 
 ## Before installation
 

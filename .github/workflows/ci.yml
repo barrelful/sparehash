@@ -37,6 +37,9 @@ jobs:
       - name: Type check sparehash package
         run: .venv/bin/python -m mypy sparehash
 
+      - name: Type check supervised QA runner
+        run: .venv/bin/python -m mypy --follow-imports=silent qa/contention_safety.py qa/run_cpu_contention.py
+
       - name: Scoped release lint
         run: >-
           .venv/bin/ruff check sparehash/gaming_scan.py sparehash/__main__.py
@@ -53,6 +56,7 @@ jobs:
           sparehash/runtime.py sparehash/runtime_spec.py sparehash/deployment.py sparehash/paths.py
           sparehash/ipc.py sparehash/cli_uninstall.py tests/test_runtime_layout.py
           tests/test_runtime_spec.py tests/test_cli_uninstall.py qa/runtime_layout_acceptance.py
+          qa/contention_safety.py qa/run_cpu_contention.py tests/test_supervised_contention.py
 
   package-build:
     runs-on: ubuntu-24.04
