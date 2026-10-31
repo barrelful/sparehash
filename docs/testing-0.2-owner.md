@@ -6,6 +6,12 @@ cannot certify real native/Proton gameplay, Bazzite KDE/Gaming Mode, physical
 sensors, upstream mining performance or zero foreground impact. This is an
 owner-supervised experiment, not a production-readiness claim.
 
+For the latest source-pinned VM outcomes and unresolved transport/performance
+findings, see [current acceptance](development/v020-current-acceptance.md).
+The separate [owner-run CPU comparison](development/cpu-contention.md) needs no
+reinstallation or configuration changes; it must not be run by the assistant on
+the physical workstation.
+
 ## Before installation
 
 - Test the **latest PR #1 head on `review/v0.2-pre-rc`**, identified by its full
