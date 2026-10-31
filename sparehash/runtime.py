@@ -34,6 +34,7 @@ from .state import BlockerState
 
 LOGGER: Final = logging.getLogger(__name__)
 GAMING_POLL_SECONDS: Final = 1.0
+SHUTDOWN_WORKER_GRACE_SECONDS: Final = 12.0
 PRODUCTION_ROOT: Final = Path("/")
 
 
@@ -183,6 +184,36 @@ def cleanup() -> int:
     return 1 if result.warning else 0
 
 
+def _close_workers(jobs: Jobs, providers: Providers, threads: tuple[threading.Thread, ...]) -> None:
+    """Bound teardown without trusting observation reads to return.
+
+    Executor shutdown(wait=False) still joins running threads at interpreter
+    exit. A stuck read therefore needs a process-exit fallback, not just a
+    nonblocking shutdown call. The owner has already revoked launch authority
+    and the caller has attempted the independent miner stop. On failure leave
+    protected cleanup to the existing systemd ExecStopPost, which rechecks empty
+    after this process (and any in-flight Jobs) is gone.
+    """
+    closed, failed = threading.Event(), threading.Event()
+
+    def close() -> None:
+        try:
+            jobs.close()
+            providers.close()
+            for thread in threads:
+                if thread.ident is not None:
+                    thread.join()
+        except BaseException:
+            failed.set()
+        finally:
+            closed.set()
+
+    threading.Thread(target=close, name="controller-teardown", daemon=True).start()
+    if not closed.wait(SHUTDOWN_WORKER_GRACE_SECONDS) or failed.is_set():
+        LOGGER.error("controller worker shutdown incomplete; exiting for systemd cleanup")
+        os._exit(1)  # Do not enter ThreadPoolExecutor's unbounded interpreter join.
+
+
 def run(state_path: Path = STATE_FILE) -> int:
     if os.geteuid() != 0:
         return 1
@@ -271,14 +302,21 @@ def run(state_path: Path = STATE_FILE) -> int:
             owner.tick()
         return 1 if failures else 0
     finally:
-        owner.shutdown()
         stop.set()
-        jobs.close()
-        providers.close()
-        for thread in threads:
-            if thread.ident is not None:
-                thread.join(timeout=12)
-        _ = checked(("/usr/bin/systemctl", "stop", "sparehash-xmrig.service"), 5)
-        _ = cleanup()
-        _ = signal.signal(signal.SIGTERM, old_term)
-        _ = signal.signal(signal.SIGINT, old_int)
+        try:
+            owner.shutdown()
+        finally:
+            try:
+                # Never put observation/executor joins ahead of this fallback.
+                _ = checked(("/usr/bin/systemctl", "stop", "sparehash-xmrig.service"), 5)
+            finally:
+                _close_workers(jobs, providers, threads)
+                try:
+                    # Reaffirm stop after any in-flight Jobs have drained.
+                    _ = checked(("/usr/bin/systemctl", "stop", "sparehash-xmrig.service"), 5)
+                finally:
+                    try:
+                        _ = cleanup()  # Still requires the existing empty-cgroup proof.
+                    finally:
+                        _ = signal.signal(signal.SIGTERM, old_term)
+                        _ = signal.signal(signal.SIGINT, old_int)

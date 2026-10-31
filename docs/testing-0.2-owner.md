@@ -1,14 +1,18 @@
 # Experimental v0.2: owner installation and gameplay testing
 
-Read the [candidate report](release-0.2-candidate.md) first. Automated fixtures
+Read the [current review report](development/v020-review-consolidation.md) and
+[PR #1](https://github.com/barrelful/sparehash/pull/1) first. Automated fixtures
 cannot certify real native/Proton gameplay, Bazzite KDE/Gaming Mode, physical
 sensors, upstream mining performance or zero foreground impact. This is an
 owner-supervised experiment, not a production-readiness claim.
 
 ## Before installation
 
-- Use the selected source commit in the report, on a machine you deliberately
-  choose for testing. Review [platforms](platforms.md) and [security](../SECURITY.md).
+- Test the **latest PR #1 head on `review/v0.2-pre-rc`**, identified by its full
+  Git commit SHA as described below, on a machine you deliberately choose.
+  The historical `f79718d` candidate and its old wheel/sdist hashes in
+  `release-0.2-candidate.md` are **not the current owner-testing target**.
+  Review [platforms](platforms.md) and [security](../SECURITY.md).
   Back up your configuration and keep a recovery terminal available.
 - Do not upgrade an existing installation in place. Upgrades, rollback, config
   editing and reconfiguration are deferred. Resolve any old migration or partial
@@ -19,7 +23,26 @@ owner-supervised experiment, not a production-readiness claim.
 - Choose your own wallet and pool privately. The VM evidence uses no real mining
   or public pools; it is not evidence of pool connectivity or mining profitability.
 
-From the selected checkout, review read-only preflight:
+### Identify the current review commit
+
+In a clean source checkout (do not discard local changes), fetch and select the
+current review head explicitly:
+
+```sh
+git fetch origin review/v0.2-pre-rc
+git switch --detach FETCH_HEAD
+git rev-parse HEAD
+git status --short
+```
+
+The printed full SHA must match the **current head commit in PR #1**, and that
+head's GitHub checks must be reviewed before testing. Record this SHA with every
+hardware/gameplay result. The branch can advance: re-check the PR head rather
+than trusting an old downloaded archive, historical artifact digest or copied
+short SHA. A clean checkout does not authorise an in-place installation over an
+existing deployment.
+
+From that identified checkout, review read-only preflight:
 
 ```sh
 sudo ./install.sh --preflight
@@ -88,6 +111,14 @@ sudo sparehash pause                 # persistent manual hold
 sudo systemctl stop sparehash.service # stops controller and its bound miner
 sudo systemctl is-active sparehash-xmrig.service
 ```
+
+Termination revokes controller launch authority and attempts the explicit miner
+stop **before** waiting for observation workers. A worker that cannot drain within
+the fixed 12-second teardown grace causes a logged, nonzero controller exit,
+rather than an unbounded Python executor join. Existing systemd `BindsTo` and
+`ExecStopPost` remain; protected cleanup still requires empty-cgroup proof. A
+nonzero exit is a failure diagnostic, not a clean-shutdown/empty-proof claim.
+Kernel or systemd failures are not covered by a hard real-time exit guarantee.
 
 If a recognised game does not stop mining within the five-second test objective,
 or a genuine scanner failure permits mining, stop the test and report the safety

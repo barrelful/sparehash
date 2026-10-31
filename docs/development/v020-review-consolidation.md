@@ -1,5 +1,10 @@
 # v0.2 pre-RC review consolidation
 
+> Consolidation snapshot through `1108cbc`. Subsequent PR #1 shutdown-ordering
+> fixes change runtime bytes and test counts. For owner testing, resolve the
+> [latest PR head](https://github.com/barrelful/sparehash/pull/1) using the
+> [owner checklist](../testing-0.2-owner.md); the hashes/results below are historical.
+
 Date: 2026-10-31. Review branch: `review/v0.2-pre-rc`, targeting `main` in
 [`barrelful/sparehash`](https://github.com/barrelful/sparehash).
 
