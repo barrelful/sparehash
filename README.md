@@ -1,6 +1,6 @@
 # SpareHash
 
-> **Experimental v0.2.0 software.** SpareHash is a young system-level project.
+> **Experimental v0.2.1 software.** SpareHash is a young system-level project.
 > It has been tested on a limited set of Linux distributions. Review this
 > README, `SECURITY.md`, `docs/platforms.md`, and the limitations section
 > before installing on a machine you care about.
@@ -90,10 +90,27 @@ refusals return 2. See `docs/platforms.md` for the full installer exit contract.
 
 ## Quick start
 
+### Linux Mint and other UNVERIFIED platforms (v0.2.1)
+
+v0.2.0 cannot complete installation on UNVERIFIED platforms; v0.2.1 fixes the
+compatibility-acknowledgment path. Mint remains **UNVERIFIED**, not Ubuntu-validated.
+Review `docs/platforms.md`, then explicitly acknowledge that experimental status:
+
+```sh
+sudo ./install.sh --preflight --acknowledge-unverified
+sudo ./install.sh --acknowledge-unverified --no-start --no-enable
+```
+
+Without `--acknowledge-unverified`, preflight/install still returns 2. This flag
+does not override unsupported platforms, unsafe/missing capabilities, ownership
+checks or existing-install refusal. Unattended installs still require separate
+`--answers FILE --yes` consent. There is no supported in-place upgrade; complete
+receipt-aware removal before reinstalling, even if old configuration is unwanted.
+
 Select the release source first (use a separate checkout if you have local work):
 
 ```sh
-git clone --branch v0.2.0 --depth 1 https://github.com/barrelful/sparehash.git
+git clone --branch v0.2.1 --depth 1 https://github.com/barrelful/sparehash.git
 cd sparehash
 sudo ./install.sh --preflight
 ```

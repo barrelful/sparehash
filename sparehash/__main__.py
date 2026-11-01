@@ -75,6 +75,7 @@ def _parser() -> argparse.ArgumentParser:
             _ = command_parser.add_argument("--use-existing", action="store_true")
             _ = command_parser.add_argument("--clear-lifecycle-latch", action="store_true")
             _ = command_parser.add_argument("--preflight", action="store_true")
+            _ = command_parser.add_argument("--acknowledge-unverified", action="store_true")
             _ = command_parser.add_argument("--json", action="store_true")
             _ = command_parser.add_argument("--yes", action="store_true")
             _ = command_parser.add_argument("--no-start", action="store_true")

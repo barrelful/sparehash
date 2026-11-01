@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### v0.2.1 — compatibility fix in development
+
+- Add explicit `--acknowledge-unverified` to preflight and installation; eligible
+  Mint/other UNVERIFIED hosts can reach READY without changing their support tier.
+  Default refusal, unsupported/unsafe/inconclusive precedence, receipt checks and
+  separate installation-effects consent remain. Fixes issue #3. v0.2.0 is immutable.
+
 ## [0.2.0] - 2026-11-01
 
 **Experimental/Beta, not production-stable.** See [release notes](docs/release-0.2.0.md).

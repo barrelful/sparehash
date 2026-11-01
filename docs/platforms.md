@@ -28,6 +28,21 @@ Mint, Ubuntu 22.04, other Fedora/Atomic systems, Deck variants, Arch/openSUSE).
 Unknown versions do not inherit validation from a derivative or family.
 `UNSUPPORTED` covers detected NixOS and Proxmox. There is no force bypass.
 
+### UNVERIFIED acknowledgment in v0.2.1
+
+v0.2.0's acknowledgment path was incomplete and blocked installation on Mint and
+other UNVERIFIED hosts. v0.2.1 adds explicit `--acknowledge-unverified`, usable
+with read-only preflight, interactive setup or unattended answers. It accepts
+experimental compatibility only: the support label stays UNVERIFIED and all
+independent evidence, capability, security, receipt and lifecycle checks remain.
+Generic `--yes` is not compatibility acknowledgment, and acknowledgment is not
+installation-effects consent. No host identity override or force option is used.
+
+```sh
+sudo ./install.sh --preflight --acknowledge-unverified
+sudo ./install.sh --acknowledge-unverified --no-start --no-enable
+```
+
 ## Read-only preflight and exact installer exits
 
 ```sh

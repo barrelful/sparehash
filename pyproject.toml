@@ -7,7 +7,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "sparehash"
-version = "0.2.0"
+version = "0.2.1"
 description = "Low-priority XMRig controller with best-effort Steam detection and strict safety blockers."
 readme = "README.md"
 license = { text = "GPL-3.0-or-later" }

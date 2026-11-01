@@ -32,7 +32,7 @@ from .install_ledger import Ledger
 from .install_manifest import StoreContext, locked_store
 from .install_xmrig import PROBE_ROOT, choose, dry_run, isolated, resolve_probe_identity
 from .lifecycle import is_retired
-from .lifecycle_lease import LeaseError, LeaseStore
+from .lifecycle_lease import LeaseError
 from .preflight import HostFacts as PreflightFacts
 from .preflight import Preflight
 from .preflight import evaluate as evaluate_preflight
@@ -75,6 +75,7 @@ class Arguments(argparse.Namespace):
     preflight: bool = False
     json: bool = False
     yes: bool = False
+    acknowledge_unverified: bool = False
 
 
 def preflight(tree: Tree, caps: Capabilities) -> None:
@@ -566,11 +567,11 @@ def collect_facts(caps: Capabilities) -> PreflightFacts | None:
     return translate_facts(raw, caps)
 
 
-def evaluate_report(caps: Capabilities, cfg: config.Config) -> Preflight:
+def evaluate_report(caps: Capabilities, cfg: config.Config, *, unverified_acknowledged: bool = False) -> Preflight:
     """Run the pure preflight decision; no I/O, subprocesses, or effect runners."""
     return evaluate_preflight(
         collect_facts(caps), caps, cfg, has_no_new_install_action=False,
-        unverified_acknowledged=False, proxmox_pvecluster_present=False,
+        unverified_acknowledged=unverified_acknowledged, proxmox_pvecluster_present=False,
     )
 
 
@@ -609,7 +610,9 @@ def remediate(report: Preflight) -> tuple[str, ...]:
     if report.readiness == "INCONCLUSIVE":
         items.append("required host evidence is missing or inconclusive; inspect os-release and systemd and retry")
     if report.readiness == "ACTION_REQUIRED":
-        items.append("operator action is required; resolve compatibility acknowledgment first")
+        items.append("this platform remains UNVERIFIED; after reviewing docs/platforms.md, "
+                     "explicitly accept experimental compatibility with --acknowledge-unverified; "
+                     "this does not bypass capability or security checks")
     if report.gaming == "BEST_EFFORT":
         items.append(wizard.GAMING_NOTICE)
     if report.gaming == "DISABLED":
@@ -656,7 +659,8 @@ def render_report(report: Preflight, *, as_json: bool = False) -> str:
 
 def run_preflight(args: Arguments, caps: Capabilities, cfg: config.Config | None = None) -> int:
     """Dry preflight: report only, no host mutation and no manager probe."""
-    report = evaluate_report(caps, config.Config() if cfg is None else cfg)
+    report = evaluate_report(caps, config.Config() if cfg is None else cfg,
+                             unverified_acknowledged=args.acknowledge_unverified)
     print(render_report(report, as_json=args.json))
     return PREFLIGHT_EXIT[report.readiness]
 
@@ -686,6 +690,8 @@ def main(argv: Sequence[str] | None = None, *, geteuid: Callable[[], int] = os.g
     _ = parser.add_argument("--preflight", action="store_true",
                             help="report readiness without host changes")
     _ = parser.add_argument("--json", action="store_true", help="emit the preflight report as JSON")
+    _ = parser.add_argument("--acknowledge-unverified", action="store_true",
+                            help="accept experimental installation on an UNVERIFIED platform; never bypasses safety checks")
     _ = parser.add_argument("--yes", action="store_true",
                             help="approve installation effects non-interactively")
     args = parser.parse_args(argv, namespace=Arguments())
@@ -729,7 +735,7 @@ def main(argv: Sequence[str] | None = None, *, geteuid: Callable[[], int] = os.g
             _ = tree.read("/etc/sparehash/config.toml")
             current = wizard.load_answers(existing, caps)
         cfg = wizard.load_answers(args.answers, caps) if args.answers else wizard.run_interactive(caps, input, print, current=current)
-        report = evaluate_report(caps, cfg)
+        report = evaluate_report(caps, cfg, unverified_acknowledged=args.acknowledge_unverified)
         print(render_report(report))
         if args.answers is None:
             prompts = wizard._Prompts(input, print)

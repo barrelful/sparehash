@@ -119,7 +119,7 @@ def evaluate(
             readiness = "ACTION_REQUIRED"
         elif facts.atomic and not facts.dnf_available and has_no_new_install_action:
             readiness = "REFUSED_UNSAFE"
-        elif support == "VALIDATED":
+        else:
             readiness = "READY"
 
     reasons = tuple(unsafe) + tuple(missing) + (("UnverifiedCompatibilityAcknowledgmentRequired",)
