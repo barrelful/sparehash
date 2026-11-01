@@ -1,5 +1,13 @@
 # Current-source v0.2 acceptance
 
+> Latest stability-sprint disposition is consolidated in the
+> [candidate report](../release-0.2-candidate.md#stabilisation-sprint--implementation-delivered-acceptance-blocked).
+> Bazzite reboot/autostart succeeded at `de92087`, followed by a real uninstall
+> NSS-ordering defect. That defect is corrected at `5de94c6`; fresh corrected-source
+> Bazzite/Ubuntu attempts were blocked before installation by boot/management
+> failures. Do not read older transport failures below as the latest Bazzite
+> reboot result, or the partial success as full current-candidate acceptance.
+
 This report distinguishes instrumented disposable-VM evidence, owner-reported
 physical observations, and untested hardware claims. PR #1 remains experimental;
 this is not an RC declaration or merge approval.

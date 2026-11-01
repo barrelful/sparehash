@@ -10,7 +10,10 @@ standard-library-only: no `python3-systemd`, Lutris or GameMode dependency.
 | Ubuntu 24.04 | `ubuntu-noble-20260926-v1`, systemd 255 / Python 3.12.3 | Synthetic install/operation/removal/purge/reinstall/reboot |
 | Bazzite 44 | `bazzite-kde-44-20261012-v1`, systemd 259 / Python 3.14.8 | Same, with SELinux Enforcing and captured kernel audits |
 
-See [S3 results](development/s3-lifecycle-reliability.md). These checks used a
+These are **historical S3 results**, not current-candidate reboot acceptance.
+See [current acceptance](development/v020-current-acceptance.md) for source pins
+and unresolved gates, and [S3 results](development/s3-lifecycle-reliability.md)
+for the older evidence. These checks used a
 non-hashing, root-trusted external fixture and file-backed sensor values. They
 do not certify actual upstream mining performance, arbitrary hardware, real
 native/Proton gameplay or KDE/Gaming Mode behavior. Those remain owner testing
@@ -117,6 +120,17 @@ disables the controller, requires empty miner-cgroup proof and removes only
 receipt-owned matching artifacts/identities. Changed/unrecorded content refuses;
 foreign files and externally owned XMRig survive. Owned legacy GameMode removal
 retains account/path and receipt safeguards.
+
+Normal removal preflights source receipts, version metadata/inventory, selected
+configuration/unit/launcher receipts and account identities before unlinking
+artifacts. Successful cleanup is checkpointed; unit/account removal and systemd
+reload run while source and launcher remain available. Source is removed near the
+end, launcher last. A failed helper can therefore usually be retried with the same
+uninstall command while retirement remains active. This is not an all-crash-window
+guarantee: an interruption during final self-source removal can still require
+maintainer help. Do not delete receipts or journals to bypass refusal. The earlier
+f348ed1 partial-uninstall case has a separately pinned, owner-specific recovery
+procedure; it is not a general recovery command for arbitrary installations.
 
 Default removal retains configuration/manual state. `--purge` additionally
 removes unchanged receipt-owned configuration, **not all state**, journals,
