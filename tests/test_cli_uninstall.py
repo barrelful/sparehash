@@ -185,6 +185,29 @@ class UninstallTests(unittest.TestCase):
             self.assertEqual(second, 0)
             self.assertNotIn((cli_uninstall.SHIM, "__cleanup__"), fake.calls)
 
+    def test_missing_manifest_group_requires_checkpoint_and_matching_owned_receipt(self) -> None:
+        self.build()
+        original_group = StoreContext.group
+
+        def group(context):
+            if context.gid is None:
+                raise StoreError("manifest-owner", "group gone")
+            return original_group(context)
+
+        for checkpoint in (False, True):
+            with self.subTest(checkpoint=checkpoint):
+                if checkpoint:
+                    journal = cli_uninstall.RemovalJournal(self.tree)
+                    journal.phase("cleanup")
+                with mock.patch.object(StoreContext, "group", group):
+                    result, _, fake = self.run_uninstall(build=False)
+                # Fixture's sparehash identity has GID 12345, not the protected
+                # file's GID. Neither an absent checkpoint nor a mismatch is
+                # authority to use the numeric-owner retry path.
+                self.assertEqual(result, 1)
+                self.assertEqual(fake.calls, [])
+                self.assertTrue(self.tree.path(PACKAGE_LEAF).exists())
+
     def test_predictable_version_failure_precedes_source_removal(self) -> None:
         self.build()
         with mock.patch.object(cli_uninstall, "remove_owned_versions", side_effect=OSError("invalid inventory")) as removal:
