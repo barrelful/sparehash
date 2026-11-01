@@ -133,3 +133,26 @@ tree rather than rewriting them as passes.
 VM reproduction, recovery acceptance and precise owner-run commands are blocked
 on approval of the mechanism above. Do not run physical recovery based on this
 document. There is no claim that the workstation is safe to recover yet.
+
+## Approval and implementation scope
+
+The owner subsequently approved this staging hierarchy and a narrowly scoped
+one-shot recovery, explicitly prioritising simplicity. Implementation lives only
+in `qa/`: no installed CLI dispatch, runtime module, automatic updater or new
+persistent management interface is added. The builder consumes exact Git objects,
+including the original f348ed1 per-file hashes, not arbitrary working-tree bytes.
+The original installer left optional aggregate provenance/layout fields null;
+recovery therefore requires the complete exact original 58-leaf receipt inventory
+and hashes against independently bundled original Git source. If aggregate fields
+are present they must also match. Null aggregate fields are not substituted with
+checkout HEAD or treated as proof by themselves.
+
+Read-only preflight may populate verified private staging, but performs no writes
+to installed state, journals, service configuration or hugepages. A finite inode/
+content deletion plan is written into the existing protected uninstall journal
+before the first version-file deletion, permitting retries after interrupted
+unlinks without adopting new or replaced files. Original receipts remain intact.
+Completed progress is retained until verified staging disposal, then cleared so a
+subsequent installation cannot inherit old completed-removal phases. Configuration
+and benchmark data are never used as removal targets. VM acceptance is pending;
+no physical recovery commands are authorised by this implementation note alone.
