@@ -1,6 +1,6 @@
 # Experimental v0.2 candidate acceptance
 
-## Stabilisation sprint — implementation delivered, acceptance blocked
+## Stabilisation sprint — automated gates passed
 
 Work is isolated on `atlas/v020-task-2-stability`, based on reviewed recovery
 delivery `41c0e788a84b97c1e947b5a3ad2074e95846123d`. It does not replace the owner's
@@ -21,10 +21,15 @@ installation, change scheduling or change the CPU comparison methodology.
   demonstrated lifetime hazards; it does not prove the original intermittent
   file-loss cause. Test-count reduction reflects removed duplicate collection.
 - **Local verification:** 1,245 tests + 565 subtests; production typing on 56
-  modules and scoped changed-file lint passed. Final VM validation is blocked; do not
+  modules and scoped changed-file lint passed. Corrected-source Bazzite and Ubuntu
+  each passed all 22 recorded VM checks, including actual reboot. Do not
   treat private-tree tests as real-distro installation/reboot evidence.
-- **Owner gate:** second physical CPU benchmark still pending. No scheduler change
-  or final experimental-RC recommendation until that result is reviewed. Native/
+- **Physical benchmark gate satisfied:** owner reports 39.08% foreground
+  degradation on `f348ed1` versus 34.39% on `21d4960`, with 7.53% higher foreground
+  throughput while mining on the new installation. SCHED_IDLE/nice19,
+  `cpu.idle=1`, `cpu.weight=1` confirmed; both services inactive after testing.
+  The owner accepts the current scheduler for experimental v0.2; no further
+  optimisation is requested unless practical evidence warrants it. Native/
   Proton recognition, real sensors and foreground responsiveness remain physical
   owner checks; VM fixtures do not certify them.
 
@@ -57,7 +62,18 @@ evidence: `.omo/evidence/v020/task-2/stability/bazzite/`.
 The existing unchanged VM comparison measured 52.1% synthetic contention in this
 4-vCPU guest despite SCHED_IDLE/nice19. That is VM evidence, not RandomX or a
 physical benchmark. It motivates retaining the foreground-impact warning, not a
-scheduler change before the owner's second measurement.
+scheduler change. The completed owner comparison below now satisfies that gate;
+the synthetic result is not substituted for it.
+
+### Completed physical CPU comparison (owner-reported)
+
+The owner supplied the stopped/mining comparison without assistant access to the
+physical machine or result files. Saved comparison reference:
+`~/sparehash-contention-results/comparison-20261101T104014Z-2b8ee82a6593`.
+The results above describe this hardware/workload, not a zero-impact guarantee or
+universal scheduling claim. The existing benchmark methodology and scheduling
+implementation are unchanged. This result is accepted as sufficient for the
+current experimental scheduler; no repeat benchmark is required by this sprint.
 
 ### Corrected-source VM attempts — blocked before product execution
 
@@ -78,13 +94,14 @@ outputs and pins are retained under `stability/bazzite-reboot-5de94c6/` and
 All three sprint clones were forced off/discarded; final lab status had no running
 domains. No baseline, transport confinement, networking or security setting changed.
 
-**Stop condition:** no further retries or host-infrastructure work in this sprint.
+**Disposition of those attempts:** retries stopped without host-infrastructure work.
 The lab maintainer should restore stock boot/login/`true`/reboot command access on
 fresh clones through the documented interfaces, preserving baseline integrity.
-Then rerun the unchanged source-pinned install → actual reboot → verify workflow
-on both images, including normal removal/reinstall. The corrected uninstall has
-focused/full/hosted test evidence, **not a final real-distro pass**. Earlier Bazzite
-autostart and runtime successes do not fill this missing corrected-source gate.
+The next step was to rerun the unchanged source-pinned install → actual reboot →
+verify workflow on both images, including normal removal/reinstall. At that stage
+the corrected uninstall had focused/full/hosted tests, **not a real-distro pass**.
+The later owner-requested runs below supersede this earlier blocked disposition,
+without promoting its failed attempts to passes.
 
 The owner's earlier Ubuntu waiver applied only to the separate one-off Bazzite
 recovery. It does not waive this sprint's dual-distribution acceptance gate.
@@ -93,20 +110,75 @@ recovery. It does not waive this sprint's dual-distribution acceptance gate.
 
 1. Complete the independently approved recovery/reinstall only with its exact
    pinned procedure. Do not deploy this branch over that installation in place.
-2. Supply the second physical stopped/mining/stopped CPU comparison using the
-   unchanged methodology, installed SHA and thermal/abort observations. No
-   assistant scheduler changes or physical installation access occurred.
+2. Physical stopped/mining/stopped comparison: **completed and accepted** as
+   reported above. No assistant scheduler changes or physical installation
+   access occurred; no additional benchmark is required absent new problems.
 3. After VM gates and source review, separately authorize any new installation;
    check explicit no-start/no-enable behavior, status, pause/resume/stop, native/
    Proton recognition, real sensors and foreground responsiveness. Preserve
    failed-operation records; do not force or delete lifecycle evidence.
 
-**No experimental-RC endorsement yet:** corrected-source dual-distro lifecycle
-evidence and the second physical benchmark are still required. Final readiness
-and any scheduler decision are deliberately deferred until that owner result.
+**Recommendation:** suitable to propose an **experimental v0.2 release candidate**
+for owner review. Corrected-source Bazzite/Ubuntu lifecycle and reboot gates now
+pass, and the physical benchmark prerequisite is satisfied. No known failing
+functional release gate remains in this sprint. This is not release publication,
+merge/tag approval, production readiness or a full-gaming-support claim.
+No further scheduler optimisation is needed on the currently supplied evidence.
 The existing final self-source crash window remains a practical recovery limit;
 the fixture lifetime correction does not conclusively diagnose historical file
 loss. These limits are disclosed rather than replaced by mocks or weaker checks.
+
+### Fresh owner-requested acceptance at `b18e1c8`
+
+Both images received the exact archive from
+`b18e1c8ecb43392edb59691c4720b2476b1a2437`, archive SHA-256
+`da50b250e835002360b0f983d07e8511da5e4dc5c0ce94f0b84d4ef10f99b66a`.
+Runtime/units/QA inventory is unchanged from the selected production build below:
+`9b5cda95415517415930f84741a163ae9afa81ee4f1f01344e6544e992563fc6`.
+
+**Bazzite 44: PASS, 22 checks.** Install and verify exited 0; summary `complete=true`.
+An actual reboot changed the boot ID and exact-payload autostart passed. The
+reboot command's serial result had a UTF-8 decode failure, retained as a transport
+error; independently successful post-reboot stock commands and changed boot ID
+proved execution rather than treating the failed command response as acceptance.
+Runtime guards, controller-loss/worker shutdown, hugepages **0 → 32 → 0**, foreign-
+content refusal, non-purge config/state retention, explicit pause-preserving
+reinstall and final purge all passed. This directly validates the corrected
+owned-group/manifest-store ordering on a real distro. SELinux remained Enforcing;
+full audit transport was collected in addition to the driver's kernel audit. It
+contains only two stock `tuned_t` mac_admin denials, retained, not suppressed;
+no product/recovery/Python denial was found. The VM-only synthetic comparison
+reported 51.4% degradation; it does not supersede the accepted physical result.
+
+**Ubuntu Noble: initial fresh attempt INCONCLUSIVE.** Preflight stock commands,
+source transfer, installation and enabled idle/nice19 fixture passed. At reboot,
+the guest agent disconnected and eight stock boot-ID probes failed. The outer
+runner stopped after its probe count rather than using its intended 180-second
+readiness deadline; this is insufficient to diagnose a persistent transport or
+product failure. No post-reboot guest summary could be collected. That attempt
+is retained rather than promoted to a pass.
+
+**Ubuntu Noble fresh retry: PASS, 22 checks.** The unchanged source installed,
+completed an actual reboot (changed boot ID), autostarted with exact payload,
+passed runtime/safety/worker tests, restored hugepages **0 → 32 → 0**, refused
+foreign content, removed non-purge while retaining config/state, reinstalled with
+manual pause preserved until explicit resume, and purged only owned files. Install
+and verify exited 0; summary `complete=true`; collected audit contains no denials.
+Stock boot-ID probes tolerated transient agent disconnection until reconnection
+within the actual 180-second readiness deadline. This corrects the outer runner's
+synchronization limit, not SpareHash behavior or the sealed baseline. No host
+controller was modified. It does not prove the cause of every older lab failure.
+VM synthetic contention was 50.8%; the accepted physical comparison remains the
+relevant owner scheduling decision.
+
+All three fresh owner-requested clones were forced off and discarded (six sprint
+clones total). Evidence/pins are
+under `stability/bazzite-reboot-b18e1c8/` and
+`stability/ubuntu-reboot-b18e1c8/`; Bazzite includes the verified summary and full
+audit; the passing Ubuntu retry is `stability/ubuntu-reboot2-b18e1c8/` with its
+verified summary and audit. Earlier failed attempts above are historical evidence,
+not the current dual-distro outcome. No physical machine, scheduling or security-
+policy changes. No owned VM is left running.
 
 ### Selected build identity (not a release)
 
