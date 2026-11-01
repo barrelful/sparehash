@@ -23,7 +23,7 @@ from .cli_lifecycle import LifecycleError
 from .cli_ops import Client, OperationError
 from .deployment import DeploymentError, Tree, checked
 from .hugepages import LeaseManager
-from .install_manifest import StoreContext, locked_store
+from .install_manifest import StoreContext, StoreError, locked_store
 from .lifecycle import retire
 from .lifecycle_lease import LeaseError, LeaseStore
 from .runtime_jobs import empty
@@ -168,8 +168,8 @@ def _gaming_unmerge(name: str) -> object:
     return unmerge(User.from_name(name))
 
 
-def _receipts(trust: PathTrust) -> Installer:
-    with locked_store(StoreContext(trust)) as store:
+def _receipts(trust: PathTrust, context: StoreContext | None = None) -> Installer:
+    with locked_store(context or StoreContext(trust)) as store:
         prior = store.read()
     if prior is None or prior.manifest.installer is None:
         raise LifecycleError("receipts", "no installer receipts; reinstall before removal")
@@ -290,9 +290,25 @@ def uninstall(*, purge: bool = False, geteuid: Callable[[], int] = os.geteuid, t
     infra = infrastructure or Infrastructure()
     tree = Tree(trust.root, trust.uid)
     try:
-        installer = _receipts(trust)
         progress = RemovalJournal(tree)
         progress.load()
+        context = StoreContext(trust)
+        missing_group = False
+        try:
+            gid = context.group()
+        except StoreError:
+            if "cleanup" not in progress.phases:
+                raise
+            # Only a checkpointed removal may continue after its owned group
+            # disappeared. Read the GID through the protected canonical path,
+            # then require its original owned identity in the validated ledger.
+            gid = tree.receipt("/var/lib/sparehash/install-manifest.json", False).gid
+            missing_group = True
+        context = StoreContext(trust, gid=gid)
+        installer = _receipts(trust, context)
+        if missing_group and not any(isinstance(item, GroupIdentity) and item.name == "sparehash"
+                                     and item.created and item.gid == gid for item in installer.identities):
+            raise LifecycleError("account", "missing manifest group has no owned removal receipt")
         lease = LeaseStore(lifecycle_path.parent / "lifecycle-lease.json").load()
         if lease is not None and lease.purpose != "uninstall":
             raise LeaseError(f"active {lease.purpose} hold retained; uninstall refused")
@@ -302,8 +318,8 @@ def uninstall(*, purge: bool = False, geteuid: Callable[[], int] = os.geteuid, t
         if not infra.cgroup_empty():
             raise LifecycleError("cgroup", "miner cgroup is not empty; artifacts retained")
         # Validate every filesystem removal authority before any artifact unlink.
-        _ = remove_leaf_receipts(trust, tree=tree, progress=progress, validate_only=True)
-        _ = remove_owned_versions(trust, tree=tree, progress=progress, validate_only=True)
+        _ = remove_leaf_receipts(trust, tree=tree, progress=progress, validate_only=True, context=context)
+        _ = remove_owned_versions(trust, tree=tree, progress=progress, validate_only=True, context=context)
         for artifact in installer.artifacts:
             if artifact.created and artifact.kind == "file" and (
                     artifact.path in EXTRA_FILES or (purge and artifact.path in CONFIG)):
@@ -328,7 +344,7 @@ def uninstall(*, purge: bool = False, geteuid: Callable[[], int] = os.geteuid, t
             if artifact.created and artifact.id.startswith("gaming-ini:"):
                 _ = infra.unmerge(artifact.id.removeprefix("gaming-ini:"))
         if "versions" not in progress.phases:
-            _ = remove_owned_versions(trust, tree=tree, progress=progress)
+            _ = remove_owned_versions(trust, tree=tree, progress=progress, context=context)
             progress.phase("versions")
         for artifact in installer.artifacts:
             if artifact.created and artifact.kind == "file" and artifact.path != SHIM and (
@@ -337,12 +353,12 @@ def uninstall(*, purge: bool = False, geteuid: Callable[[], int] = os.geteuid, t
         _remove_accounts(infra.run, installer, infra.user_lookup, infra.group_lookup)
         infra.run(("/usr/bin/systemctl", "daemon-reload"))
         if "leaf-receipts" not in progress.phases:
-            _ = remove_leaf_receipts(trust, tree=tree, progress=progress)
+            _ = remove_leaf_receipts(trust, tree=tree, progress=progress, context=context)
             progress.phase("leaf-receipts")
         if shim.created:
             _remove_file(tree, shim, progress)
         progress.clear()
-    except (OperationError, LifecycleError, LeaseError, InstallError, DeploymentError, OSError) as error:
+    except (OperationError, LifecycleError, LeaseError, InstallError, DeploymentError, StoreError, OSError) as error:
         print(f"sparehash: uninstall: {error}", file=sys.stderr)
         return 1
     print("SpareHash removed." if purge else "SpareHash removed; configuration retained.")
