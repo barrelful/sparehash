@@ -80,15 +80,28 @@ def provenance(manifest: Manifest, descriptor: dict, progress: uninstall.Removal
     require(set(leaves) == {"/opt/sparehash/src/" + name for name in expected}, "original source receipt inventory differs")
     for name, digest in expected.items():
         artifact = leaves["/opt/sparehash/src/" + name]
-        require(artifact.created and artifact.uid == tree.uid and artifact.sha256 == digest,
+        require(artifact.created and artifact.uid == tree.uid and artifact.gid == 0
+                and artifact.mode == 0o644 and artifact.sha256 == digest,
                 "original source receipt hash/ownership differs")
         require(artifact.path in progress.done and not uninstall._present(tree, artifact.path),
                 "source absence must be justified by original receipts and write-ahead journal")
+    for directory, allowed in (("/opt/sparehash/src/sparehash", set()), ("/opt/sparehash/src/systemd", set()),
+                               ("/opt/sparehash/src", {"sparehash", "systemd"}), ("/opt/sparehash", {"src"})):
+        if uninstall._present(tree, directory):
+            receipt = next((artifact for artifact in installer.artifacts if artifact.path == directory), None)
+            require(receipt is not None and uninstall._identity(tree.receipt(directory, receipt.created)) == uninstall._identity(receipt),
+                    "remaining source container differs from its receipt")
+            with ExitStack() as stack:
+                require(set(os.listdir(tree.pin(stack, directory))) <= allowed, "foreign source-container content; retained")
     shim = next((artifact for artifact in installer.artifacts if artifact.path == uninstall.SHIM), None)
-    require(shim is not None and shim.created and shim.uid == tree.uid
+    require(shim is not None and shim.created and shim.uid == tree.uid and shim.gid == 0 and shim.mode == 0o755
             and shim.sha256 in descriptor["original_shims"].values(), "original shim provenance differs")
     # Config contents are deliberately neither read nor compared: non-purge recovery
     # never deletes/rewrites private configuration, including owner-edited credentials.
+    extra = [artifact for artifact in installer.artifacts if artifact.path in uninstall.EXTRA_FILES]
+    require({artifact.path for artifact in extra} == set(uninstall.EXTRA_FILES)
+            and all(artifact.created and artifact.uid == tree.uid for artifact in extra),
+            "this recovery requires the original owned launcher and both owned units")
     for artifact in installer.artifacts:
         if artifact.path not in uninstall.EXTRA_FILES:
             continue
@@ -212,10 +225,16 @@ def plan_versions(tree: Tree, manifest: Manifest, progress: uninstall.RemovalJou
         require(not manifest.versions or manifest.versions == original.versions, "partial version authority differs")
         entries = plan["entries"]
         require(isinstance(entries, dict) and "" in entries, "incomplete deletion plan")
-        for name in entries:
+        for name, value in entries.items():
             require(name == "" or (not name.startswith("/") and all(part not in ("", ".", "..") for part in name.split("/"))
                     and (name.split("/")[0] in original.names or name in ("current", ".sparehash-managed"))),
                     "unidentified deletion-plan path")
+            require(isinstance(value, list) and len(value) == 7 and value[0] in ("file", "directory", "symlink")
+                    and all(type(field) is int and field >= 0 for field in value[1:6])
+                    and ((value[0] == "directory" and value[6] is None)
+                         or (value[0] == "symlink" and name == "current" and value[6] in original.names)
+                         or (value[0] == "file" and isinstance(value[6], str) and len(value[6]) == 64)),
+                    "malformed deletion-plan identity")
         require(all(name in entries and entries[name] == value for name, value in current.items()),
                 "foreign or substituted version content; preserved")
         require("versions" not in progress.phases or not current and not manifest.versions,
@@ -290,6 +309,7 @@ def recover(descriptor: dict, *, apply: bool = False, completed_only: bool = Fal
         require(isinstance(latch, dict) and set(latch) in ({"retired", "timestamp"}, {"retired", "timestamp", "operation_id"})
                 and latch["retired"] is True and type(latch["timestamp"]) is int, "valid original retirement latch required")
         lease_path = "/var/lib/sparehash/lifecycle-lease.json"
+        require("operation_id" not in latch or uninstall._present(tree, lease_path), "retirement operation has no matching lease")
         if uninstall._present(tree, lease_path):
             lease = private_json(tree, lease_path, 0o600, 4096)
             decoded = _decode(json.dumps(lease))
@@ -330,7 +350,9 @@ def recover(descriptor: dict, *, apply: bool = False, completed_only: bool = Fal
         old_runtime(tree, installer, remove=True)
         remove_versions(tree, store, manifest, progress, token, plan)
         uninstall._remove_owned_files(tree, installer, False, progress)
-        accounts(installer, apply=True)
+        require(accounts(installer, apply=True), "owned accounts still present after removal")
+        require(all(not uninstall._present(tree, name) for name in uninstall.EXTRA_FILES),
+                "owned launcher or unit remains after removal")
         checked(("/usr/bin/systemctl", "daemon-reload"), 10)
         inactive()
         # Keep the exact original journal as durable completion/retry evidence.

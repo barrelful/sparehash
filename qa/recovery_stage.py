@@ -128,13 +128,19 @@ def main() -> int:
         source = source_tree(stage, files)
         sys.path.insert(0, str(source))
         sys.path.insert(0, str(source / "qa"))
-        from recover_uninstall import inactive, recover
+        from recover_uninstall import inactive, private_json, recover
 
-        from sparehash.cli_uninstall import PROGRESS_PATH, RemovalJournal
+        from sparehash.cli_uninstall import MAX_PROGRESS_BYTES, PROGRESS_PATH, RemovalJournal
         from sparehash.deployment import Tree
 
         completion = stage / "complete.json"
         progress = Path(PROGRESS_PATH)
+        def journal_hash() -> str:
+            private_json(Tree(), PROGRESS_PATH, 0o600, MAX_PROGRESS_BYTES)
+            data = Tree().read(PROGRESS_PATH)
+            if data is None:
+                raise ValueError("removal journal disappeared")
+            return hashlib.sha256(data).hexdigest()
         if os.path.lexists(completion):
             protected(completion, 0o600)
             if completion.stat().st_size > 4096:
@@ -143,7 +149,7 @@ def main() -> int:
             if set(record) != {"archive", "progress"} or record["archive"] != args.sha256:
                 raise ValueError("completion identity differs")
             if os.path.lexists(progress):
-                if hashlib.sha256(progress.read_bytes()).hexdigest() != record["progress"]:
+                if journal_hash() != record["progress"]:
                     raise ValueError("new or changed removal journal; preserved")
                 recover(descriptor, completed_only=True)
                 if args.action != "preflight":
@@ -153,7 +159,7 @@ def main() -> int:
         else:
             recover(descriptor, apply=args.action == "apply", completed_only=args.action == "remove-staging")
             if args.action != "preflight":
-                record = {"archive": args.sha256, "progress": hashlib.sha256(progress.read_bytes()).hexdigest()}
+                record = {"archive": args.sha256, "progress": journal_hash()}
                 with completion.open("x") as stream:
                     os.fchmod(stream.fileno(), 0o600)
                     json.dump(record, stream, sort_keys=True)

@@ -22,7 +22,7 @@ class RecoveryAcceptance(Smoke):
     def exercise(self, commit: str, digest: str) -> None:
         from sparehash import config
         from sparehash.deployment import Tree, checked
-        from sparehash.hugepages import LeaseManager
+        from sparehash.hugepages import LeaseManager, Roots
         from sparehash.install_ledger import Ledger
         from sparehash.install_manifest import locked_store
         from sparehash.runtime_jobs import empty
@@ -114,27 +114,27 @@ class RecoveryAcceptance(Smoke):
             assert path.read_bytes() == invalid and managed.exists()
             path.write_bytes(original)  # Withdraw only this fixture's injected corruption.
         self.check("shim_manifest_journal_substitution_refusal")
-        # Real nonempty miner cgroup, using only a sleep fixture with unit sandbox retained.
-        drop = Path("/run/systemd/system/sparehash-xmrig.service.d/recovery-fixture.conf")
-        drop.parent.mkdir()
-        drop.write_text("[Unit]\nBindsTo=\n[Service]\nExecCondition=\nExecStart=\nExecStart=/usr/bin/sleep 120\nRestart=no\n")
-        self.run(["systemctl", "daemon-reload"])
-        self.run(["systemctl", "start", "sparehash-xmrig.service"])
-        assert not empty()
-        self.run([*command, "preflight"], expected=1)
-        self.run(["systemctl", "stop", "sparehash-xmrig.service"])
-        drop.unlink()
-        drop.parent.rmdir()
-        self.run(["systemctl", "daemon-reload"])
         self.run(["systemd-run", "--unit=qa-recovery-unknown", "--wait", "--pipe", "--collect",
                   "--property=NoNewPrivileges=yes", "--property=ProtectSystem=strict",
                   "--property=TemporaryFileSystem=/run/systemd:ro /run/dbus:ro", *command, "preflight"], expected=1)
         assert all(path.read_bytes() == snapshot[str(path)] for path in protected_state)
-        self.check("real_nonempty_and_unknown_manager_refusal")
+        self.check("real_unknown_manager_entrypoint_refusal")
         pages = LeaseManager(empty_proof=empty)
         result = pages.reserve_after_authorization(True, (0,), 32, authorized=True)
         assert result.status == "reserved" and result.actual == 32
         page_count = Path("/sys/kernel/mm/hugepages/hugepages-2048kB/nr_hugepages")
+        # Exercise the existing kernel cgroup-proof adapter against an actual
+        # populated transient group. Do not start either retired product unit.
+        self.run(["systemd-run", "--unit=qa-recovery-populated", "--property=NoNewPrivileges=yes",
+                  "--property=ProtectSystem=strict", "/usr/bin/sleep", "120"])
+        group = self.prop("qa-recovery-populated.service", "ControlGroup")
+        assert group.startswith("/system.slice/")
+        gate = LeaseManager(roots=Roots(cgroup=Path("/sys/fs/cgroup") / group.lstrip("/")))
+        saved_lease = pages.ledger_path.read_bytes()
+        assert not gate._empty() and gate.cleanup().warning is not None
+        assert pages.ledger_path.read_bytes() == saved_lease and int(page_count.read_text()) == 32
+        self.run(["systemctl", "stop", "qa-recovery-populated.service"])
+        self.check("real_populated_cgroup_hugepage_adapter_refusal", "kernel proof adapter; entrypoint state guard separately unit-tested")
         page_count.write_text("33\n")
         self.run([*command, "preflight"], expected=1)
         assert pages.ledger_path.exists() and managed.exists()
@@ -199,7 +199,9 @@ def main() -> None:
         (run.evidence / "audit.log").write_text(audit.stdout)
         denied = [line for line in audit.stdout.splitlines() if "avc:" in line.lower() and "denied" in line.lower()]
         run.result["audit_denials"] = denied
-        if denied:
+        relevant = [line for line in denied if any(name in line.lower() for name in ("sparehash", "recovery", "python", "operation.json", "control.sock"))]
+        run.result["relevant_audit_denials"] = relevant
+        if relevant or audit.returncode:
             run.result["complete"] = False
         if Path("/sys/fs/selinux/enforce").exists():
             run.result["selinux"] = Path("/sys/fs/selinux/enforce").read_text().strip()

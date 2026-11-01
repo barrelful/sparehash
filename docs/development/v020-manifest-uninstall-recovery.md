@@ -173,3 +173,24 @@ fixture grows the valid action history through actual recorded controller-disabl
 operations using the existing ledger, then marks the ledger ready. It does not
 pad JSON, relax the parser or invent removal receipts. Historical evidence remains
 under `.omo/evidence/v020/task-2/uninstall-recovery/round1/bazzite/`.
+
+### Retained second Bazzite attempt
+
+At `ec6110032545a256f700ab5e6ef671f4c8ef8ad1`, the original installation had
+44,372 bytes of fresh metadata; 136 actual ledger-recorded disable operations
+grew it to **81,611 bytes**. The original CLI then produced the real marker/
+manifest rejection after deleting **58** source leaves and durably completing
+`leaf-receipts`. Its surviving shim failed with missing modules. Verified-source
+preflight and altered shim/manifest/journal refusal passed without installed-state
+changes. The later nonempty-group QA fixture failed: a drop-in could not sever
+the miner's controller dependency, and the attempted controller setup reproduced
+old mixed-ownership runtime SELinux setattr denials on staged templates. This is
+retained as FAIL, not recovery acceptance, and the clone was discarded.
+
+The corrected fixture never starts either retired product unit: it uses a
+separate sandboxed transient sleep unit to exercise actual populated-kernel-cgroup
+hugepage refusal. Entry-point active/nonempty guards also have controlled unit
+tests; the real manager-unavailable entry-point test runs in its own namespace.
+Audit transport is retained in full; unrelated stock `tuned_t` capability denials
+are distinguished from recovery/product/python denials rather than suppressed
+or counted as evidence about this code. No SELinux policy or protection changes.
