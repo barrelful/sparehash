@@ -17,8 +17,7 @@ from tests.test_xmrig_manifest import manifest_fixture
 
 @final
 class XmrigCurrentTests(unittest.TestCase):
-    def __init__(self, methodName: str = "runTest") -> None:
-        super().__init__(methodName)
+    def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
