@@ -43,7 +43,7 @@ PROGRESS_PATH: Final = "/var/lib/sparehash/uninstall-progress.json"
 PROGRESS_SCHEMA: Final = 1
 MAX_PROGRESS_ITEMS: Final = 2048
 MAX_PROGRESS_BYTES: Final = 65536
-_PROGRESS_PHASES: Final = frozenset(("leaf-receipts", "versions"))
+_PROGRESS_PHASES: Final = frozenset(("cleanup", "leaf-receipts", "versions"))
 _PROGRESS_FIELDS: Final = frozenset(("version", "phases", "removed"))
 _FILE_FLAGS: Final = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
 
@@ -197,10 +197,10 @@ def _present(tree: Tree, name: str) -> bool:
     return True
 
 
-def _remove_file(tree: Tree, artifact: Artifact, progress: RemovalJournal) -> None:
+def _validate_file(tree: Tree, artifact: Artifact, progress: RemovalJournal) -> bool:
     if not _present(tree, artifact.path):
         if artifact.id in progress.done:
-            return
+            return False
         raise LifecycleError("receipt", "owned artifact missing before removal: " + artifact.path)
     try:
         current = tree.receipt(artifact.path, artifact.created, identity=artifact.id)
@@ -208,6 +208,12 @@ def _remove_file(tree: Tree, artifact: Artifact, progress: RemovalJournal) -> No
         raise LifecycleError("receipt", "unauthorized or missing artifact: " + artifact.path) from error
     if _identity(current) != _identity(artifact):
         raise LifecycleError("receipt", "artifact changed since install: " + artifact.path)
+    return True
+
+
+def _remove_file(tree: Tree, artifact: Artifact, progress: RemovalJournal) -> None:
+    if not _validate_file(tree, artifact, progress):
+        return
     progress.record(artifact.id)
     with ExitStack() as stack:
         parent = tree.pin(stack, str(Path(artifact.path).parent))
@@ -236,7 +242,10 @@ def _remove_accounts(run: Callable[[tuple[str, ...]], None], installer: Installe
         resolved_group = group_lookup(membership.group)
         if resolved_group is not None and resolved_group != membership.gid:
             raise LifecycleError("account", "membership group identity changed: " + membership.group)
-        run(("/usr/bin/gpasswd", "-d", membership.user, membership.group))
+        if resolved_member is not None and resolved_group is not None:
+            group = grp.getgrnam(membership.group)
+            if membership.user in group.gr_mem:
+                run(("/usr/bin/gpasswd", "-d", membership.user, membership.group))
     # Remove users before groups so that a user's primary group can be deleted.
     for identity in installer.identities:
         if not identity.created:
@@ -245,7 +254,8 @@ def _remove_accounts(run: Callable[[tuple[str, ...]], None], installer: Installe
             resolved = user_lookup(identity.name)
             if resolved is not None and resolved[0] != identity.uid:
                 raise LifecycleError("account", "same-name foreign user; refusing deletion: " + identity.name)
-            run(("/usr/sbin/userdel", identity.name))
+            if resolved is not None:
+                run(("/usr/sbin/userdel", identity.name))
     for identity in installer.identities:
         if not identity.created:
             continue
@@ -253,6 +263,8 @@ def _remove_accounts(run: Callable[[tuple[str, ...]], None], installer: Installe
             resolved_gid = group_lookup(identity.name)
             if resolved_gid is not None and resolved_gid != identity.gid:
                 raise LifecycleError("account", "same-name foreign group; refusing deletion: " + identity.name)
+            if resolved_gid is None:
+                continue
             try:
                 run(("/usr/sbin/groupdel", identity.name))
             except DeploymentError as error:
@@ -283,23 +295,46 @@ def uninstall(*, purge: bool = False, geteuid: Callable[[], int] = os.geteuid, t
         infra.run(("/usr/bin/systemctl", "stop", "sparehash-xmrig.service"))
         if not infra.cgroup_empty():
             raise LifecycleError("cgroup", "miner cgroup is not empty; artifacts retained")
-        _ = infra.free_hugepages()
+        # Validate every filesystem removal authority before any artifact unlink.
+        _ = remove_leaf_receipts(trust, tree=tree, progress=progress, validate_only=True)
+        _ = remove_owned_versions(trust, tree=tree, progress=progress, validate_only=True)
+        for artifact in installer.artifacts:
+            if artifact.created and artifact.kind == "file" and (
+                    artifact.path in EXTRA_FILES or (purge and artifact.path in CONFIG)):
+                _validate_file(tree, artifact, progress)
         shim = next((artifact for artifact in installer.artifacts if artifact.path == SHIM), None)
-        if shim is None or _identity(tree.receipt(SHIM, shim.created)) != _identity(shim):
+        if shim is None:
             raise LifecycleError("receipt", "trusted cleanup CLI differs from its receipt")
-        infra.run((SHIM, "__cleanup__"))
+        if shim.mode & 0o111 != 0o111:
+            raise LifecycleError("receipt", "trusted cleanup CLI is not executable")
+        # A read-only identity pass prevents a predictable foreign-account
+        # collision from being discovered only after units or versions are gone.
+        _remove_accounts(lambda _argv: None, installer, infra.user_lookup, infra.group_lookup)
+        if "cleanup" not in progress.phases:
+            if not _validate_file(tree, shim, progress):
+                raise LifecycleError("receipt", "cleanup CLI missing before cleanup")
+            result = infra.free_hugepages()
+            if getattr(result, "warning", None) is not None:
+                raise LifecycleError("hugepages", "cleanup deferred; artifacts retained")
+            infra.run((SHIM, "__cleanup__"))
+            progress.phase("cleanup")
         for artifact in installer.artifacts:
             if artifact.created and artifact.id.startswith("gaming-ini:"):
                 _ = infra.unmerge(artifact.id.removeprefix("gaming-ini:"))
-        if "leaf-receipts" not in progress.phases:
-            _ = remove_leaf_receipts(trust, tree=tree, progress=progress)
-            progress.phase("leaf-receipts")
         if "versions" not in progress.phases:
             _ = remove_owned_versions(trust, tree=tree, progress=progress)
             progress.phase("versions")
-        _remove_owned_files(tree, installer, purge, progress)
+        for artifact in installer.artifacts:
+            if artifact.created and artifact.kind == "file" and artifact.path != SHIM and (
+                    artifact.path in EXTRA_FILES or (purge and artifact.path in CONFIG)):
+                _remove_file(tree, artifact, progress)
         _remove_accounts(infra.run, installer, infra.user_lookup, infra.group_lookup)
         infra.run(("/usr/bin/systemctl", "daemon-reload"))
+        if "leaf-receipts" not in progress.phases:
+            _ = remove_leaf_receipts(trust, tree=tree, progress=progress)
+            progress.phase("leaf-receipts")
+        if shim.created:
+            _remove_file(tree, shim, progress)
         progress.clear()
     except (OperationError, LifecycleError, LeaseError, InstallError, DeploymentError, OSError) as error:
         print(f"sparehash: uninstall: {error}", file=sys.stderr)

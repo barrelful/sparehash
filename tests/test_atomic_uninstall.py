@@ -112,6 +112,7 @@ def _build(tree: Tree) -> None:
         _write(tree, name)
     for name in CONFIG[1:]:
         _write(tree, name, b'{"http": {}}')
+    tree.path(SHIM).chmod(0o755)
     ledger = Ledger(tree)
     ledger.initialize()
     install.bootstrap(ledger, ("/opt/sparehash", "/opt/sparehash/src", PACKAGE_DIR, PACKAGE_LEAF))
@@ -228,7 +229,7 @@ def _case_partial_removal_crash(harness: Harness, _tmp: Path) -> None:
         first = _run(harness)
 
     assert first == 1
-    assert not harness.tree.path(PACKAGE_LEAF).exists()
+    assert harness.tree.path(PACKAGE_LEAF).exists()
     assert harness.tree.path(SHIM).exists()
     assert lifecycle.is_retired(_latch(harness.tree))
 
@@ -290,7 +291,7 @@ def _case_same_name_foreign_account(harness: Harness, _tmp: Path) -> None:
 
     assert result == 1
     assert ("/usr/sbin/userdel", "xmrig") not in harness.calls
-    assert not harness.tree.path(PACKAGE_LEAF).exists()
+    assert harness.tree.path(PACKAGE_LEAF).exists()
     _check_retained(harness.tree)
 
 
