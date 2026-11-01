@@ -6,7 +6,7 @@
 > before installing on a machine you care about.
 
 Release scope and limitations are in the
-[v0.2.0 release notes](docs/release-0.2.0.md); the
+[v0.2.1 release notes](docs/release-0.2.1.md); the
 [candidate report](docs/release-0.2-candidate.md) preserves historical evidence.
 For a supervised installation
 and real-game tests, use the [owner checklist](docs/testing-0.2-owner.md).

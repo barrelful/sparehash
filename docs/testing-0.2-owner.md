@@ -1,6 +1,6 @@
 # Experimental v0.2: owner installation and gameplay testing
 
-Read the [release notes](release-0.2.0.md), [platforms](platforms.md) and
+Read the [release notes](release-0.2.1.md), [platforms](platforms.md) and
 [security policy](../SECURITY.md) first. PRs #1 and #2 are merged. Automated fixtures
 cannot certify real native/Proton gameplay, Bazzite KDE/Gaming Mode, physical
 sensors, upstream mining performance or zero foreground impact. This is an
@@ -24,7 +24,7 @@ unless scheduling changes or practical problems warrant it. Dual-distro VM
 acceptance passed, but is not final-release physical validation. Keep credentials
 private and never apply the old one-off recovery guide to a different state.
 
-- Test the **published `v0.2.0` tag**, identified by its full
+- Test the **published `v0.2.1` tag**, identified by its full
   Git commit SHA as described below, on a machine you deliberately choose.
   The historical `f79718d` candidate and its old wheel/sdist hashes in
   `release-0.2-candidate.md` are **not the current owner-testing target**.
@@ -45,8 +45,8 @@ In a clean source checkout (do not discard local changes), fetch and select the
 release tag explicitly:
 
 ```sh
-git fetch origin tag v0.2.0
-git switch --detach v0.2.0
+git fetch origin tag v0.2.1
+git switch --detach v0.2.1
 git rev-parse HEAD
 git status --short
 ```

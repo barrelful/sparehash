@@ -7,12 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### v0.2.1 — compatibility fix in development
+## [0.2.1] - 2026-11-01
+
+**Experimental/Beta, not production-stable.** See [release notes](docs/release-0.2.1.md).
+
+### Fixed
 
 - Add explicit `--acknowledge-unverified` to preflight and installation; eligible
   Mint/other UNVERIFIED hosts can reach READY without changing their support tier.
   Default refusal, unsupported/unsafe/inconclusive precedence, receipt checks and
   separate installation-effects consent remain. Fixes issue #3. v0.2.0 is immutable.
+
+### Validation
+
+- Physical Mint 22.3 installation, actual mining, idle scheduling, manual-pause
+  persistence, battery inhibition and partial hugepage allocation/restoration passed.
+  Mint remains UNVERIFIED; real Mint gameplay and thermal fault injection are untested.
+- Bazzite 44 synthetic VM smoke passed all 11 checks with SELinux Enforcing.
+  The v0.2.1 Ubuntu VM attempt was inconclusive after guest-agent disconnection,
+  not a pass or a diagnosed product failure. Prior v0.2.0 reboot evidence remains
+  historical, not a newly executed v0.2.1 reboot test.
 
 ## [0.2.0] - 2026-11-01
 
@@ -126,7 +140,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - This is an experimental first release. See `README.md` for v1 limitations.
 
-[Unreleased]: https://github.com/barrelful/sparehash/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/barrelful/sparehash/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/barrelful/sparehash/releases/tag/v0.2.1
 [0.2.0]: https://github.com/barrelful/sparehash/releases/tag/v0.2.0
 [0.1.1]: https://github.com/barrelful/sparehash/releases/tag/v0.1.1
 [0.1.0]: https://github.com/barrelful/sparehash/releases/tag/v0.1.0

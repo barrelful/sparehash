@@ -3,12 +3,13 @@
 ## Supported versions
 
 Only the latest release in the v0.x series is supported with security updates.
-v0.2.0 is Experimental/Beta, not production-stable. Report vulnerabilities in
+v0.2.1 is Experimental/Beta, not production-stable. Report vulnerabilities in
 this release privately; experimental status is not a security guarantee.
 
 | Version | Supported          |
 | ------- | ------------------ |
-| 0.2.0 (Experimental) | :white_check_mark: |
+| 0.2.1 (Experimental) | :white_check_mark: |
+| 0.2.0   | :x:                |
 | 0.1.1   | :x:                |
 | 0.1.0   | :x:                |
 | < 0.1.0 | :x:                |
