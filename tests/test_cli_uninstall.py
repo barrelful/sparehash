@@ -7,6 +7,7 @@ import os
 import tempfile
 import unittest
 from contextlib import redirect_stderr
+from dataclasses import replace
 from pathlib import Path
 from typing import final
 from unittest import mock
@@ -17,7 +18,7 @@ from sparehash.deployment import DeploymentError, Tree
 from sparehash.install_ledger import Ledger
 from sparehash.install_manifest import locked_store
 from sparehash.lifecycle_lease import ActiveLease, LeaseStore
-from sparehash.xmrig_ledger import PACKAGE_DIR, GroupIdentity, UserIdentity
+from sparehash.xmrig_ledger import PACKAGE_DIR, GroupIdentity, Membership, UserIdentity
 from sparehash.xmrig_manifest import Manifest
 
 TOKEN = "a" * 64
@@ -175,6 +176,17 @@ class UninstallTests(unittest.TestCase):
         installer = cli_uninstall._receipts(self.tree.trust)
         calls = []
         cli_uninstall._remove_accounts(calls.append, installer, lambda _name: None, lambda _name: None)
+        self.assertEqual(calls, [])
+
+    def test_membership_already_removed_is_retry_noop(self) -> None:
+        from types import SimpleNamespace
+
+        self.build()
+        installer = replace(cli_uninstall._receipts(self.tree.trust), identities=(),
+                            memberships=(Membership("owner", 1000, "sparehash", 12345, True),))
+        calls = []
+        with mock.patch.object(cli_uninstall.grp, "getgrnam", return_value=SimpleNamespace(gr_gid=12345, gr_mem=[])):
+            cli_uninstall._remove_accounts(calls.append, installer, lambda _name: (1000, 1000), lambda _name: 12345)
         self.assertEqual(calls, [])
 
     def test_changed_unit_preflight_retains_source_and_other_unit(self) -> None:

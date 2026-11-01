@@ -231,8 +231,9 @@ def _remove_owned_files(tree: Tree, installer: Installer, purge: bool, progress:
 
 
 def _remove_accounts(run: Callable[[tuple[str, ...]], None], installer: Installer,
-                     user_lookup: Callable[[str], tuple[int, int] | None] = _nss_user,
-                     group_lookup: Callable[[str], int | None] = _nss_group) -> None:
+                      user_lookup: Callable[[str], tuple[int, int] | None] = _nss_user,
+                      group_lookup: Callable[[str], int | None] = _nss_group, *,
+                      validate_only: bool = False) -> None:
     for membership in installer.memberships:
         if not membership.added:
             continue
@@ -242,8 +243,13 @@ def _remove_accounts(run: Callable[[tuple[str, ...]], None], installer: Installe
         resolved_group = group_lookup(membership.group)
         if resolved_group is not None and resolved_group != membership.gid:
             raise LifecycleError("account", "membership group identity changed: " + membership.group)
-        if resolved_member is not None and resolved_group is not None:
-            group = grp.getgrnam(membership.group)
+        if not validate_only and resolved_member is not None and resolved_group is not None:
+            try:
+                group = grp.getgrnam(membership.group)
+            except KeyError:
+                continue  # Group already removed; membership cannot remain.
+            if group.gr_gid != membership.gid:
+                raise LifecycleError("account", "membership group identity changed: " + membership.group)
             if membership.user in group.gr_mem:
                 run(("/usr/bin/gpasswd", "-d", membership.user, membership.group))
     # Remove users before groups so that a user's primary group can be deleted.
@@ -254,7 +260,7 @@ def _remove_accounts(run: Callable[[tuple[str, ...]], None], installer: Installe
             resolved = user_lookup(identity.name)
             if resolved is not None and resolved[0] != identity.uid:
                 raise LifecycleError("account", "same-name foreign user; refusing deletion: " + identity.name)
-            if resolved is not None:
+            if not validate_only and resolved is not None:
                 run(("/usr/sbin/userdel", identity.name))
     for identity in installer.identities:
         if not identity.created:
@@ -263,7 +269,7 @@ def _remove_accounts(run: Callable[[tuple[str, ...]], None], installer: Installe
             resolved_gid = group_lookup(identity.name)
             if resolved_gid is not None and resolved_gid != identity.gid:
                 raise LifecycleError("account", "same-name foreign group; refusing deletion: " + identity.name)
-            if resolved_gid is None:
+            if validate_only or resolved_gid is None:
                 continue
             try:
                 run(("/usr/sbin/groupdel", identity.name))
@@ -309,7 +315,7 @@ def uninstall(*, purge: bool = False, geteuid: Callable[[], int] = os.geteuid, t
             raise LifecycleError("receipt", "trusted cleanup CLI is not executable")
         # A read-only identity pass prevents a predictable foreign-account
         # collision from being discovered only after units or versions are gone.
-        _remove_accounts(lambda _argv: None, installer, infra.user_lookup, infra.group_lookup)
+        _remove_accounts(infra.run, installer, infra.user_lookup, infra.group_lookup, validate_only=True)
         if "cleanup" not in progress.phases:
             if not _validate_file(tree, shim, progress):
                 raise LifecycleError("receipt", "cleanup CLI missing before cleanup")
