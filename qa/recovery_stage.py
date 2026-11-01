@@ -52,6 +52,8 @@ def unpack(blob: bytes, digest: str, commit: str) -> tuple[dict, dict[str, bytes
     if (set(descriptor) != {"schema", "commit", "original_commit", "files", "original_files", "original_shims"}
             or type(descriptor["schema"]) is not int or descriptor["schema"] != 1
             or descriptor["commit"] != commit or descriptor["original_commit"] != ORIGINAL
+            or not {"sparehash/__init__.py", "sparehash/__main__.py", "qa/recovery_stage.py", "qa/recover_uninstall.py",
+                    "systemd/sparehash.service.in", "systemd/sparehash-xmrig.service.in"} <= files.keys()
             or not 4 <= len(files) <= 130 or descriptor["files"] != {
                 name: hashlib.sha256(data).hexdigest() for name, data in files.items()}):
         raise ValueError("bundle inventory/provenance differs")
@@ -76,7 +78,7 @@ def verified_source(stage: Path, digest: str, commit: str) -> tuple[dict, dict[s
     descriptor, files = unpack(blob, digest, commit)
     if (stage / "stage.py").read_bytes() != files["qa/recovery_stage.py"]:
         raise ValueError("bootstrap does not match verified archive")
-    if {path.name for path in stage.iterdir()} - {"archive.tar", "stage.py", "source"}:
+    if {path.name for path in stage.iterdir()} - {"archive.tar", "stage.py", "source", "complete.json"}:
         raise ValueError("foreign staging entries; preserved")
     return descriptor, files
 
@@ -126,9 +128,43 @@ def main() -> int:
         source = source_tree(stage, files)
         sys.path.insert(0, str(source))
         sys.path.insert(0, str(source / "qa"))
-        from recover_uninstall import recover
+        from recover_uninstall import inactive, recover
 
-        recover(descriptor, apply=args.action == "apply", completed_only=args.action == "remove-staging")
+        from sparehash.cli_uninstall import PROGRESS_PATH, RemovalJournal
+        from sparehash.deployment import Tree
+
+        completion = stage / "complete.json"
+        progress = Path(PROGRESS_PATH)
+        if os.path.lexists(completion):
+            protected(completion, 0o600)
+            if completion.stat().st_size > 4096:
+                raise ValueError("oversized completion receipt")
+            record = json.loads(completion.read_bytes(), object_pairs_hook=unique)
+            if set(record) != {"archive", "progress"} or record["archive"] != args.sha256:
+                raise ValueError("completion identity differs")
+            if os.path.lexists(progress):
+                if hashlib.sha256(progress.read_bytes()).hexdigest() != record["progress"]:
+                    raise ValueError("new or changed removal journal; preserved")
+                recover(descriptor, completed_only=True)
+                if args.action != "preflight":
+                    RemovalJournal(Tree()).clear()
+            inactive()
+            print("Recovery already completed; no installation-management operation is available.")
+        else:
+            recover(descriptor, apply=args.action == "apply", completed_only=args.action == "remove-staging")
+            if args.action != "preflight":
+                record = {"archive": args.sha256, "progress": hashlib.sha256(progress.read_bytes()).hexdigest()}
+                with completion.open("x") as stream:
+                    os.fchmod(stream.fileno(), 0o600)
+                    json.dump(record, stream, sort_keys=True)
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                fd = os.open(stage, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+                try:
+                    os.fsync(fd)
+                finally:
+                    os.close(fd)
+                RemovalJournal(Tree()).clear()
         if args.action == "remove-staging":
             # Reverify every byte/entry before unlinking only the finite verified inventory.
             verified_source(stage, args.sha256, args.commit)
@@ -139,13 +175,10 @@ def main() -> int:
                 (source / name).rmdir()
             source.rmdir()
             (stage / "archive.tar").unlink()
+            completion.unlink()
             (stage / "stage.py").unlink()
             stage.rmdir()
             BASE.rmdir()  # Nonempty/foreign entries are never recursively removed.
-            from sparehash.cli_uninstall import RemovalJournal
-            from sparehash.deployment import Tree
-
-            RemovalJournal(Tree()).clear()  # Only after complete removal AND verified staging disposal.
             print("Verified temporary recovery source removed.")
         return 0
     except (Exception, KeyboardInterrupt) as error:

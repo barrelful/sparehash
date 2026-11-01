@@ -5,9 +5,10 @@ import importlib
 import io
 import json
 import os
+import sys
 import tarfile
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import pytest
 
@@ -25,7 +26,8 @@ def modules(monkeypatch):
 
 def bundle(stage, *, extra=None):
     files = {"sparehash/__init__.py": b"", "sparehash/__main__.py": b"# public",
-             "qa/recover_uninstall.py": b"# recover", "qa/recovery_stage.py": b"# gate"}
+             "qa/recover_uninstall.py": b"# recover", "qa/recovery_stage.py": b"# gate",
+             "systemd/sparehash.service.in": b"# unit", "systemd/sparehash-xmrig.service.in": b"# unit"}
     descriptor = {"schema": 1, "commit": "a" * 40, "original_commit": stage.ORIGINAL,
                   "original_files": {}, "original_shims": {},
                   "files": {name: hashlib.sha256(data).hexdigest() for name, data in files.items()}}
@@ -60,7 +62,7 @@ def test_verified_bundle_roundtrip(modules):
     _, stage = modules
     blob, digest = bundle(stage)
     descriptor, files = stage.unpack(blob, digest, "a" * 40)
-    assert descriptor["original_commit"] == stage.ORIGINAL and len(files) == 4
+    assert descriptor["original_commit"] == stage.ORIGINAL and len(files) == 6
 
 
 @pytest.mark.parametrize("fault", ["mode", "symlink", "hardlink", "oversized", "duplicate"])
@@ -146,3 +148,31 @@ def test_unknown_cgroup_or_active_service_refuses(modules, monkeypatch):
     monkeypatch.setattr(recovery, "checked", lambda *_: "LoadState=loaded\nActiveState=active\nSubState=running\nMainPID=123")
     with pytest.raises(DeploymentError, match="inactive"):
         recovery.inactive()
+
+
+def test_completed_gate_never_manages_new_installation(modules, monkeypatch, tmp_path):
+    recovery, stage = modules
+    commit, digest = "a" * 40, "b" * 64
+    base = tmp_path / "recovery"
+    directory = base / commit
+    directory.mkdir(parents=True)
+    (directory / "complete.json").write_text(json.dumps({"archive": digest, "progress": "c" * 64}))
+    monkeypatch.setattr(stage, "BASE", base)
+    monkeypatch.setattr(stage, "__file__", str(directory / "stage.py"))
+    monkeypatch.setattr(stage.os, "geteuid", lambda: 0)
+    monkeypatch.setattr(stage, "protected", lambda *_: None)  # Separate tests exercise metadata refusal.
+    monkeypatch.setattr(stage, "verified_source", lambda *_: ({}, {}))
+    monkeypatch.setattr(stage, "source_tree", lambda *_: directory / "source")
+    monkeypatch.setattr(recovery, "inactive", lambda: None)
+    recover = Mock(side_effect=AssertionError("must never manage the new installation"))
+    monkeypatch.setattr(recovery, "recover", recover)
+    monkeypatch.setattr(sys, "path", list(sys.path))
+    monkeypatch.setattr(sys, "argv", ["stage", commit, digest, "apply"])
+    journal = tmp_path / "progress.json"
+    monkeypatch.setattr(recovery.uninstall, "PROGRESS_PATH", str(journal))
+    assert stage.main() == 0
+    recover.assert_not_called()
+    journal.write_text("new installation's unrelated journal")
+    assert stage.main() == 1
+    assert journal.read_text() == "new installation's unrelated journal"
+    recover.assert_not_called()

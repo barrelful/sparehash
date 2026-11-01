@@ -93,6 +93,11 @@ def provenance(manifest: Manifest, descriptor: dict, progress: uninstall.Removal
         if artifact.path not in uninstall.EXTRA_FILES:
             continue
         if uninstall._present(tree, artifact.path):
+            with ExitStack() as stack:
+                parent = tree.pin(stack, str(Path(artifact.path).parent))
+                fd = os.open(Path(artifact.path).name, FILE_FLAGS, dir_fd=parent)
+                stack.callback(os.close, fd)
+                require(os.fstat(fd).st_nlink == 1, "linked original artifact; retained")
             require(uninstall._identity(tree.receipt(artifact.path, artifact.created)) == uninstall._identity(artifact),
                     "remaining original artifact differs from its exact receipt")
         else:

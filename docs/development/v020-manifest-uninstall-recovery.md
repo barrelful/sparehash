@@ -129,7 +129,7 @@ denials, and successful reinstall with `--no-start --no-enable`. No purge/force 
 production credentials. Preserve historical failures under the private evidence
 tree rather than rewriting them as passes.
 
-**Current status:** reader regression coverage only. Recovery implementation,
+**Status at the approval gate (historical):** reader regression coverage only. Recovery implementation,
 VM reproduction, recovery acceptance and precise owner-run commands are blocked
 on approval of the mechanism above. Do not run physical recovery based on this
 document. There is no claim that the workstation is safe to recover yet.
@@ -152,7 +152,24 @@ to installed state, journals, service configuration or hugepages. A finite inode
 content deletion plan is written into the existing protected uninstall journal
 before the first version-file deletion, permitting retries after interrupted
 unlinks without adopting new or replaced files. Original receipts remain intact.
-Completed progress is retained until verified staging disposal, then cleared so a
-subsequent installation cannot inherit old completed-removal phases. Configuration
+On completion a protected archive-bound completion receipt is fsynced in temporary
+staging before clearing completed progress, so a subsequent installation cannot
+inherit old completed-removal phases. Repeated apply becomes a no-op behind that
+receipt, never a way to manage the new installation. The same verified source can
+then run the existing installer explicitly with boot startup/controller startup
+disabled. Finite verified staging disposal follows reinstall; foreign entries
+refuse rather than being recursively erased. Configuration
 and benchmark data are never used as removal targets. VM acceptance is pending;
 no physical recovery commands are authorised by this implementation note alone.
+
+### Retained first Bazzite attempt
+
+At `7f83a3ec7b949760ca1fb7abe81304976c2b80ab`, the fresh original installation
+succeeded with controller startup and boot startup disabled. Its fresh receipt
+history was smaller than the owner's long-lived 81,416-byte document, and the QA
+size assertion stopped the driver before uninstall. This is a fixture FAIL, not
+recovery acceptance. Evidence was collected and the clone discarded. The revised
+fixture grows the valid action history through actual recorded controller-disable
+operations using the existing ledger, then marks the ledger ready. It does not
+pad JSON, relax the parser or invent removal receipts. Historical evidence remains
+under `.omo/evidence/v020/task-2/uninstall-recovery/round1/bazzite/`.

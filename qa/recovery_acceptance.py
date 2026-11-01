@@ -21,9 +21,12 @@ from vm_acceptance import guard
 class RecoveryAcceptance(Smoke):
     def exercise(self, commit: str, digest: str) -> None:
         from sparehash import config
+        from sparehash.deployment import Tree, checked
         from sparehash.hugepages import LeaseManager
+        from sparehash.install_ledger import Ledger
         from sparehash.install_manifest import locked_store
         from sparehash.runtime_jobs import empty
+        from sparehash.xmrig_ledger import Artifact
         from sparehash.xmrig_manifest import VersionRecord
 
         old = Path("/var/tmp/original-source")
@@ -49,9 +52,20 @@ class RecoveryAcceptance(Smoke):
             assert prior is not None
             store.write(replace(prior.manifest, versions=(VersionRecord("xmrig-6.26.0", "2026-10-07T00:00:00Z", "github:xmrig/xmrig:v6.26.0"),)))
         manifest_path = Path("/var/lib/sparehash/install-manifest.json")
+        initial_size = manifest_path.stat().st_size
+        ledger = Ledger(Tree())
+        recorded = 0
+        while manifest_path.stat().st_size < 81416:
+            def disabled() -> tuple[Artifact, ...]:
+                checked(("/usr/bin/systemctl", "disable", "sparehash.service"))
+                return (ledger.tree.receipt("/etc/systemd/system/sparehash.service", False),)
+            ledger.perform(("/etc/systemd/system/sparehash.service", "disable-controller"), disabled)
+            recorded += 1
+        ledger.ready()
         size = manifest_path.stat().st_size
         assert 65536 < size < 262144
-        self.check("original_install_large_canonical_manifest", {"bytes": size, "original_commit": "f348ed165358668d8101cd121cf07ee2f001295f"})
+        self.check("original_install_large_canonical_manifest", {"bytes": size, "initial_bytes": initial_size,
+                   "recorded_disable_operations": recorded, "original_commit": "f348ed165358668d8101cd121cf07ee2f001295f"})
         ipc, miner = Path("/run/sparehash"), Path("/run/sparehash-miner")
         for directory, group in ((ipc, "sparehash"), (miner, "xmrig")):
             directory.mkdir(mode=0o750)
@@ -152,15 +166,18 @@ class RecoveryAcceptance(Smoke):
         assert all(hashlib.sha256(Path(name).read_bytes()).hexdigest() == value for name, value in before.items())
         assert json.loads(Path("/var/lib/sparehash/lifecycle.json").read_text())["retired"] is True
         self.check("resumed_and_repeated_nonpurge_recovery_preserves_config_foreign_and_benchmark")
-        self.run([*command, "remove-staging"])
-        assert not stage.parent.exists() and not journal.exists()
-        self.check("verified_staging_and_completed_progress_disposal")
+        assert not journal.exists() and (stage / "complete.json").exists()
         replies = "4" + "1" * 94 + "\n127.0.0.1\n" + "\n" * 100
-        self.run(["/bin/sh", str(SOURCE / "install.sh"), "--clear-lifecycle-latch", "--use-existing", "--no-start", "--no-enable"], replies=replies)
+        self.run(["/usr/bin/python3", "-I", "-B", str(stage / "source/sparehash/__main__.py"), "install",
+                  "--clear-lifecycle-latch", "--use-existing", "--no-start", "--no-enable"], replies=replies)
         assert self.prop("sparehash.service", "ActiveState") == "inactive" and empty()
         assert self.run(["systemctl", "is-enabled", "sparehash.service"], expected=1).strip() == "disabled"
         assert hashlib.sha256(benchmark.read_bytes()).hexdigest() == before[str(benchmark)]
+        self.run([*command, "apply"])  # Completed gate cannot operate on the new installation.
         self.check("explicit_reinstall_no_start_no_enable_benchmark_retained")
+        self.run([*command, "remove-staging"])
+        assert not stage.parent.exists() and not journal.exists()
+        self.check("verified_staging_disposal_no_alternate_management_interface")
 
 
 def main() -> None:
