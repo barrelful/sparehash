@@ -355,7 +355,6 @@ def recover(descriptor: dict, *, apply: bool = False, completed_only: bool = Fal
                 "owned launcher or unit remains after removal")
         checked(("/usr/bin/systemctl", "daemon-reload"), 10)
         inactive()
-        # Keep the exact original journal as durable completion/retry evidence.
-        # A separate explicit reinstall replaces ownership; this source cannot
-        # manage that new installation because provenance no longer matches.
-        print("Recovery complete; configuration and retirement retained. Remove verified staging before reinstall.")
+        # The protected gate seals completion before clearing this journal.
+        # Explicit reinstall is separate; the completed gate cannot manage it.
+        print("Recovery complete; configuration and retirement retained. Use this verified source for explicit reinstall, then remove-staging.")
