@@ -16,7 +16,7 @@ from sparehash import cli_uninstall, install, ipc, lifecycle
 from sparehash.cli_ops import Client
 from sparehash.deployment import DeploymentError, Tree
 from sparehash.install_ledger import Ledger
-from sparehash.install_manifest import locked_store
+from sparehash.install_manifest import StoreContext, StoreError, locked_store
 from sparehash.lifecycle_lease import ActiveLease, LeaseStore
 from sparehash.xmrig_ledger import PACKAGE_DIR, GroupIdentity, Membership, UserIdentity
 from sparehash.xmrig_manifest import Manifest
@@ -152,6 +152,38 @@ class UninstallTests(unittest.TestCase):
         result, _, fake = self.run_uninstall(build=False)
         self.assertEqual(result, 0)
         self.assertNotIn((cli_uninstall.SHIM, "__cleanup__"), fake.calls)
+
+    def test_manifest_reads_survive_owned_group_removal_and_retry(self) -> None:
+        self.build()
+        with locked_store(StoreContext(self.tree.trust)) as store:
+            prior = store.read()
+            assert prior is not None and prior.manifest.installer is not None
+            installer = prior.manifest.installer
+            identities = tuple(replace(item, gid=os.getgid()) if isinstance(item, GroupIdentity) else item
+                               for item in installer.identities)
+            store.write(replace(prior.manifest, installer=replace(installer, identities=identities)))
+        gone = False
+        original_group = StoreContext.group
+
+        def group(context):
+            if gone and context.gid is None:
+                raise StoreError("manifest-owner", "group gone")
+            return original_group(context)
+
+        def remove(*args, **kwargs):
+            nonlocal gone
+            if not kwargs.get("validate_only", False):
+                gone = True
+
+        with (
+            mock.patch.object(StoreContext, "group", group),
+            mock.patch.object(cli_uninstall, "_remove_accounts", remove),
+        ):
+            first, _, _ = self.run_uninstall(build=False, reload_failure=True)
+            self.assertEqual(first, 1)
+            second, _, fake = self.run_uninstall(build=False)
+            self.assertEqual(second, 0)
+            self.assertNotIn((cli_uninstall.SHIM, "__cleanup__"), fake.calls)
 
     def test_predictable_version_failure_precedes_source_removal(self) -> None:
         self.build()

@@ -94,7 +94,8 @@ def _validate_tree(fd: int, uid: int) -> None:
 def remove_owned_versions(trust: PathTrust, *, layout: Layout | None = None,
                           tree: Tree | None = None,
                           progress: RemovalProgress | None = None,
-                          validate_only: bool = False) -> tuple[str, ...]:
+                          validate_only: bool = False,
+                          context: StoreContext | None = None) -> tuple[str, ...]:
     """Use the canonical store lock and pinned root; retain all installer receipts.
 
     The managed version tree is mutations-only through pinned descriptors. An
@@ -107,7 +108,7 @@ def remove_owned_versions(trust: PathTrust, *, layout: Layout | None = None,
         trust = tree.trust
     effective = _with_layout(trust, layout)
     with ExitStack() as stack:
-        store = stack.enter_context(locked_store(StoreContext(effective)))
+        store = stack.enter_context(locked_store(context or StoreContext(effective)))
         prior = store.read()
         if prior is None:
             raise CollisionError("manifest", "no manifest authority for XMRig removal")
@@ -244,7 +245,8 @@ def _allowed_children(directory: str, leaves: dict[str, Artifact]) -> frozenset[
 def remove_leaf_receipts(trust: PathTrust, *, layout: Layout | None = None,
                           tree: Tree | None = None,
                           progress: RemovalProgress | None = None,
-                          validate_only: bool = False) -> tuple[str, ...]:
+                          validate_only: bool = False,
+                          context: StoreContext | None = None) -> tuple[str, ...]:
     """Remove only created package/template file receipts after a full preflight of every container.
 
     An injected ``Tree`` supplies the physical roots; ``layout`` overlays the
@@ -256,7 +258,7 @@ def remove_leaf_receipts(trust: PathTrust, *, layout: Layout | None = None,
     effective = _with_layout(trust, layout)
     tree = tree if tree is not None else Tree(effective.root, effective.uid, effective.layout)
     with ExitStack() as stack:
-        store = stack.enter_context(locked_store(StoreContext(effective)))
+        store = stack.enter_context(locked_store(context or StoreContext(effective)))
         prior = store.read()
         if prior is None or prior.manifest.installer is None:
             raise CollisionError("receipt", "no per-file installer receipts; reinstall before removal")
