@@ -25,7 +25,6 @@ from tests.xmrig_layout_fixtures import (
     request_for,
     write_tar,
 )
-from tests.test_xmrig_manifest import ManifestSchemaTests as ManifestSchemaTests
 
 V1 = "xmrig-6.26.0"
 V2 = "xmrig-6.26.1"
@@ -35,8 +34,7 @@ V4 = "xmrig-6.26.3"
 
 @final
 class InstallLayoutTests(unittest.TestCase):
-    def __init__(self, methodName: str = "runTest") -> None:
-        super().__init__(methodName)
+    def setUp(self) -> None:
         self.layout = Layout()
         self.addCleanup(self.layout.cleanup)
 

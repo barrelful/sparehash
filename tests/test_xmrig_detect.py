@@ -11,7 +11,6 @@ from pathlib import Path
 from typing import Final
 
 from sparehash import xmrig_detect as detect
-from tests.test_xmrig_current import XmrigCurrentTests as XmrigCurrentTests
 
 
 class FakeRunner:
