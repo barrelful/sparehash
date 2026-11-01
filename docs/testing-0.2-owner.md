@@ -18,6 +18,13 @@ installation. See the linked guide for thermal aborts and interpretation limits.
 
 ## Before installation
 
+**During the stability sprint:** do not replace an installation merely to test
+the separate stability branch. Finish the already-approved recovery/reinstall
+with its exact pinned guide, then provide the second physical CPU comparison
+using the unchanged methodology. Record the installed source identity, comparison
+results, temperatures and any abort; keep credentials private. Further owner
+installation/testing instructions await review of the sprint and that benchmark.
+
 - Test the **latest PR #1 head on `review/v0.2-pre-rc`**, identified by its full
   Git commit SHA as described below, on a machine you deliberately choose.
   The historical `f79718d` candidate and its old wheel/sdist hashes in

@@ -105,8 +105,9 @@ or reuses an already verified managed installation, writes configuration to
 - `Start SpareHash controller now? [Y/n]:`
 
 Enter accepts Yes for each. No to boot startup disables the controller unit;
-No to starting now leaves a fresh installation inactive (it does not stop an
-already-running controller on reinstall). The installer never enables or starts
+No to starting now leaves a fresh installation inactive. An existing installation
+is refused; reinstall is explicit after completed removal, not an in-place update.
+The installer never enables or starts
 the miner directly. Its final summary reports boot startup, controller activity,
 and whether mining is blocked (or unknown if controller status is unavailable).
 
@@ -120,6 +121,11 @@ sudo ./install.sh --answers answers.toml --yes
 `--answers` without `--yes` refuses before any effect is applied. `--no-start`
 and `--no-enable` skip the two startup prompts (defaulting each to No) so QA or
 an operator can stage a service without starting the controller.
+
+For a cautious first experiment, use the same installer with
+`sudo ./install.sh --no-start --no-enable`. Starting without enabling future boot
+startup is then an explicit `sudo systemctl start sparehash.service` choice;
+`sparehash start` opts into both.
 
 A dry, read-only preflight reports support, readiness, and gaming coverage
 without changing the host, in human or `--json` form:

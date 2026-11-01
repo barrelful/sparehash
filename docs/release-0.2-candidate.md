@@ -1,5 +1,129 @@
 # Experimental v0.2 candidate acceptance
 
+## Stabilisation sprint — implementation delivered, acceptance blocked
+
+Work is isolated on `atlas/v020-task-2-stability`, based on reviewed recovery
+delivery `41c0e788a84b97c1e947b5a3ad2074e95846123d`. It does not replace the owner's
+tested recovery bundle `21d4960d99813f2da4d1d3c923f9d373e2973158`, access the physical
+installation, change scheduling or change the CPU comparison methodology.
+
+- **Lifecycle:** read-only removal preflight; durable version-removal intents;
+  cleanup checkpoint; absent-account/membership retry; source retained through
+  unit/account/reload failures and launcher removed last. Focused tests cover
+  valid large manifests, four version-deletion interruption boundaries, early
+  refusal, hugepage warnings and reload retry. Numeric manifest ownership is
+  retained through owned-group deletion; checkpointed retries require the matching
+  owned group receipt if its NSS identity is already absent. Final self-source interruption is
+  still a documented late recovery limit, not an automatic-repair promise.
+- **Test reliability:** affected XMRig fixtures are created in `setUp`, not during
+  collection; duplicate testcase re-exports removed. Construction/no-I/O and
+  repeated-case regressions pass. Ten repeated focused suites passed. This fixes
+  demonstrated lifetime hazards; it does not prove the original intermittent
+  file-loss cause. Test-count reduction reflects removed duplicate collection.
+- **Local verification:** 1,245 tests + 565 subtests; production typing on 56
+  modules and scoped changed-file lint passed. Final VM validation is blocked; do not
+  treat private-tree tests as real-distro installation/reboot evidence.
+- **Owner gate:** second physical CPU benchmark still pending. No scheduler change
+  or final experimental-RC recommendation until that result is reviewed. Native/
+  Proton recognition, real sensors and foreground responsiveness remain physical
+  owner checks; VM fixtures do not certify them.
+
+The owner approved branch publication and draft [PR #2](https://github.com/barrelful/sparehash/pull/2)
+for existing hosted CI; PR #1 and its branch are unchanged. All five CI jobs passed
+on production-source snapshot `5de94c6` ([run](https://github.com/barrelful/sparehash/actions/runs/41299137285));
+Python 3.11–3.14 each passed 1,243 tests, one existing prerequisite skip and 563
+subtests. For the later negative-GID regression/reporting head's own CI status,
+use draft PR #2's checks; these historical counts are not its final-head result.
+No merge, release tag or RC declaration is implied. The older
+selected-candidate report below is retained as history, not current hashes or CI.
+
+### Retained Bazzite failure and correction
+
+At `de92087c115bb90770368f34806efc1fb49517cc`, a fresh Bazzite clone installed,
+completed a real guest reboot (changed boot ID), autostarted and verified exact
+payload. Manual/battery/thermal/game guards, controller loss, blocked scanner,
+bounded shutdown and hugepage allocate/restore **0 → 32 → 0** passed. Serial stock
+commands worked after reboot: this attempt is not a transport failure.
+
+Uninstall then failed at its final leaf-removal store open because the owned
+`sparehash` group was already deleted, but the canonical store still resolved its
+GID through NSS. Source/shim were retained; the clone and evidence were collected
+and discarded. This is a **product FAIL**, not complete acceptance. The subsequent
+`5de94c6` correction retains the validated numeric manifest GID and tests both
+same-run deletion and retry after group disappearance/reload failure. It does not
+recreate accounts or bypass manifest/path/ownership validation. Retained private
+evidence: `.omo/evidence/v020/task-2/stability/bazzite/`.
+
+The existing unchanged VM comparison measured 52.1% synthetic contention in this
+4-vCPU guest despite SCHED_IDLE/nice19. That is VM evidence, not RandomX or a
+physical benchmark. It motivates retaining the foreground-impact warning, not a
+scheduler change before the owner's second measurement.
+
+### Corrected-source VM attempts — blocked before product execution
+
+Both used exact source `5de94c65513268accc4aeaff8743632cbf4769a0`, archive SHA-256
+`c8fccb9f1d124af0325ac5ecffaf7d63f606e4520356fe630755e6a5392fdf33` and the source
+inventory below. Neither reached source transfer or installation:
+
+| Baseline | Actual outcome | Classification |
+| --- | --- | --- |
+| Bazzite 44 | `start`: guest agent unavailable after 300 seconds; stock diagnostic/collection calls could not reach serial login | Boot/management availability blocker; no product command ran |
+| Ubuntu Noble | `start` returned; first stock `/usr/bin/true` lost the guest agent, subsequent calls found it disconnected | Guest-agent/management blocker before any product execution |
+
+This does **not** identify whether the underlying cause is guest boot, controller
+synchronization or another lab issue. The authorized interfaces returned no guest
+diagnostic payload, so further attribution would be speculation. Failed command
+outputs and pins are retained under `stability/bazzite-reboot-5de94c6/` and
+`stability/ubuntu-reboot-5de94c6/`; no guest evidence archive could be collected.
+All three sprint clones were forced off/discarded; final lab status had no running
+domains. No baseline, transport confinement, networking or security setting changed.
+
+**Stop condition:** no further retries or host-infrastructure work in this sprint.
+The lab maintainer should restore stock boot/login/`true`/reboot command access on
+fresh clones through the documented interfaces, preserving baseline integrity.
+Then rerun the unchanged source-pinned install → actual reboot → verify workflow
+on both images, including normal removal/reinstall. The corrected uninstall has
+focused/full/hosted test evidence, **not a final real-distro pass**. Earlier Bazzite
+autostart and runtime successes do not fill this missing corrected-source gate.
+
+The owner's earlier Ubuntu waiver applied only to the separate one-off Bazzite
+recovery. It does not waive this sprint's dual-distribution acceptance gate.
+
+### Owner checklist and readiness disposition
+
+1. Complete the independently approved recovery/reinstall only with its exact
+   pinned procedure. Do not deploy this branch over that installation in place.
+2. Supply the second physical stopped/mining/stopped CPU comparison using the
+   unchanged methodology, installed SHA and thermal/abort observations. No
+   assistant scheduler changes or physical installation access occurred.
+3. After VM gates and source review, separately authorize any new installation;
+   check explicit no-start/no-enable behavior, status, pause/resume/stop, native/
+   Proton recognition, real sensors and foreground responsiveness. Preserve
+   failed-operation records; do not force or delete lifecycle evidence.
+
+**No experimental-RC endorsement yet:** corrected-source dual-distro lifecycle
+evidence and the second physical benchmark are still required. Final readiness
+and any scheduler decision are deliberately deferred until that owner result.
+The existing final self-source crash window remains a practical recovery limit;
+the fixture lifetime correction does not conclusively diagnose historical file
+loss. These limits are disclosed rather than replaced by mocks or weaker checks.
+
+### Selected build identity (not a release)
+
+Artifacts built offline from an exported exact Git tree, not dirty checkout bytes:
+
+- Source: `5de94c65513268accc4aeaff8743632cbf4769a0`
+- Source/units/QA inventory: `9b5cda95415517415930f84741a163ae9afa81ee4f1f01344e6544e992563fc6`
+- Wheel: `273f55266c016ce9c6c45b48b2831cf0e341ae2ebf6edc309a89cad3f1ff6691`
+- Sdist: `de9c437afacbe9b9b1a8a4e7698ea14341a9bf32fa6afdf2b59fa65689421ee1`
+
+Artifact checks passed: GPL/third-party attribution shipped, no runtime
+dependencies, source inventory included. README command/flag/config inventory,
+changed-file lint, production typing and redacted exported-tree secrets scan also
+passed. Later reporting commits are not substituted into these build identities.
+
+## Historical candidate
+
 > Historical candidate `f79718d`, not the identity of the later consolidated
 > review branch. See the [consolidation report](development/v020-review-consolidation.md)
 > for current changes and validation. Old source/artifact hashes below must not
