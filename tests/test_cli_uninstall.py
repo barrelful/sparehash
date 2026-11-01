@@ -170,6 +170,23 @@ class UninstallTests(unittest.TestCase):
         self.assertTrue(self.tree.path(PACKAGE_LEAF).exists())
         self.assertNotIn((cli_uninstall.SHIM, "__cleanup__"), fake.calls)
 
+    def test_absent_owned_accounts_are_retry_noops(self) -> None:
+        self.build()
+        installer = cli_uninstall._receipts(self.tree.trust)
+        calls = []
+        cli_uninstall._remove_accounts(calls.append, installer, lambda _name: None, lambda _name: None)
+        self.assertEqual(calls, [])
+
+    def test_changed_unit_preflight_retains_source_and_other_unit(self) -> None:
+        self.build()
+        changed = self.tree.path("/etc/systemd/system/sparehash-xmrig.service")
+        changed.write_bytes(b"changed")
+        result, _, fake = self.run_uninstall(build=False)
+        self.assertEqual(result, 1)
+        self.assertTrue(self.tree.path(PACKAGE_LEAF).exists())
+        self.assertTrue(self.tree.path("/etc/systemd/system/sparehash.service").exists())
+        self.assertNotIn((cli_uninstall.SHIM, "__cleanup__"), fake.calls)
+
     def test_removes_receipt_owned_artifacts_and_retains_config(self) -> None:
         # Given a receipted install
         # When uninstalling without purge
