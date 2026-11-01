@@ -1,5 +1,9 @@
 # v0.2 pre-RC review consolidation
 
+> **Historical snapshot.** PRs #1 and #2 are merged; the old branch/PR-head
+> selection instructions below no longer apply. Use the published `v0.2.0` tag
+> and [release notes](../release-0.2.0.md). Original review evidence follows.
+
 > Consolidation snapshot through `1108cbc`. Subsequent PR #1 shutdown-ordering
 > fixes change runtime bytes and test counts. For owner testing, resolve the
 > [latest PR head](https://github.com/barrelful/sparehash/pull/1) using the

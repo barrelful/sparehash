@@ -1,5 +1,11 @@
 # Current-source v0.2 acceptance
 
+> **Historical engineering record, not current installation guidance.** PRs #1
+> and #2 are merged. Later dual-distro acceptance and the accepted physical CPU
+> comparison supersede the earlier unresolved dispositions below. See
+> [release notes](../release-0.2.0.md) and the candidate report for those updates.
+> All original observations, failures and source pins are preserved below.
+
 > Latest stability-sprint disposition is consolidated in the
 > [candidate report](../release-0.2-candidate.md#stabilisation-sprint--automated-gates-passed).
 > Corrected-source Bazzite at `b18e1c8` now passes the complete install/reboot/

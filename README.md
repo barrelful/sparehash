@@ -5,8 +5,10 @@
 > README, `SECURITY.md`, `docs/platforms.md`, and the limitations section
 > before installing on a machine you care about.
 
-Current acceptance status and selected source/artifact identities are in the
-[candidate report](docs/release-0.2-candidate.md). For a supervised installation
+Release scope and limitations are in the
+[v0.2.0 release notes](docs/release-0.2.0.md); the
+[candidate report](docs/release-0.2-candidate.md) preserves historical evidence.
+For a supervised installation
 and real-game tests, use the [owner checklist](docs/testing-0.2-owner.md).
 
 SpareHash is a CPU-only Monero (RandomX) miner manager for Linux x86_64. It runs
@@ -50,7 +52,7 @@ SpareHash classifies every host into one of three support tiers. Run `sudo ./ins
 **Synthetic lifecycle evidence:** Ubuntu 24.04 on `ubuntu-noble-20260926-v1`
 and Bazzite 44 on `bazzite-kde-44-20261012-v1`. Install/removal/reinstall/reboot,
 permissions and synthetic safety callbacks passed; see the
-[S3 report](docs/development/s3-lifecycle-reliability.md). Real native/Proton
+[acceptance record](docs/release-0.2-candidate.md#fresh-owner-requested-acceptance-at-b18e1c8). Real native/Proton
 gameplay, KDE/Gaming Mode and hardware validation remain pending owner testing.
 
 **UNVERIFIED:** Debian, Mint, Ubuntu 22.04 and other releases, Fedora Workstation,
@@ -88,7 +90,15 @@ refusals return 2. See `docs/platforms.md` for the full installer exit contract.
 
 ## Quick start
 
-One command installs everything:
+Select the release source first (use a separate checkout if you have local work):
+
+```sh
+git clone --branch v0.2.0 --depth 1 https://github.com/barrelful/sparehash.git
+cd sparehash
+sudo ./install.sh --preflight
+```
+
+For a fresh installation, the interactive installer installs the required files:
 
 ```
 sudo ./install.sh
@@ -330,7 +340,8 @@ blockers remain independent.
 **Best effort is not exhaustive coverage.** Non-Steam games, changed/unrecognised
 markers and games surviving their marker may be missed. Low priority does not
 promise zero contention. Actual native/Proton gameplay and KDE/Gaming Mode
-validation remain pending owner testing after RC. See
+validation of the final release remain pending owner testing. Historical owner
+observations are not final-release validation. See
 [`docs/gaming-integration-contract.md`](docs/gaming-integration-contract.md).
 
 ### Latency objectives (not guarantees)
@@ -561,7 +572,7 @@ sparehash logs
 Status requires root even if your user belongs to `sparehash`; run
 `sudo sparehash status`. For pause/resume and gaming hooks, your user must be
 root or in the `sparehash` group to use the control socket. The
-installer adds configured gaming users; other users can be added manually:
+installer does not add new hook memberships; trusted users can be added manually:
 
 ```
 sudo usermod -aG sparehash $USER

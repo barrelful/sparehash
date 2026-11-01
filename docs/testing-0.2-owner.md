@@ -1,13 +1,13 @@
 # Experimental v0.2: owner installation and gameplay testing
 
-Read the [current review report](development/v020-review-consolidation.md) and
-[PR #1](https://github.com/barrelful/sparehash/pull/1) first. Automated fixtures
+Read the [release notes](release-0.2.0.md), [platforms](platforms.md) and
+[security policy](../SECURITY.md) first. PRs #1 and #2 are merged. Automated fixtures
 cannot certify real native/Proton gameplay, Bazzite KDE/Gaming Mode, physical
 sensors, upstream mining performance or zero foreground impact. This is an
 owner-supervised experiment, not a production-readiness claim.
 
-For the latest source-pinned VM outcomes and unresolved transport/performance
-findings, see [current acceptance](development/v020-current-acceptance.md).
+For source-pinned VM outcomes and historical failed attempts, see the
+[acceptance record](release-0.2-candidate.md).
 The separate [owner-run CPU comparison](development/cpu-contention.md) needs no
 reinstallation or configuration changes; it must not be run by the assistant on
 the physical workstation.
@@ -18,16 +18,13 @@ installation. See the linked guide for thermal aborts and interpretation limits.
 
 ## Before installation
 
-**During the stability sprint:** do not replace an installation merely to test
-the separate stability branch. The owner completed the approved recovery/reinstall
-and second physical CPU comparison: the current scheduling benchmark gate is
-satisfied. No repeat or scheduler optimisation is requested absent practical
-problems. Keep using the exact pinned recovery guide where applicable.
-Corrected-source dual-distro VM acceptance now passes. Any new installation still
-requires owner review/approval; do not treat the separate branch as an in-place
-update. Keep credentials private.
+The owner completed the earlier approved recovery/reinstall and physical CPU
+comparison; the scheduling benchmark gate is satisfied. No repeat is required
+unless scheduling changes or practical problems warrant it. Dual-distro VM
+acceptance passed, but is not final-release physical validation. Keep credentials
+private and never apply the old one-off recovery guide to a different state.
 
-- Test the **latest PR #1 head on `review/v0.2-pre-rc`**, identified by its full
+- Test the **published `v0.2.0` tag**, identified by its full
   Git commit SHA as described below, on a machine you deliberately choose.
   The historical `f79718d` candidate and its old wheel/sdist hashes in
   `release-0.2-candidate.md` are **not the current owner-testing target**.
@@ -42,24 +39,25 @@ update. Keep credentials private.
 - Choose your own wallet and pool privately. The VM evidence uses no real mining
   or public pools; it is not evidence of pool connectivity or mining profitability.
 
-### Identify the current review commit
+### Identify the release commit
 
 In a clean source checkout (do not discard local changes), fetch and select the
-current review head explicitly:
+release tag explicitly:
 
 ```sh
-git fetch origin review/v0.2-pre-rc
-git switch --detach FETCH_HEAD
+git fetch origin tag v0.2.0
+git switch --detach v0.2.0
 git rev-parse HEAD
 git status --short
 ```
 
-The printed full SHA must match the **current head commit in PR #1**, and that
-head's GitHub checks must be reviewed before testing. Record this SHA with every
-hardware/gameplay result. The branch can advance: re-check the PR head rather
-than trusting an old downloaded archive, historical artifact digest or copied
-short SHA. A clean checkout does not authorise an in-place installation over an
-existing deployment.
+The printed full SHA must match the published release identity, with passing
+GitHub checks for that exact commit. Record it with every hardware/gameplay
+result; do not substitute a historical candidate digest. A clean checkout does
+not authorise an in-place installation over an existing deployment. Inventory
+and protect existing config, manual state, receipts and lifecycle records first;
+completed non-purge removal is required before explicit reinstall. Older removal
+implementations need maintainer review before execution.
 
 From that identified checkout, review read-only preflight:
 

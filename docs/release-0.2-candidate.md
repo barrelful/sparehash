@@ -1,5 +1,11 @@
 # Experimental v0.2 candidate acceptance
 
+> **Historical engineering record.** PRs #1 and #2 have been merged into `main`.
+> Statements below about draft PRs, pending merges, RC proposals and selected
+> candidate hashes describe their original snapshots, not current release status.
+> Use [v0.2.0 release notes](release-0.2.0.md) and the published tag for release
+> identity. The original evidence and failed attempts below are retained intact.
+
 ## Stabilisation sprint — automated gates passed
 
 Work is isolated on `atlas/v020-task-2-stability`, based on reviewed recovery

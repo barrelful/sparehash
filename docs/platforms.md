@@ -10,14 +10,16 @@ standard-library-only: no `python3-systemd`, Lutris or GameMode dependency.
 | Ubuntu 24.04 | `ubuntu-noble-20260926-v1`, systemd 255 / Python 3.12.3 | Synthetic install/operation/removal/purge/reinstall/reboot |
 | Bazzite 44 | `bazzite-kde-44-20261012-v1`, systemd 259 / Python 3.14.8 | Same, with SELinux Enforcing and captured kernel audits |
 
-These are **historical S3 results**, not current-candidate reboot acceptance.
-See [current acceptance](development/v020-current-acceptance.md) for source pins
-and unresolved gates, and [S3 results](development/s3-lifecycle-reliability.md)
-for the older evidence. These checks used a
+Both images subsequently passed all 22 corrected-source acceptance checks,
+including actual reboot/autostart, removal, reinstall, purge and hugepage
+restoration. See the [acceptance record](release-0.2-candidate.md#fresh-owner-requested-acceptance-at-b18e1c8)
+for exact source pins and the [release notes](release-0.2.0.md) for release scope.
+The [S3 results](development/s3-lifecycle-reliability.md) retain older evidence.
+These checks used a
 non-hashing, root-trusted external fixture and file-backed sensor values. They
 do not certify actual upstream mining performance, arbitrary hardware, real
 native/Proton gameplay or KDE/Gaming Mode behavior. Those remain owner testing
-after an automated/VM-gated experimental RC. No RC is declared here.
+of the final experimental release. v0.2.0 is Experimental/Beta, not RC1 or stable.
 
 Preflight `VALIDATED` means os-release ID/version matches Ubuntu `24.04` or
 Bazzite `44`; it does not authenticate the exact baseline image or all hardware

@@ -7,18 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Experimental v0.2 candidate work (not an RC/release declaration)
+## [0.2.0] - 2026-11-01
+
+**Experimental/Beta, not production-stable.** See [release notes](docs/release-0.2.0.md).
+
+### Changed
 
 - Single attributed Lutris-derived best-effort Steam reaper scanner, bounded
   polling/freshness and independent controller protections; log/completeness
   experiments retired after verified preservation.
 - Source install/removal/purge/reinstall/reboot passed synthetic disposable Ubuntu
   24.04 and Bazzite 44 lifecycle checks; staging residue fixed without relaxing
-  foreign-content/receipt checks. Gameplay and physical hardware remain pending.
+  foreign-content/receipt checks. Final-release gameplay and physical hardware
+  validation remain separate from VM evidence.
 - Upgrades/rollback, native packaging, benchmark and in-place reconfiguration
   deferred; public unsupported paths refuse before effects.
 - Release QA uses explicit VM consent, source SHA-256 and an attributed non-hashing
   fixture. Python 3.11–3.14 quality gates and shipped licence/notices are required.
+- Improved idle-priority scheduling and protected runtime layout; controller
+  remains the sole miner-start authority. The owner accepted the physical CPU
+  comparison without a zero-contention claim.
+- Removal now preflights receipts and identities, checkpoints cleanup and retains
+  source/launcher through unit, account and daemon-reload failures. A crash during
+  final self-source removal can still require maintainer assistance.
 
 ### Historical pre-revision-3 branch notes — 2026-10-25 (superseded)
 
@@ -108,6 +119,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - This is an experimental first release. See `README.md` for v1 limitations.
 
-[Unreleased]: https://github.com/barrelful/sparehash/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/barrelful/sparehash/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/barrelful/sparehash/releases/tag/v0.2.0
 [0.1.1]: https://github.com/barrelful/sparehash/releases/tag/v0.1.1
 [0.1.0]: https://github.com/barrelful/sparehash/releases/tag/v0.1.0
