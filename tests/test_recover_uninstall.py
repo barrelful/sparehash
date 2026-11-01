@@ -5,6 +5,7 @@ import importlib
 import io
 import json
 import os
+import subprocess
 import sys
 import tarfile
 from pathlib import Path
@@ -176,3 +177,12 @@ def test_completed_gate_never_manages_new_installation(modules, monkeypatch, tmp
     assert stage.main() == 1
     assert journal.read_text() == "new installation's unrelated journal"
     recover.assert_not_called()
+
+
+def test_recovery_qa_typing_and_lint():
+    """Existing CI's pytest discovery runs these checks on every Python version."""
+    sources = ["qa/build_recovery.py", "qa/recovery_stage.py", "qa/recover_uninstall.py", "qa/recovery_acceptance.py"]
+    for command in ([sys.executable, "-m", "mypy", "--follow-imports=silent", *sources],
+                    [sys.executable, "-m", "ruff", "check", *sources, "tests/test_recover_uninstall.py"]):
+        result = subprocess.run(command, capture_output=True, text=True, timeout=120)
+        assert result.returncode == 0, result.stdout + result.stderr

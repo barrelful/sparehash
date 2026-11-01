@@ -269,7 +269,7 @@ procedure is in [the one-off owner guide](v020-recovery-owner.md).
   the Bazzite-specific procedure. No Ubuntu recovery-success claim.
 - **Retained FAIL evidence:** the first small-history fixture and second retired-
   service failure injector; neither was promoted to acceptance.
-- **Local:** 37 focused reader/recovery tests; full **1,252 passed + 619 subtests**;
+- **Local:** 38 focused reader/recovery tests; full **1,253 passed + 619 subtests**;
   production typing on 56 modules, explicit typing on four QA modules, scoped
   Ruff, shell syntax, README inventory, offline build/artifact/dependency checks
   and exported-tree secrets scan passed. No new runtime module or dependency.
@@ -305,3 +305,10 @@ The original source/archive pin above is unchanged. The two unrelated stock
 `tuned_t` audit denials remain retained separately. This final clone was collected,
 forced off and discarded. The owner guide uses only these final tested pins;
 the later documentation/CI delivery commit is not substituted into the bundle.
+
+QA typing and scoped lint are exercised by the automatically discovered
+`test_recovery_qa_typing_and_lint` regression, so the existing Python-matrix test
+jobs enforce them without modifying the workflow file from the 9e5d6cc base.
+This keeps the same checks while avoiding a new workflow-permission requirement
+for delivery credentials. Runtime typing and the existing scoped release lint
+remain in their original workflow steps.

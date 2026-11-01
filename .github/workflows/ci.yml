@@ -40,9 +40,6 @@ jobs:
       - name: Type check supervised QA runner
         run: .venv/bin/python -m mypy --follow-imports=silent qa/contention_safety.py qa/run_cpu_contention.py
 
-      - name: Type check one-off recovery utility
-        run: .venv/bin/python -m mypy --follow-imports=silent qa/build_recovery.py qa/recovery_stage.py qa/recover_uninstall.py qa/recovery_acceptance.py
-
       - name: Scoped release lint
         run: >-
           .venv/bin/ruff check sparehash/gaming_scan.py sparehash/__main__.py
@@ -61,8 +58,6 @@ jobs:
           tests/test_runtime_spec.py tests/test_cli_uninstall.py qa/runtime_layout_acceptance.py
           qa/contention_safety.py qa/run_cpu_contention.py tests/test_supervised_contention.py
           sparehash/xmrig_paths.py tests/test_manifest_read_limits.py
-          qa/build_recovery.py qa/recovery_stage.py qa/recover_uninstall.py
-          qa/recovery_acceptance.py tests/test_recover_uninstall.py
 
   package-build:
     runs-on: ubuntu-24.04
