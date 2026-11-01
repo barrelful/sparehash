@@ -1,12 +1,21 @@
 # Current-source v0.2 acceptance
 
 > Latest stability-sprint disposition is consolidated in the
-> [candidate report](../release-0.2-candidate.md#stabilisation-sprint--implementation-delivered-acceptance-blocked).
-> Bazzite reboot/autostart succeeded at `de92087`, followed by a real uninstall
-> NSS-ordering defect. That defect is corrected at `5de94c6`; fresh corrected-source
-> Bazzite/Ubuntu attempts were blocked before installation by boot/management
-> failures. Do not read older transport failures below as the latest Bazzite
-> reboot result, or the partial success as full current-candidate acceptance.
+> [candidate report](../release-0.2-candidate.md#stabilisation-sprint--automated-gates-passed).
+> Corrected-source Bazzite at `b18e1c8` now passes the complete install/reboot/
+> runtime/uninstall/reinstall/purge workflow with SELinux Enforcing and full audit
+> captured. Ubuntu's fresh retry also passes all 22 checks after condition-based
+> agent reconnection within the full readiness deadline. Both summaries have
+> `complete=true`. Earlier failures below remain historical, not the current
+> dual-distro outcome. See the linked report
+> for exact pins and retained transport failures.
+
+> Physical benchmark update (owner-reported, 2026-11-01): `f348ed1` foreground
+> degradation 39.08%; `21d4960` 34.39%, with 7.53% higher foreground throughput
+> while mining. SCHED_IDLE/nice19, `cpu.idle=1`, `cpu.weight=1`; both services
+> inactive afterward. The owner accepts the current scheduling benchmark gate as
+> satisfied. No physical machine/result-file access or scheduler change by the
+> assistant; see the candidate report for the saved comparison reference.
 
 This report distinguishes instrumented disposable-VM evidence, owner-reported
 physical observations, and untested hardware claims. PR #1 remains experimental;
