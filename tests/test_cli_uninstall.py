@@ -82,6 +82,7 @@ class UninstallTests(unittest.TestCase):
         for name in (PACKAGE_LEAF, "/usr/local/bin/sparehash", "/etc/systemd/system/sparehash.service",
                      "/etc/systemd/system/sparehash-xmrig.service", CONFIG):
             _ = self.write(name)
+        self.tree.path(cli_uninstall.SHIM).chmod(0o755)
         ledger = Ledger(self.tree)
         ledger.initialize()
         if legacy:
@@ -99,7 +100,8 @@ class UninstallTests(unittest.TestCase):
 
     def run_uninstall(self, *, purge: bool = False, root: int = 0, empty: bool = True,
                       legacy: bool = False, build: bool = True, stop_failure: bool = False,
-                      groupdel_exit: int | None = None, cleanup_failure: bool = False) -> tuple[int, Client, FakeInfrastructure]:
+                       groupdel_exit: int | None = None, cleanup_failure: bool = False,
+                       reload_failure: bool = False) -> tuple[int, Client, FakeInfrastructure]:
         """Use a private tree and reject every controller call, including abort/release."""
         if build:
             self.build(legacy=legacy)
@@ -110,6 +112,10 @@ class UninstallTests(unittest.TestCase):
             # Record the call first so ordering survives the failure.
             fake.calls.append(argv)
             self.assertTrue(lifecycle.is_retired(self.root / "lifecycle.json"))
+            self.assertTrue(self.tree.path(PACKAGE_LEAF).exists())
+            self.assertTrue(self.tree.path(cli_uninstall.SHIM).exists())
+            if reload_failure and argv == ("/usr/bin/systemctl", "daemon-reload"):
+                raise DeploymentError("helper", "injected reload failure")
             if argv[:2] in (("/usr/bin/systemctl", "disable"), ("/usr/bin/systemctl", "stop")):
                 self.assertTrue(self.tree.path(PACKAGE_LEAF).exists())
             if stop_failure and argv[:2] == ("/usr/bin/systemctl", "stop"):
@@ -133,6 +139,36 @@ class UninstallTests(unittest.TestCase):
 
     def commands(self, fake: FakeInfrastructure) -> list[tuple[str, ...]]:
         return [call for call in fake.calls if call[0] not in {"hugepages", "empty"}]
+
+    def test_reload_retry_keeps_source_and_skips_completed_cleanup(self) -> None:
+        result, _, _ = self.run_uninstall(reload_failure=True)
+        self.assertEqual(result, 1)
+        self.assertTrue(self.tree.path(PACKAGE_LEAF).exists())
+        self.assertTrue(self.tree.path(cli_uninstall.SHIM).exists())
+        journal = cli_uninstall.RemovalJournal(self.tree)
+        journal.load()
+        self.assertIn("cleanup", journal.phases)
+        result, _, fake = self.run_uninstall(build=False)
+        self.assertEqual(result, 0)
+        self.assertNotIn((cli_uninstall.SHIM, "__cleanup__"), fake.calls)
+
+    def test_predictable_version_failure_precedes_source_removal(self) -> None:
+        self.build()
+        with mock.patch.object(cli_uninstall, "remove_owned_versions", side_effect=OSError("invalid inventory")) as removal:
+            result, _, fake = self.run_uninstall(build=False)
+        self.assertEqual(result, 1)
+        self.assertTrue(removal.call_args.kwargs["validate_only"])
+        self.assertTrue(self.tree.path(PACKAGE_LEAF).exists())
+        self.assertNotIn((cli_uninstall.SHIM, "__cleanup__"), fake.calls)
+
+    def test_hugepage_warning_retains_all_artifacts(self) -> None:
+        from types import SimpleNamespace
+
+        with mock.patch.object(FakeInfrastructure, "free_hugepages", return_value=SimpleNamespace(warning="ambiguous lease")):
+            result, _, fake = self.run_uninstall()
+        self.assertEqual(result, 1)
+        self.assertTrue(self.tree.path(PACKAGE_LEAF).exists())
+        self.assertNotIn((cli_uninstall.SHIM, "__cleanup__"), fake.calls)
 
     def test_removes_receipt_owned_artifacts_and_retains_config(self) -> None:
         # Given a receipted install

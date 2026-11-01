@@ -10,7 +10,9 @@ from unittest.mock import patch
 
 import pytest
 
-from sparehash import xmrig_paths
+from sparehash import xmrig_paths, xmrig_remove
+from sparehash.cli_uninstall import RemovalJournal
+from sparehash.deployment import Tree
 from sparehash.install_manifest import StoreContext, locked_store
 from sparehash.xmrig_layout import CollisionError
 from sparehash.xmrig_manifest import MAX_METADATA_BYTES_V2, format_manifest, parse_manifest
@@ -72,6 +74,56 @@ def test_large_manifest_authorizes_version_removal_without_dropping_receipts(lar
     with locked_store(StoreContext(layout.trust)) as store:
         snapshot = store.read()
     assert snapshot is not None and snapshot.manifest == replace(manifest, versions=())
+
+
+def test_version_preflight_is_read_only(large_layout):
+    layout, _ = large_layout
+    before = {path: path.read_bytes() for path in (layout.manifest, layout.marker, layout.binary("xmrig-6.26.0"))}
+    progress = RemovalJournal(Tree(layout.root, os.getuid()))
+    assert remove_owned_versions(layout.trust, progress=progress, validate_only=True) == ("xmrig-6.26.0",)
+    assert progress.done == progress.phases == set()
+    assert all(path.read_bytes() == data for path, data in before.items())
+
+
+@pytest.mark.parametrize("boundary", ["binary", "directory", "metadata", "root"])
+def test_interrupted_version_removal_resumes_from_durable_intent(large_layout, boundary):
+    layout, _ = large_layout
+    tree = Tree(layout.root, os.getuid())
+    progress = RemovalJournal(tree)
+    original = xmrig_remove.remove_tree
+
+    def interrupted(parent, name):
+        if boundary == "binary":
+            layout.binary(name).unlink()
+            raise OSError("injected after binary unlink")
+        original(parent, name)
+        if boundary == "directory":
+            raise OSError("injected after directory removal")
+
+    unlink = os.unlink
+    rmdir = os.rmdir
+
+    def unlink_then_fail(name, *args, **kwargs):
+        unlink(name, *args, **kwargs)
+        if boundary == "metadata" and name == xmrig_paths.MARKER_NAME:
+            raise OSError("injected after marker unlink")
+
+    def rmdir_then_fail(name, *args, **kwargs):
+        rmdir(name, *args, **kwargs)
+        if boundary == "root" and name == layout.managed.name:
+            raise OSError("injected after managed root removal")
+
+    with (
+        patch.object(xmrig_remove, "remove_tree", interrupted),
+        patch.object(os, "unlink", unlink_then_fail),
+        patch.object(os, "rmdir", rmdir_then_fail),
+        pytest.raises(OSError, match="injected"),
+    ):
+        remove_owned_versions(layout.trust, progress=progress)
+    resumed = RemovalJournal(tree)
+    resumed.load()
+    remove_owned_versions(layout.trust, progress=resumed)
+    assert "versions" in resumed.phases and not layout.managed.exists()
 
 
 @pytest.mark.parametrize("target", ["marker", "manifest"])

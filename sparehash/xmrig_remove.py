@@ -17,7 +17,14 @@ from .install_manifest import StoreContext, locked_store
 from .layout import Layout
 from .xmrig_archive import remove_tree
 from .xmrig_layout import CollisionError, current_target, open_managed_root, verify_binary
-from .xmrig_ledger import Artifact, Installer, PACKAGE_DIR, TEMPLATE_DIR, fixed_target, leaf_identity
+from .xmrig_ledger import (
+    PACKAGE_DIR,
+    TEMPLATE_DIR,
+    Artifact,
+    Installer,
+    fixed_target,
+    leaf_identity,
+)
 from .xmrig_paths import DIRECTORY_FLAGS, MARKER_NAME, PathTrust
 
 LEAF_DIRS: Final = (PACKAGE_DIR, TEMPLATE_DIR)
@@ -25,6 +32,8 @@ PRUNE_DIRS: Final = (PACKAGE_DIR, TEMPLATE_DIR, "/opt/sparehash/src", "/opt/spar
 CONTAINER_CHILDREN: Final = {"/opt/sparehash": frozenset(("src",)),
                              "/opt/sparehash/src": frozenset(("sparehash", "systemd"))}
 _LEAF_FLAGS: Final = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
+VERSION_INTENT: Final = "version:"
+METADATA_INTENT: Final = "xmrig-metadata"
 
 
 @runtime_checkable
@@ -84,7 +93,8 @@ def _validate_tree(fd: int, uid: int) -> None:
 
 def remove_owned_versions(trust: PathTrust, *, layout: Layout | None = None,
                           tree: Tree | None = None,
-                          progress: RemovalProgress | None = None) -> tuple[str, ...]:
+                          progress: RemovalProgress | None = None,
+                          validate_only: bool = False) -> tuple[str, ...]:
     """Use the canonical store lock and pinned root; retain all installer receipts.
 
     The managed version tree is mutations-only through pinned descriptors. An
@@ -96,37 +106,57 @@ def remove_owned_versions(trust: PathTrust, *, layout: Layout | None = None,
     if tree is not None:
         trust = tree.trust
     effective = _with_layout(trust, layout)
-    if progress is not None and "versions" in progress.phases:
-        return ()
     with ExitStack() as stack:
         store = stack.enter_context(locked_store(StoreContext(effective)))
         prior = store.read()
         if prior is None:
             raise CollisionError("manifest", "no manifest authority for XMRig removal")
+        manifest = prior.manifest
+        names = manifest.names
+        intents = progress.done if progress is not None else set()
+        metadata_intent = METADATA_INTENT in intents and all(VERSION_INTENT + name in intents for name in names)
         root_fd, parent = open_managed_root(effective, stack, create=False)
+        if progress is not None and "versions" in progress.phases:
+            if names or root_fd is not None:
+                raise CollisionError("progress", "completed version removal contradicts manifest or filesystem")
+            return ()
         if root_fd is None:
-            if prior.manifest.versions:
+            if names and not metadata_intent:
                 raise CollisionError("root", "manifest references a missing managed root")
+            if validate_only:
+                return names
+            if names:
+                store.write(replace(manifest, versions=()))
             if progress is not None:
                 progress.phases.add("versions")
                 progress.save()
-            return ()
-        manifest = effective.manifest()
-        if manifest is None or manifest != prior.manifest:
-            raise CollisionError("marker", "valid protected marker and manifest are required")
-        names = manifest.names
+            return names
+        try:
+            os.stat(MARKER_NAME, dir_fd=root_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            if not metadata_intent:
+                raise CollisionError("marker", "protected marker missing without removal intent") from None
+        else:
+            if effective.manifest() != manifest:
+                raise CollisionError("marker", "valid protected marker and manifest are required")
         target = current_target(root_fd)
         if target is not None and (target not in names or "/" in target or target in {".", ".."}):
             raise CollisionError("current", "current symlink target is not a manifest-owned version")
-        if target is not None and effective.authorized_current(
+        if target is not None and VERSION_INTENT + target not in intents and effective.authorized_current(
                 effective.marker_path, effective.manifest_path) is None:
             raise CollisionError("current", "current is not manifest-authorized")
         allowed = {*names, MARKER_NAME}
         if target is not None:
             allowed.add("current")
-        if set(os.listdir(root_fd)) != allowed:
+        required = {name for name in names if VERSION_INTENT + name not in intents}
+        if not metadata_intent:
+            required.add(MARKER_NAME)
+        present = set(os.listdir(root_fd))
+        if present - allowed or not required <= present:
             raise CollisionError("inventory", "missing recorded or unrecorded root content; no files removed")
         for name in names:
+            if name not in present:
+                continue
             child = os.open(name, DIRECTORY_FLAGS, dir_fd=root_fd)
             with ExitStack() as version:
                 _ = version.callback(os.close, child)
@@ -134,12 +164,24 @@ def remove_owned_versions(trust: PathTrust, *, layout: Layout | None = None,
                 if info.st_uid != effective.uid or info.st_mode & 0o022:
                     raise CollisionError("ownership", "version directory is foreign or writable")
                 _validate_tree(child, effective.uid)
-                verify_binary(root_fd, name, effective.uid)
+                if VERSION_INTENT + name not in intents:
+                    verify_binary(root_fd, name, effective.uid)
+        if validate_only:
+            return names
         for name in names:
-            remove_tree(root_fd, name)
+            if progress is not None:
+                progress.done.add(VERSION_INTENT + name)
+                progress.save()
+            if name in present:
+                remove_tree(root_fd, name)
+                os.fsync(root_fd)
+        if progress is not None:
+            progress.done.add(METADATA_INTENT)
+            progress.save()
         if target is not None:
             os.unlink("current", dir_fd=root_fd)
-        os.unlink(MARKER_NAME, dir_fd=root_fd)
+        if MARKER_NAME in present:
+            os.unlink(MARKER_NAME, dir_fd=root_fd)
         os.fsync(root_fd)
         os.rmdir(effective.managed_root.name, dir_fd=parent)
         os.fsync(parent)
@@ -200,8 +242,9 @@ def _allowed_children(directory: str, leaves: dict[str, Artifact]) -> frozenset[
 
 
 def remove_leaf_receipts(trust: PathTrust, *, layout: Layout | None = None,
-                         tree: Tree | None = None,
-                         progress: RemovalProgress | None = None) -> tuple[str, ...]:
+                          tree: Tree | None = None,
+                          progress: RemovalProgress | None = None,
+                          validate_only: bool = False) -> tuple[str, ...]:
     """Remove only created package/template file receipts after a full preflight of every container.
 
     An injected ``Tree`` supplies the physical roots; ``layout`` overlays the
@@ -218,6 +261,8 @@ def remove_leaf_receipts(trust: PathTrust, *, layout: Layout | None = None,
         if prior is None or prior.manifest.installer is None:
             raise CollisionError("receipt", "no per-file installer receipts; reinstall before removal")
         leaves = _authorized_leaves(tree, prior.manifest.installer, progress)
+        if progress is not None and "leaf-receipts" in progress.phases and leaves:
+            raise CollisionError("progress", "completed leaf removal still has present source files")
         directories = _authorized_directories(tree, prior.manifest.installer)
         roots: dict[str, int] = {}
         for directory in (*LEAF_DIRS, *CONTAINER_CHILDREN):
@@ -230,6 +275,8 @@ def remove_leaf_receipts(trust: PathTrust, *, layout: Layout | None = None,
         for directory, fd in roots.items():
             if not set(os.listdir(fd)) <= set(_allowed_children(directory, leaves)):
                 raise CollisionError("receipt", "unrecorded content under " + directory + "; nothing removed")
+        if validate_only:
+            return tuple(sorted(leaves))
         removed: list[str] = []
         for directory in LEAF_DIRS:
             _fd: int | None = roots.get(directory)
