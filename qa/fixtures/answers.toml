@@ -1,5 +1,5 @@
 # Answers file for non-interactive SpareHash install
-# This file is used with: sudo ./install.sh --answers qa/fixtures/answers.toml
+# This file is used with: sudo ./install.sh --answers qa/fixtures/answers.toml --yes
 
 version = 1
 wallet = "REPLACE_WITH_YOUR_MONERO_WALLET_ADDRESS"

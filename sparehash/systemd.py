@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import os
+import re
 import socket
 import stat
 import subprocess
@@ -15,13 +16,20 @@ from pathlib import Path
 from typing import Final, Protocol, TypedDict
 from uuid import uuid4
 
-from .paths import UNIT_CONTROLLER, UNIT_MINER
-from .sysdetect import Capabilities, FIXED_PATH
+from .paths import CLI_PATH, UNIT_CONTROLLER, UNIT_MINER
+from .sysdetect import FIXED_PATH, Capabilities
 
 MARKER: Final = "# Managed by SpareHash"
 TEMPLATES: Final = Path(__file__).resolve().parent.parent / "systemd"
 UNIT_NAMES: Final = (UNIT_CONTROLLER, UNIT_MINER)
 TIMEOUT: Final = 10.0
+CREDENTIAL: Final = "LoadCredential=xmrig.json:/etc/sparehash/xmrig.json"
+CREDENTIAL_FALLBACK: Final = "# Wrapper fallback: /etc/sparehash/xmrig.runtime.json (0640 root:xmrig)"
+TRUSTED_CONDITION: Final = f"ExecCondition=+{CLI_PATH} __authorize_miner__"
+UNIT_DIRECTORIES: Final = ("etc/systemd/system", "usr/lib/systemd/system")
+UNIT_SUFFIXES: Final = (".service", ".socket", ".timer", ".target", ".mount", ".path", ".device",
+                        ".slice", ".scope", ".automount", ".swap")
+UNIT_TEXT_LIMIT: Final = 256 * 1024
 Units = TypedDict("Units", {"sparehash.service": str, "sparehash-xmrig.service": str})
 
 
@@ -67,11 +75,14 @@ def render(caps: Capabilities) -> Units:
     weights = "CPUWeight=idle\nIOWeight=1" if (
         caps.cgroup_hierarchy == "cgroup2" and caps.cpuweight_idle
     ) else "# Idle cgroup weights unavailable; retaining Nice/SCHED_IDLE/idle I/O"
-    credential = "LoadCredential=xmrig.json:/etc/sparehash/xmrig.json" if (
+    credential = CREDENTIAL if (
         caps.load_credential and caps.systemd_version is not None and caps.systemd_version >= 248
-    ) else "# Wrapper fallback: /etc/sparehash/xmrig.runtime.json (0640 root:xmrig)"
-    return {"sparehash.service": controller,
-            "sparehash-xmrig.service": miner.replace("@WEIGHTS@", weights).replace("@CREDENTIAL@", credential)}
+    ) else CREDENTIAL_FALLBACK
+    rendered_miner = miner.replace("@WEIGHTS@", weights).replace("@CREDENTIAL@", credential)
+    conditions = [line for line in rendered_miner.splitlines() if line.startswith("ExecCondition=")]
+    if conditions != [TRUSTED_CONDITION]:
+        raise UnitError("miner ExecCondition must be the exact root-executed trusted CLI")
+    return {"sparehash.service": controller, "sparehash-xmrig.service": rendered_miner}
 
 
 def check_collisions(directory: Path) -> None:
@@ -91,6 +102,87 @@ def check_collisions(directory: Path) -> None:
             raise CollisionError(path) from error
         if first != MARKER:
             raise CollisionError(path)
+
+
+def _unit_text(path: Path) -> str:
+    """Bounded, no-follow read of a single unit file."""
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except OSError as error:
+        raise UnitError(f"Unsafe or unreadable unit: {path.name}") from error
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_size > UNIT_TEXT_LIMIT:
+            raise UnitError(f"Unsafe or oversized unit: {path.name}")
+        chunks: list[bytes] = []
+        remaining = UNIT_TEXT_LIMIT
+        while remaining > 0:
+            chunk = os.read(fd, min(remaining, 65536))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+    finally:
+        os.close(fd)
+    try:
+        return b"".join(chunks).decode("utf-8")
+    except UnicodeError as error:
+        raise UnitError(f"Malformed unit: {path.name}") from error
+
+
+def _reject_privileged_exec(name: str, lines: Sequence[str]) -> None:
+    for line in lines:
+        statement = line.strip()
+        if statement.startswith("ExecStart=+/") or re.match(r"ExecCondition=\+/usr/local/", statement):
+            raise UnitError(f"Foreign unit {name} injects a root-executed helper")
+
+
+def _validate_owned_unit(name: str, lines: Sequence[str]) -> None:
+    statements = [line.strip() for line in lines]
+    conditions = [line for line in statements if line.startswith("ExecCondition=")]
+    if name == UNIT_MINER:
+        if conditions != [TRUSTED_CONDITION]:
+            raise UnitError(f"{name} must keep the exact root-executed trusted ExecCondition")
+        if not any(line in {CREDENTIAL, CREDENTIAL_FALLBACK} for line in statements):
+            raise UnitError(f"{name} must retain its credential binding")
+    if any(line.startswith("ExecStart=+/") for line in statements):
+        raise UnitError(f"{name} must not root-exec an arbitrary helper")
+
+
+def validate_units(root: Path) -> None:
+    """Reject foreign, masked or privilege-injecting units under a root.
+
+    Walks the effective unit search paths and ``*.d`` drop-ins without invoking a
+    manager. Owned units must carry the exact root-executed trusted ExecCondition
+    and credential binding; any other present unit is refused when it injects
+    ``ExecStart=+/`` or an ``ExecCondition=+/usr/local/...`` helper, and a foreign
+    or masked ``xmrig.service``/``sparehash*.service`` is never tolerated.
+    """
+    for relative in UNIT_DIRECTORIES:
+        directory = root / relative
+        if not directory.is_dir():
+            continue
+        with os.scandir(directory) as entries:
+            for entry in entries:
+                path = directory / entry.name
+                if entry.is_dir(follow_symlinks=False) and entry.name.endswith(".d"):
+                    if entry.name[:-2] in (*UNIT_NAMES, "xmrig.service"):
+                        raise UnitError(f"Refusing drop-in for {entry.name[:-2]}")
+                    continue
+                if entry.name == "xmrig.service" or (
+                    entry.is_symlink() and entry.name in (*UNIT_NAMES, "xmrig.service")
+                ):
+                    raise UnitError(f"Refusing foreign or masked unit: {entry.name}")
+                if not entry.name.endswith(UNIT_SUFFIXES):
+                    continue
+                lines = _unit_text(path).splitlines()
+                marked = bool(lines) and lines[0] == MARKER
+                if marked and entry.name not in UNIT_NAMES:
+                    raise UnitError(f"Refusing foreign marked unit: {entry.name}")
+                if entry.name in UNIT_NAMES and marked:
+                    _validate_owned_unit(entry.name, lines)
+                    continue
+                _reject_privileged_exec(entry.name, lines)
 
 
 def install_units(units: Units, directory: Path) -> None:
@@ -153,12 +245,15 @@ def probe_cpuweight_idle(env: Mapping[str, str], runner: Runner = _run,
 
     Never call from render/status. The callback argument matches sysdetect's
     API, but production helper environment is fixed, not inherited from it.
-    An active/exited oneshot retains the unit for inspection; no --wait (which
-    would wait indefinitely with RemainAfterExit). All calls are bounded.
+    A bounded live sleeper retains the child cgroup for inspection. An exited
+    oneshot can remain active while systemd has already removed its cgroup.
+    Type=exec waits for successful exec, not process exit; no --wait is used.
     """
     _ = env
     ctx = context if context is not None else ProbeContext.host()
-    if ctx.euid != 0 or not ctx.cgroup_v2 or not (ctx.cgroup_root / "cpu.idle").is_file():
+    # cpu.idle is a non-root control. Only the transient unit's child cgroup
+    # below can establish effective kernel + manager support.
+    if ctx.euid != 0 or not ctx.cgroup_v2:
         return False
     unit = f"sparehash-idle-probe-{uuid4().hex}.service"
     safe_env = {"PATH": FIXED_PATH, "LANG": "C"}
@@ -166,20 +261,21 @@ def probe_cpuweight_idle(env: Mapping[str, str], runner: Runner = _run,
     cleaned = True
     try:
         started = runner(("/usr/bin/systemd-run", f"--unit={unit}",
-                          "--property=Type=oneshot", "--property=RemainAfterExit=yes",
+                          "--property=Type=exec", "--property=RuntimeMaxSec=30s",
                           "--property=CPUWeight=idle", "--property=TimeoutStartSec=5s",
                           "--property=CollectMode=inactive-or-failed",
-                          "--property=TimeoutStopSec=3s", "/usr/bin/true"),
+                          "--property=TimeoutStopSec=3s", "/usr/bin/sleep", "30"),
                          timeout=TIMEOUT, env=safe_env)
         if started.returncode == 0:
             shown = runner(("/usr/bin/systemctl", "show", unit,
-                            "--property=Result,ExecMainCode,ExecMainStatus,ControlGroup,CPUWeight,ActiveState"),
+                            "--property=Result,MainPID,SubState,ControlGroup,CPUWeight,ActiveState"),
                            timeout=TIMEOUT, env=safe_env)
             properties = dict(line.split("=", 1) for line in shown.stdout.splitlines() if "=" in line)
             group = properties.get("ControlGroup", "")
             parts = Path(group).parts
             if (shown.returncode == 0 and properties.get("Result") == "success"
-                    and properties.get("ExecMainCode") == "1" and properties.get("ExecMainStatus") == "0"
+                    and re.fullmatch(r"[1-9][0-9]{0,19}", properties.get("MainPID", "")) is not None
+                    and properties.get("SubState") == "running"
                     and properties.get("ActiveState") == "active"
                     and properties.get("CPUWeight") in {"idle", "0"}
                     and group.startswith("/") and len(parts) > 1 and ".." not in parts):

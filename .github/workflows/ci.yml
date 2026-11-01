@@ -14,7 +14,7 @@ jobs:
     runs-on: ubuntu-24.04
     strategy:
       matrix:
-        python-version: ["3.11", "3.12", "3.13"]
+        python-version: ["3.11", "3.12", "3.13", "3.14"]
     steps:
       - uses: actions/checkout@v4
 
@@ -23,19 +23,41 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install pytest mypy
+      - uses: astral-sh/setup-uv@v6
+
+      - name: Install locked development dependencies
+        run: uv sync --locked --python "${{ matrix.python-version }}"
 
       - name: Run unit tests
-        run: python -m pytest tests/ -q
+        run: .venv/bin/python -m pytest tests/ -q -ra
 
       - name: Run README inventory checker
-        run: python qa/check_readme.py
+        run: .venv/bin/python qa/check_readme.py
 
       - name: Type check sparehash package
-        run: python -m mypy sparehash
+        run: .venv/bin/python -m mypy sparehash
+
+      - name: Type check supervised QA runner
+        run: .venv/bin/python -m mypy --follow-imports=silent qa/contention_safety.py qa/run_cpu_contention.py
+
+      - name: Scoped release lint
+        run: >-
+          .venv/bin/ruff check sparehash/gaming_scan.py sparehash/__main__.py
+          sparehash/preflight.py qa/release_smoke.py qa/check_artifacts.py
+          sparehash/cli_config.py tests/test_cli_config.py tests/test_qa_local_pool.py
+          qa/fixtures/synthetic_xmrig.py tests/test_release_surface.py
+          tests/test_qa_release_smoke.py
+          tests/test_runtime_shutdown.py
+          sparehash/power.py tests/test_power_scope.py
+          qa/cpu_contention.py qa/vm_acceptance.py qa/fixtures/blocked_controller.py
+          tests/test_cpu_contention.py tests/test_vm_acceptance_guard.py
+          sparehash/systemd.py sparehash/sysdetect.py tests/test_systemd_units.py tests/test_sysdetect.py
+          qa/investigate_priority_cleanup.py
+          sparehash/runtime.py sparehash/runtime_spec.py sparehash/deployment.py sparehash/paths.py
+          sparehash/ipc.py sparehash/cli_uninstall.py tests/test_runtime_layout.py
+          tests/test_runtime_spec.py tests/test_cli_uninstall.py qa/runtime_layout_acceptance.py
+          qa/contention_safety.py qa/run_cpu_contention.py tests/test_supervised_contention.py
+          sparehash/xmrig_paths.py tests/test_manifest_read_limits.py
 
   package-build:
     runs-on: ubuntu-24.04
@@ -47,11 +69,10 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install build tooling
-        run: python -m pip install build
+      - uses: astral-sh/setup-uv@v6
 
       - name: Build wheel and sdist
-        run: python -m build
+        run: uv build
 
       - name: Verify wheel has no runtime dependencies
         run: |
@@ -62,3 +83,6 @@ jobs:
             exit 1
           fi
           echo 'OK: wheel has no runtime dependencies'
+
+      - name: Verify shipped attribution
+        run: python qa/check_artifacts.py dist

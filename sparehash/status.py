@@ -15,11 +15,12 @@ import time
 from collections.abc import Callable
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
-from typing import Final, Protocol
+from typing import Final, Literal, Protocol
 
 from . import ipc, xmrig_config
 from .config import ConfigError, load
-from .paths import XMRIG_JSON
+from .layout import Layout
+from .paths import XMRIG_JSON, physical_path
 from .power import Evidence, Helpers, PowerSample, read_sysfs
 from .thermal import SensorReadError, find_sensor, read_celsius
 
@@ -53,6 +54,9 @@ class Gaming:
     stale: bool
 
 
+CoverageTier = Literal["UNVERIFIED", "BEST_EFFORT", "DISABLED"]
+
+
 @dataclass(frozen=True, slots=True)
 class StatusSnapshot:
     controller: str = 'unavailable'
@@ -60,6 +64,8 @@ class StatusSnapshot:
     blockers: tuple[tuple[str, str], ...] = ()
     power: PowerSample | None = None
     gaming: tuple[Gaming, ...] = ()
+    coverage_tier: CoverageTier = "UNVERIFIED"
+    gaming_detection: ipc.Document | None = None
     thermal_sensor: str | None = None
     temperature_c: float | None = None
     hugepages_actual: int | None = None
@@ -140,11 +146,17 @@ def miner_summary(port: int, token_reader: Callable[[], str] = xmrig_config.read
         return StatusSnapshot(api='unavailable')
 
 
-def protected_token() -> str:
-    """Pin a regular root-owned non-public credential file before existing parser."""
+def protected_token(layout: Layout | None = None) -> str:
+    """Pin a regular root-owned non-public credential file before existing parser.
+
+    The credential lives outside any redirectable prefix, so the injected layout
+    is honored for the descriptor-anchored open without changing the logical
+    display path.
+    """
     import stat
 
-    fd = os.open(XMRIG_JSON, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    fd = os.open(physical_path(XMRIG_JSON, Path('/'), layout),
+                 os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     with os.fdopen(fd, 'rb') as source:
         info = os.fstat(source.fileno())
         if info.st_uid != 0 or info.st_mode & 0o027 or not stat.S_ISREG(info.st_mode):
@@ -156,6 +168,7 @@ def protected_token() -> str:
 class LiveProvider:
     controller_reader: Callable[[], ipc.Document] = lambda: ipc.call({'cmd': 'status'}, timeout=1)
     resolver: Callable[[str], bool] = resolve_pool
+    layout: Layout | None = None
 
     def snapshot(self) -> StatusSnapshot:
         try:
@@ -173,6 +186,7 @@ class LiveProvider:
         fresh = type(age) in (int, float) and isinstance(age, (int, float)) and 0 <= age <= 10
         users: list[Gaming] = []
         gaming = raw.get('gaming')
+        detection = raw.get('gaming_detection')
         if isinstance(gaming, list):
             for entry in gaming:
                 if (isinstance(entry, list) and len(entry) == 2 and type(entry[0]) is int
@@ -207,7 +221,9 @@ class LiveProvider:
         running = raw.get('running') is True and raw.get('ready') is True
         result = StatusSnapshot(controller='ready' if raw.get('ready') is True else 'starting',
                                 miner='running/unverified' if running else 'stopped', blockers=blockers,
-                                power=power, gaming=tuple(users), thermal_sensor=str(sensor.path) if sensor else None,
+                                power=power, gaming=tuple(users),
+                                gaming_detection=detection if isinstance(detection, dict) else None,
+                                thermal_sensor=str(sensor.path) if sensor else None,
                                 temperature_c=temperature, numa_nodes=nodes or None,
                                 hugepages_actual=number(Path('/sys/kernel/mm/hugepages/hugepages-2048kB/nr_hugepages')),
                                 scheduler=scheduling() if running else Scheduler())
@@ -215,8 +231,12 @@ class LiveProvider:
             cfg = load()
         except (OSError, ConfigError):
             return result
-        api = miner_summary(cfg.api.port, protected_token) if running else StatusSnapshot()
+        api = miner_summary(cfg.api.port, lambda: protected_token(self.layout)) if running else StatusSnapshot()
         return replace(result, api=api.api, hashrate=api.hashrate, pool=api.pool,
+                       coverage_tier="BEST_EFFORT" if isinstance(detection, dict)
+                       and detection.get('detector') == 'steam-reaper' and detection.get('enabled') is True
+                       else "DISABLED" if isinstance(detection, dict) and detection.get('enabled') is False
+                       else "UNVERIFIED",
                        miner='running' if running and api.api == 'available' else result.miner,
                        hugepages_target=cfg.hugepages.pages,
                        dns_hint=None if self.resolver(cfg.pool.host) else DNS_HINT)
@@ -251,7 +271,8 @@ def format_status(snapshot: StatusSnapshot, json_output: bool = False) -> str:
     return '\n'.join(f'{name}: {json.dumps(value)}' for name, value in decode_json(rendered).items()) + '\nMSR: unavailable in v1'
 
 
-def run(json_output: bool = False, provider: Provider | None = None) -> int:
-    snapshot = (provider if provider is not None else LiveProvider()).snapshot()
+def run(json_output: bool = False, provider: Provider | None = None, *,
+        layout: Layout | None = None) -> int:
+    snapshot = (provider if provider is not None else LiveProvider(layout=layout)).snapshot()
     print(format_status(snapshot, json_output))
     return {'unavailable': 3, 'ipc-error': 1}.get(snapshot.controller, 0)

@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Experimental v0.2 candidate work (not an RC/release declaration)
+
+- Single attributed Lutris-derived best-effort Steam reaper scanner, bounded
+  polling/freshness and independent controller protections; log/completeness
+  experiments retired after verified preservation.
+- Source install/removal/purge/reinstall/reboot passed synthetic disposable Ubuntu
+  24.04 and Bazzite 44 lifecycle checks; staging residue fixed without relaxing
+  foreign-content/receipt checks. Gameplay and physical hardware remain pending.
+- Upgrades/rollback, native packaging, benchmark and in-place reconfiguration
+  deferred; public unsupported paths refuse before effects.
+- Release QA uses explicit VM consent, source SHA-256 and an attributed non-hashing
+  fixture. Python 3.11–3.14 quality gates and shipped licence/notices are required.
+
+### Historical pre-revision-3 branch notes — 2026-10-25 (superseded)
+
+### Fixed
+
+- Explicit conservative/gamemode integration counts as acknowledged reduced coverage (`ec61d84`).
+- Dry preflight accepts `--answers` (`857e8cd`).
+- Identity resolution reads `/etc`, `/usr/lib`, `/usr/etc` in NSS order (`348ab09`).
+- Attestation uses the resolved probe uid instead of hardcoded 65534 (`cfd8c62`).
+- Probe staging relocation, mechanism unproven (`36f400d`, `ce04d6b`).
+- Gaming producer (`287718f`).
+- QA observer (`df08762`).
+
+### Known limitations
+
+- Lifecycle verification is incomplete: uninstall is blocked by unrecorded content
+  under `/opt/sparehash` from the probe staging snapshot (see
+  `docs/release-0.2-status.md`).
+
 ## [0.1.1] - 2026-10-10
 
 ### Fixed

@@ -13,7 +13,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from sparehash import cli_config, cli_lifecycle
+from sparehash import cli_config
 from sparehash.__main__ import main
 from sparehash.status import StatusSnapshot
 
@@ -138,12 +138,14 @@ class CliTests(unittest.TestCase):
         dispatch.assert_not_called()
 
     def test_installer_discovers_future_python_modules(self) -> None:
-        """Given a package containing a future module, installer iteration is not frozen."""
-        installer = (Path(__file__).parents[1] / "install.sh").read_text()
+        """Given a package containing a future module, bootstrap discovery is not frozen."""
+        from sparehash import bootstrap
 
-        self.assertIn('for source_file in "$source_package"/*.py; do', installer)
-        self.assertIn("file=${source_file##*/}", installer)
-        self.assertNotIn("for file in __init__.py __main__.py paths.py", installer)
+        source = Path(bootstrap.__file__).read_text(encoding="utf-8")
+        self.assertIn("PACKAGE_LEAF", source)
+        self.assertIn("iterdir", source)
+        self.assertNotIn("for file in __init__.py __main__.py", source)
+        self.assertIsNotNone(bootstrap.PACKAGE_LEAF.fullmatch("power.py"))
         with tempfile.TemporaryDirectory() as temporary_directory:
             package_directory = Path(temporary_directory) / "sparehash"
             package_directory.mkdir()
@@ -155,11 +157,9 @@ class CliTests(unittest.TestCase):
 
     def test_python_shim_forwards_arguments_in_temporary_package(self) -> None:
         """Given an isolated package, generated Python shim forwards argv to main."""
-        installer = (Path(__file__).parents[1] / "install.sh").read_text()
-        marker = "<<'PYTHON_SHIM'\n"
-        shim_start = installer.index(marker) + len(marker)
-        shim_end = installer.index("\nPYTHON_SHIM", shim_start)
-        template = installer[shim_start:shim_end]
+        from sparehash import bootstrap
+
+        template = bootstrap.SHIM_TEMPLATE
         self.assertEqual(template.splitlines()[0], "#!/usr/bin/python3")
 
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -171,7 +171,7 @@ class CliTests(unittest.TestCase):
                 "import sys\nraise SystemExit(0 if sys.argv[1:] == ['status', '--fixture'] else 1)\n",
             )
             shim_path = temporary_path / "sparehash-cli"
-            _ = shim_path.write_text(template.replace("/opt/sparehash/src", temporary_directory))
+            _ = shim_path.write_text(template.format(source=str(temporary_path)))
 
             result = subprocess.run(
                 [sys.executable, str(shim_path), "status", "--fixture"],
@@ -183,18 +183,16 @@ class CliTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0)
 
     def test_config_edit_refused_root_and_nonroot(self) -> None:
-        """sparehash config edit is unsupported in experimental v0.1.1, exit 2, root and nonroot identical."""
+        """Deferred editing refuses before the read-only configuration module runs."""
         for geteuid_fn, uid in [(os.geteuid, 0), (lambda: 1000, 1000)]:
             with self.subTest(geteuid=uid):
                 captured = io.StringIO()
                 with contextlib.redirect_stderr(captured):
-                    with patch.object(cli_config, "edit", side_effect=AssertionError("edit should not be called")):
-                        with patch.object(cli_config, "benchmark", side_effect=AssertionError("benchmark should not be called")):
-                            with patch.object(cli_lifecycle, "update", side_effect=AssertionError("update should not be called")):
-                                result = main(["config", "edit"], geteuid=geteuid_fn)
+                    with patch.object(cli_config, "show", side_effect=AssertionError("show should not be called")):
+                        result = main(["config", "edit"], geteuid=geteuid_fn)
                 self.assertEqual(result, 2)
                 self.assertIn(
-                    "sparehash: config edit is unsupported in experimental v0.1.1",
+                    "sparehash: config edit is unsupported in experimental v0.2.0",
                     captured.getvalue(),
                 )
 
@@ -207,7 +205,7 @@ class CliTests(unittest.TestCase):
                     result = main(["update"], geteuid=geteuid_fn)
                 self.assertEqual(result, 2)
                 self.assertIn(
-                    "sparehash: update is unsupported in experimental v0.1.1",
+                    "sparehash: update is unsupported in experimental v0.2.0",
                     captured.getvalue(),
                 )
 
@@ -220,7 +218,7 @@ class CliTests(unittest.TestCase):
                     result = main(["benchmark"], geteuid=geteuid_fn)
                 self.assertEqual(result, 2)
                 self.assertIn(
-                    "sparehash: benchmark is unsupported in experimental v0.1.1",
+                    "sparehash: benchmark is unsupported in experimental v0.2.0",
                     captured.getvalue(),
                 )
 

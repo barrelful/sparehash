@@ -10,6 +10,14 @@ import sys
 from collections.abc import Callable, Sequence
 from typing import Final
 
+# install.sh executes this file directly under ``python3 -I -B``. Isolated mode
+# does not put the script directory on sys.path, so re-anchor the launcher-selected
+# source root here; environment imports stay scrubbed by the shell.
+if __package__ in (None, ""):
+    _SOURCE_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    if _SOURCE_ROOT not in sys.path:
+        sys.path.insert(0, _SOURCE_ROOT)
+
 PUBLIC_COMMANDS: Final = (
     "install",
     "status",
@@ -22,6 +30,7 @@ PUBLIC_COMMANDS: Final = (
     "benchmark",
     "update",
     "uninstall",
+    "complete-upgrade",
 )
 GAMING_COMMANDS: Final = ("gaming-start", "gaming-end")
 INTERNAL_COMMANDS: Final = (
@@ -47,6 +56,7 @@ class CliArguments(argparse.Namespace):
     debug_command: str | None = None
     name: str = ""
     purge: bool = False
+    operation_id: str = ""
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -54,11 +64,23 @@ def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="sparehash")
     subparsers = parser.add_subparsers(dest="command", required=True)
     for command in PUBLIC_COMMANDS:
-        command_parser = subparsers.add_parser(command, help=(
-            "requires root; show controller/miner/blocker/power state" if command == "status" else None
-        ))
+        help_text = None
+        if command == "status":
+            help_text = "requires root; show controller/miner/blocker/power state"
+        elif command in ("update", "benchmark", "complete-upgrade"):
+            help_text = "deferred in experimental v0.2; refuses before effects"
+        command_parser = subparsers.add_parser(command, help=help_text)
         if command == "install":
             _ = command_parser.add_argument("--answers", metavar="FILE")
+            _ = command_parser.add_argument("--use-existing", action="store_true")
+            _ = command_parser.add_argument("--clear-lifecycle-latch", action="store_true")
+            _ = command_parser.add_argument("--preflight", action="store_true")
+            _ = command_parser.add_argument("--json", action="store_true")
+            _ = command_parser.add_argument("--yes", action="store_true")
+            _ = command_parser.add_argument("--no-start", action="store_true")
+            _ = command_parser.add_argument("--no-enable", action="store_true")
+        elif command == "complete-upgrade":
+            _ = command_parser.add_argument("operation_id")
         elif command == "uninstall":
             _ = command_parser.add_argument("--purge", action="store_true")
         elif command == "status":
@@ -68,7 +90,7 @@ def _parser() -> argparse.ArgumentParser:
         elif command == "config":
             config_commands = command_parser.add_subparsers(dest="config_command", required=True)
             for action in ("show", "edit"):
-                _ = config_commands.add_parser(action)
+                _ = config_commands.add_parser(action, help="deferred in experimental v0.2" if action == "edit" else "show public configuration")
     for command in GAMING_COMMANDS:
         _ = subparsers.add_parser(command)
     debug = subparsers.add_parser("debug")
@@ -80,6 +102,13 @@ def _parser() -> argparse.ArgumentParser:
 
 def _incomplete(command: str) -> int:
     print(f"sparehash: {command} is unavailable until its implementation is installed", file=sys.stderr)
+    return 2
+
+
+def _unsupported(command: str) -> int:
+    print(f"sparehash: {command} is unsupported in experimental v0.2.0; "
+          "upgrades/rollback and benchmark are deferred. Preserve any existing "
+          "migration journals and safety holds; do not delete them to bypass refusal.", file=sys.stderr)
     return 2
 
 
@@ -116,8 +145,6 @@ def main(
             from sparehash.controller_io import authorize_miner
 
             return authorize_miner()
-        return _incomplete(command)
-
     if arguments and arguments[0] == "install":
         from sparehash.install import main as install
 
@@ -125,22 +152,13 @@ def main(
     parsed = _parser().parse_args(arguments, namespace=CliArguments())
     command = parsed.command
     if command == "config" and parsed.config_command == "edit":
-        print("sparehash: config edit is unsupported in experimental v0.1.1", file=sys.stderr)
-        return 2
-    if command == "benchmark":
-        print("sparehash: benchmark is unsupported in experimental v0.1.1", file=sys.stderr)
-        return 2
-    if command == "update":
-        print("sparehash: update is unsupported in experimental v0.1.1", file=sys.stderr)
-        return 2
+        return _unsupported("config edit")
+    if command in ("benchmark", "update", "complete-upgrade"):
+        return _unsupported(command)
     if command == "config":
-        from sparehash.cli_config import edit, show
+        from sparehash.cli_config import show
 
-        return {"show": show, "edit": lambda: edit(geteuid=geteuid)}[parsed.config_command]()
-    if command == "benchmark":
-        from sparehash.cli_config import benchmark
-
-        return benchmark(geteuid=geteuid)
+        return show()
     if command in ("start", "stop", "pause", "resume", "logs"):
         from sparehash.cli_ops import logs, manual, stack
 
@@ -162,10 +180,6 @@ def main(
         from sparehash.gaming import gaming_end, gaming_start
 
         return {"gaming-start": gaming_start, "gaming-end": gaming_end}[command]()
-    if command == "update":
-        from sparehash.cli_lifecycle import update
-
-        return update(geteuid=geteuid)
     if command == "uninstall":
         from sparehash.cli_uninstall import uninstall
 

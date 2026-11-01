@@ -1,4 +1,4 @@
-"""GameMode fixtures and real temporary IPC hooks; no live gaming operations."""
+"""Verified accounts and real temporary IPC hooks; no live gaming operations."""
 
 import contextlib
 import io
@@ -7,147 +7,19 @@ import os
 import socket
 import subprocess
 import sys
-import tempfile
 import time
 import unittest
 from dataclasses import replace
 from pathlib import Path
 from threading import Thread
-from typing import final
-from unittest.mock import Mock, patch
+from unittest.mock import patch
 
 from sparehash import gaming, ipc
 from sparehash.__main__ import main
-from sparehash.sysdetect import FIXED_PATH
 from tests.controller_fixtures import ControllerFixture
 
 
-@final
 class GamingTests(unittest.TestCase):
-    def __init__(self, methodName: str = "runTest") -> None:
-        super().__init__(methodName)
-        self.temp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.temp.cleanup)
-        self.root = Path(self.temp.name)
-        self.users = tuple(gaming.User.from_name(name) for name in ("root", "nobody"))
-        self.runner = Mock(return_value=subprocess.CompletedProcess((), 0, "gamemode is inactive\n"))
-        self.probe = gaming.Probe(self.runner, self.root)
-        def helper(name: str) -> str:
-            return f"/usr/bin/{name}"
-        self.helpers = patch("sparehash.gaming.resolve_helper", side_effect=helper)
-        self.helpers_started = False
-
-    def bus(self, user: gaming.User) -> None:
-        if not self.helpers_started:
-            _ = self.helpers.start()
-            self.addCleanup(self.helpers.stop)
-            self.helpers_started = True
-        directory = self.root / str(user.uid)
-        directory.mkdir()
-        connection = socket.socket(socket.AF_UNIX)
-        self.addCleanup(connection.close)
-        connection.bind(str(directory / "bus"))
-
-    def test_parser_when_global_response_is_exact(self) -> None:
-        # Given / When / Then
-        for text, expected in (("gamemode is active\n", True), ("gamemode is inactive\n", False),
-                               ("active", None), ("gamemode is active and [1] registered", None),
-                               ("gamemode is inactive\ngamemode is active", None), ("", None)):
-            with self.subTest(text=text):
-                self.assertIs(gaming.parse_status(text), expected)
-
-    def test_union_when_one_user_is_active_and_another_unknown(self) -> None:
-        # Given
-        for user in self.users:
-            self.bus(user)
-        self.runner.side_effect = [subprocess.CompletedProcess((), 1, ""),
-                                   subprocess.CompletedProcess((), 0, "gamemode is active\n")]
-        # When / Then
-        self.assertIs(gaming.reconcile(self.users, self.probe), True)
-        self.assertEqual(self.runner.call_count, 2)
-
-    def test_observations_when_unknown_preserve_each_uid(self) -> None:
-        # Given
-        self.bus(self.users[0])
-        # When
-        result = gaming.observations(self.users, self.probe)
-        # Then
-        self.assertEqual(result, ((self.users[0].uid, False), (self.users[1].uid, None)))
-
-    def test_union_when_all_users_are_inactive(self) -> None:
-        # Given
-        for user in self.users:
-            self.bus(user)
-        # When / Then
-        self.assertIs(gaming.reconcile(self.users, self.probe), False)
-
-    def test_missing_bus_when_session_is_unconfirmed_inhibits(self) -> None:
-        # Given / When / Then
-        for presence in (None, True):
-            def session(_user: gaming.User) -> bool | None:
-                return presence
-            probe = replace(self.probe, session_present=session)
-            self.assertIsNone(gaming.reconcile(self.users, probe))
-        self.runner.assert_not_called()
-
-    def test_missing_bus_when_logout_confirmed_clears_only_that_uid(self) -> None:
-        # Given
-        def session(user: gaming.User) -> bool | None:
-            return False if user == self.users[0] else None
-        probe = replace(self.probe, session_present=session)
-        # When / Then
-        self.assertEqual(gaming.observations(self.users, probe),
-                         ((self.users[0].uid, False), (self.users[1].uid, None)))
-
-    def test_query_when_helper_fails_is_unknown(self) -> None:
-        # Given
-        self.bus(self.users[0])
-        # When / Then
-        for failure in (subprocess.TimeoutExpired("gamemoded", 10), OSError("unavailable"),
-                        subprocess.SubprocessError("failed"), UnicodeError("invalid text")):
-            with self.subTest(failure=failure):
-                self.runner.side_effect = failure
-                self.assertIsNone(self.probe.query(self.users[0]))
-
-    def test_query_when_response_nonzero_or_malformed_is_unknown(self) -> None:
-        # Given
-        self.bus(self.users[0])
-        # When / Then
-        for code, text in ((1, "gamemode is inactive"), (0, "unexpected")):
-            self.runner.return_value = subprocess.CompletedProcess((), code, text)
-            self.assertIsNone(self.probe.query(self.users[0]))
-
-    def test_query_when_bus_is_regular_file_is_unknown(self) -> None:
-        # Given
-        directory = self.root / str(self.users[0].uid)
-        directory.mkdir()
-        _ = (directory / "bus").write_text("")
-        # When / Then
-        self.assertIsNone(self.probe.query(self.users[0]))
-        self.runner.assert_not_called()
-
-    def test_query_when_bus_exists_uses_fixed_bounded_argv(self) -> None:
-        # Given
-        user = self.users[0]
-        self.bus(user)
-        # When
-        _ = self.probe.query(user)
-        # Then
-        self.runner.assert_called_once_with(
-            ("/usr/bin/runuser", "-u", user.name, "--", "/usr/bin/env",
-             f"DBUS_SESSION_BUS_ADDRESS=unix:path={self.root}/{user.uid}/bus", "/usr/bin/gamemoded", "-s"),
-            timeout=10.0, check=False, capture_output=True, text=True,
-            env={"PATH": FIXED_PATH, "LC_ALL": "C"})
-
-    def test_helpers_when_caller_path_is_hostile_ignore_it(self) -> None:
-        # Given
-        with patch.dict(os.environ, {"PATH": str(self.root)}), patch("shutil.which", return_value=None) as which:
-            # When
-            result = gaming.resolve_helper("gamemoded")
-            # Then
-            self.assertIsNone(result)
-            which.assert_called_once_with("gamemoded", path=FIXED_PATH)
-
     def test_accounts_when_uid_mismatched_or_name_unsafe_are_rejected(self) -> None:
         # Given / When / Then
         for uid, name in ((123456, "root"), (0, "-root"), (0, "root\n"), (0, "missing-sparehash-account")):

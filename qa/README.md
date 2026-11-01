@@ -1,175 +1,116 @@
-# SpareHash QA guide
+# Disposable-VM release QA
 
-This directory contains integration test suites for SpareHash. They exercise
-real systemd, cgroups, controller IPC, and process lifecycle with controlled
-power, thermal sensor, and GameMode protocol fixtures.
-**Many suites are destructive and must never run on a production host.**
+**Destructive: never run on a workstation, production host or a VM with shared
+production storage.** Read `docs/development/vm-testing.md` before integration.
+Run one fresh disposable at a time, with no guest NIC or host filesystem sharing.
+Keep SELinux Enforcing. No lab controller is a dependency of the shipped code.
 
-## Current state
+## Required experimental v0.2 entrypoint
 
-The `qa/` directory contains:
+`qa/qa_release_smoke.sh` invokes `qa/release_smoke.py`. It is the single required
+release smoke, adapted from S3's passing real-distro driver. It requires both the
+VM opt-in and explicit `--yes`, plus a source SHA-256 checked before any effects.
+It refuses an existing product/artifact/evidence tree rather than clobber it.
+The wrapper fixes helper PATH; after consent and fresh-VM checks the driver clears
+inherited import, proxy and product QA overrides before privileged fixture actions.
 
-- `README.md`: this file
-- `check_readme.py`: inventory checker that verifies every CLI command and
-  config key appears in the README
-- `run_all.sh`: required-suite runner, with install/idempotency checks first and
-  uninstall last
-- `spin.py`: CPU-spin helper for contention tests
-- `qa_*.sh`: destructive or non-destructive integration suites
-- `shims/`: Python scripts that emulate `gdbus`, `busctl`, and `gamemoded`
-- `fixtures/`: sysfs trees, hwmon trees, answers files, and release API JSON
-- `lib/runtime.sh`: VM preflight and service-scoped fixture ownership
-- `local_pool.py`: bounded loopback-only synthetic RandomX job fixture; rejects
-  shares and never forwards them to a real pool
+First verify the selected source/archive by your normal trusted process, then
+calculate its inventory digest (read-only, no root or VM opt-in needed):
 
-This guide describes acceptance contracts, not a completed VM validation or a
-release approval. Check the current harness before running while repairs are in
-progress, especially provider/config overlays and local-pool startup.
-
-## Suite inventory
-
-| Suite | What it tests | Destructive? |
-|---|---|---|
-| `qa_release_smoke.sh` | Frozen candidate: install, hashing, pause, battery, thermal, gaming, controller loss, offline uninstall | Yes: installs/removes, kills controller |
-| `qa_power_shim.sh` | Battery unplug -> miner stop within 5s; UPower hide -> sysfs fallback | Yes: stops/starts miner |
-| `qa_thermal.sh` | Fixture temperatures 84/86/80/74 -> no-trip/trip/hold/clear | Yes: changes fixtures, stops/starts miner |
-| `qa_gaming.sh` | Acknowledged double-start idempotency and provider-driven missed-end recovery | Yes: real IPC, stops/starts miner |
-| `qa_contention.sh` | Miner under CPU stress -> yield proof, recovery within 30s | Yes: runs stress-ng |
-| `qa_security.sh` | Loopback-only API, permission matrix, tampered-binary rejection | Yes: creates users, changes ownership |
-| `qa_install.sh` | One-command install, post-install assertions | Yes: installs to /opt, /etc, /var |
-| `qa_idempotent_install.sh` | Re-running installer preserves token/config | Yes: installs to /opt, /etc, /var |
-| `qa_uninstall.sh` | Uninstall removes only owned artifacts | Yes: installs/removes identities and units |
-| `qa_controller_lifecycle.sh` | Controller SIGKILL -> miner cgroup empty; restart re-evaluates | Yes: kills controller |
-| `qa_status_output.sh` | Status JSON contract and field presence | No: read-only |
-
-The runner checks unattended reinstall and configuration/token preservation
-directly; it doesn't invoke the standalone `qa_install.sh` or
-`qa_idempotent_install.sh` scripts. Gaming provider coverage must be exercised,
-not treated as a pass when no provider/session was observed.
-
-## Running the suites
-
-### Required minimal-release acceptance
-
-`qa_release_smoke.sh` is the required eight-checkpoint acceptance procedure;
-`run_all.sh` remains the broader harness and is not a minimal-release requirement.
-Use a fresh disposable VM with the candidate already installed and stopped.
-The smoke reinstalls using a generated repo-external dummy-wallet answers file,
-then enables service-only fixtures before any mining. It ends uninstalled with
-default config and retirement retained; never manually clear the lifecycle latch.
-
-From the clean candidate checkout inside the VM:
-
-```bash
-sudo env SPAREHASH_QA_DISPOSABLE_VM=YES \
-  CANDIDATE_SHA=<full-frozen-40-character-SHA> \
-  EVIDENCE_DIR=/var/tmp/sparehash-v010-evidence bash qa/qa_release_smoke.sh
+```sh
+python3 qa/release_smoke.py --print-source-sha256
 ```
 
-`CONTROLLER_BIN` defaults to `/usr/local/bin/sparehash`. The evidence directory
-must not exist; the default is `/var/tmp/sparehash-v010-evidence`. For an extracted
-candidate sdist without Git metadata, independently verify its artifact/payload
-against the frozen commit, and copy the transferred `candidate.sha` into its
-root before running. A checkout checks HEAD against `CANDIDATE_SHA`; installed
-Python and template bytes must match the source payload in either case.
+Transfer that expected digest independently alongside the exact payload. Inside
+the fresh VM, run:
 
-The script requires root, systemd PID 1, `nsenter`, `ss`, and the installed
-candidate. It records PASS/FAIL per checkpoint, same-PID hash counts, journals,
-and `vm-summary.json`. Any failed checkpoint aborts; unvisited checkpoints are
-NOT_RUN. Cleanup stops services before removing service-only fixtures/pool and
-preserves evidence. A foreign sentinel remains for inspection. No real-pool
-mining or donation traffic is permitted: jobs are synthetic on loopback only.
-Successful offline checks are not a claim that this VM acceptance has run.
-
-### Broader harness
-
-These suites require a disposable systemd VM and must never run on a production
-host. The VM must be:
-
-- A disposable Debian or Ubuntu VM with systemd as PID 1
-- The candidate SpareHash and verified XMRig already installed, with no unrelated
-  mining software
-- No production data, credentials, or network services
-- Snapshottable so you can revert after each run
-- Root access, `nsenter`, and `stress-ng` available
-
-Never run these suites on your personal machine, a server with real data, or a
-VM that shares storage with production workloads.
-
-Prepare an unattended TOML answers file at an absolute path outside the
-repository, for example `/var/tmp/sparehash-qa-answers.toml`. It must use
-`pool.host = "127.0.0.1"`, `pool.port = 3333`, and `pool.tls = false`, not a
-real pool. Install the candidate with that file before invoking the runner;
-leave the controller stopped until the controlled harness is ready.
-
-From the repository root inside that VM, explicitly pass the safety opt-in and
-the existing answers file through sudo:
-
-```
-sudo env SPAREHASH_QA_DISPOSABLE_VM=YES \
-  QA_ANSWERS_FILE=/var/tmp/sparehash-qa-answers.toml bash qa/run_all.sh
+```sh
+sudo env SPAREHASH_QA_DISPOSABLE_VM=YES bash qa/qa_release_smoke.sh \
+  --yes --source-sha256 <verified-64-character-digest> \
+  --evidence /var/tmp/sparehash-v020-evidence
 ```
 
-`EVIDENCE_DIR` selects the evidence directory; the current `run_all.sh` default
-is `/omo/evidence`. Suite logs use `qa-<script-name-without-.sh>.log`, with a
-separate `qa-install-idempotency.log`. Check the runner for the current default
-before collecting evidence. It exits non-zero on required-suite failure or
-reported skipped coverage.
+The digest binds Python source, unit templates, installer, licence/notices,
+packaging metadata, driver and synthetic fixture bytes. It is not an unchecked
+`candidate.sha` label. S5 will additionally bind the frozen candidate commit and
+artifacts; running this S4 smoke does not declare an RC or publish anything.
 
-The runner captures `final-status.json` while the miner is ready, before
-destructive uninstall. A successful run ends uninstalled, not mining; don't
-expect a working `sparehash status` command afterward.
+## Exercised path and evidence
 
-## Controlled fixture contract
+The script executes the actual source installer with `--answers ... --yes
+--use-existing`, verifies installed bytes, and uses real runtime/IPC/systemd and
+receipt removal. It checks default best-effort scanning, unprivileged idle
+scheduling, file-backed power/thermal callbacks, manual/lifecycle independence,
+recognised synthetic reaper stop under foreground CPU load, scan-bound failure,
+controller loss, strict foreign-content refusal, non-purge state/config retention,
+pause-preserving reinstall and purge. The five-second recognised-game objective
+is an assertion, not a published hard real-time guarantee.
 
-Fixtures belong under `/run/sparehash-qa`, with temporary service drop-ins under
-`/run/systemd/system`. Bind mounts apply only inside the relevant services'
-mount namespaces. Keep `PrivateTmp=yes`; never mount fixtures over host-global
-sysfs, tools, or configuration.
+The fixture `qa/fixtures/synthetic_xmrig.py` is SpareHash-owned, GPL-3.0-or-later,
+**not upstream XMRig**. It never hashes, connects to a pool or forwards traffic;
+its only listener is an authenticated loopback API reporting zero hashrate. It
+passes through the real nobody/PrivateNetwork version/config probes and protected
+unprivileged miner exec. This is not signed upstream-artifact or mining-performance
+certification. The exercised Steam detector is Lutris-derived; attribution and
+pinned revision are in `THIRD_PARTY_NOTICES.md`.
 
-Controlled provider configuration and zero-donation miner JSON belong in these
-service-only overlays. Don't hand-edit installed configuration or install
-receipts to make QA pass. Before starting the controller, the harness must start
-the bounded local pool fixture on `127.0.0.1:3333` and ensure every effective
-miner JSON uses only that non-TLS pool with `donate-level=0`. Its synthetic
-RandomX jobs have no chain value; submitted shares are rejected. Real-pool
-mining and donation traffic are forbidden during destructive QA.
+Sensor/config overlays are scoped to the controller mount namespace, using a
+temporary `/run/systemd/system` drop-in and files in the evidence directory.
+`PrivateTmp` and other shipped isolation remain enabled. Three-second test dwell
+compresses scenarios; production defaults are unchanged. These are synthetic
+values/argv, not physical hotplug, actual native/Proton games or KDE/Gaming Mode.
 
-Contention acceptance requires:
+Evidence includes source identity, per-command logs, checkpoint timings,
+controller/miner/kernel journals, observed AVC lines and `summary.json` with
+`complete=true` **only if tests and cleanup pass**. Unvisited checks are absent,
+not assumed passing. Failure is nonzero and preserves diagnostics. AVCs fail
+acceptance; record them rather than weakening policy.
 
-- Miner CPU usage <=10% of normalized total CPU during 60 seconds of CPU stress.
-- Foreground throughput degradation <=25% against a matched stress-only baseline.
-- Actual hashing recovery within 30 seconds after stress ends, with hash-count
-  progress and >=20% normalized CPU usage, not just an active service.
+Success ends uninstalled/purged and retired with no running miner. Known foreign
+sentinels and the external synthetic artifact remain as preservation evidence;
+discard the VM afterward. Cleanup stops the owned services and proves empty
+before removing only its drop-in; a failed stop retains fixtures. Do not manually
+delete product receipts or safety holds to force a pass.
 
-## What the suites do not test
+Actual reboot acceptance is separately recorded in the S3 report. This smoke
+does not reboot the guest automatically. The maintainer must discard failed and
+successful guests and preserve private evidence under `.omo/evidence/v020/`.
 
-- Real pool mining (forbidden during destructive QA)
-- Real GameMode with a running Steam client
-- Real battery hotplug on physical hardware
-- Physical thermal sensor accuracy; sensor inputs are controlled fixtures
-- Multi-NUMA hugepage reservation
-- 1GiB hugepage support
-- GPU mining (not supported)
+## Additional retained diagnostics
 
-## Checker
+- `qa_atomic_probe.sh` and `atomic_probe*.py`: independently authorised,
+  disposable-Atomic-VM-only **non-mining feasibility** diagnostics. They require
+  a root-owned environment manifest, pinned offline executable/source identities,
+  no networking and enforcing SELinux. Read `bash qa/qa_atomic_probe.sh --help`
+  before use. The reviewed harness branch fixes for NSS absence, audit keyword/
+  raw no-match handling and installed-policy context comparison are integrated.
+  A FEASIBLE result is not release acceptance or a hashing test.
+- `security_check.py`: optional read-only installed-VM permissions, API/process
+  and signature diagnostics, with hermetic regression tests. It is not a
+  replacement for the pinned release smoke.
+- `local_pool.py` and `spin.py`: deferred local-only synthetic-work/foreground
+  utilities with pure contract tests. They are not run by release smoke and
+  their presence does not prove actual XMRig hashing or foreground performance.
+- `fixtures/answers.toml`: an illustrative answers template; replace its wallet
+  placeholder privately. The release driver creates its own synthetic answers.
 
-`qa/check_readme.py` verifies that every CLI command and config key in the
-source code appears in the README. Run it after any documentation change:
+Obsolete `run_all.sh`, GameMode/session/admission QA, old fixture overlays/shims,
+their stale shell entrypoints and exclusive helper tests have been archived
+outside the active project and removed. Their original bytes remain in Git
+history; do not copy old procedures back as current gates. See the
+[consolidation report](../docs/development/v020-review-consolidation.md).
 
+## Non-destructive checks
+
+```sh
+uv sync --locked
+.venv/bin/python -m pytest
+.venv/bin/python qa/check_readme.py
+.venv/bin/mypy sparehash
+uv build
+.venv/bin/python qa/check_artifacts.py dist
 ```
-uv run python qa/check_readme.py
-```
 
-The checker exits 0 when the README is complete. It exits non-zero and names
-every missing entry when something is absent.
-
-Public CI runs unit tests, the README checker, mypy, and wheel/sdist builds with
-a no-runtime-dependencies check. It doesn't run destructive VM suites.
-
-## Cleanup
-
-The runtime owner removes its service drop-ins and fixtures after stopping the
-stack. If stopping fails, fixtures are retained for diagnosis. A crash or failed
-uninstall may leave a partial state with a durable lifecycle hold. Save evidence
-outside the snapshot, then revert the VM before the next run.
+CI covers Python 3.11–3.14, scoped release lint, documentation inventory and clean
+builds with no mandatory runtime dependencies and GPL/notice inspection. CI does
+not run privileged/destructive VM acceptance or certify hardware/gameplay.

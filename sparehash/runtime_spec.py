@@ -14,42 +14,61 @@ from pathlib import Path
 from typing import Final
 
 from . import config
-from .deployment import ENV, LOAD_JSON, DeploymentError, Tree, binary as binary
+from .deployment import ENV, LOAD_JSON, DeploymentError, Tree
+from .deployment import binary as binary
+from .layout import Layout
+from .paths import MINER_RUN_DIR
+from .xmrig_config import IsolatedRunner
 from .xmrig_ledger import integer, keys, mapping, text
 
-DIRECTORY: Final = "/run/sparehash-miner"
+DIRECTORY: Final = str(MINER_RUN_DIR)
 SPEC: Final = DIRECTORY + "/operation.json"
 FALLBACK: Final = "/etc/sparehash/xmrig.runtime.json"
 BENCHMARK: Final = DIRECTORY + "/benchmark.json"
 
 
-def publish(cfg: config.Config, generation: int, mode: str) -> None:
+def publish(cfg: config.Config, generation: int, mode: str, *,
+            tree: Tree | None = None, layout: Layout | None = None,
+            runner: IsolatedRunner | None = None) -> None:
     if mode not in {"mine", "benchmark"}:
         raise DeploymentError("operation", "unsupported mode")
     gid = pwd.getpwnam("xmrig").pw_gid
-    tree = Tree()
+    anchor = Tree(layout=layout) if tree is None else tree
     with ExitStack() as stack:
-        fd = tree.pin(stack, DIRECTORY)
-        os.fchown(fd, 0, gid)
-        os.fchmod(fd, 0o750)
+        parent = anchor.pin(stack, str(Path(DIRECTORY).parent))
+        created = True
+        try:
+            os.mkdir(Path(DIRECTORY).name, 0o700, dir_fd=parent)
+        except FileExistsError:
+            created = False
+        fd = anchor.pin(stack, DIRECTORY)
+        if created:
+            os.fchown(fd, anchor.uid, gid)
+            os.fchmod(fd, 0o750)
+        info = os.fstat(fd)
+        if info.st_uid != anchor.uid or info.st_gid != gid or stat.S_IMODE(info.st_mode) != 0o750:
+            raise DeploymentError("operation", "incorrect protected operation directory")
+        os.fsync(fd)
+        os.fsync(parent)
     target = FALLBACK if mode == "mine" else BENCHMARK
-    executable = binary(cfg.xmrig.binary)
+    executable = binary(cfg.xmrig.binary, layout=layout)
     if mode == "benchmark":
-        from .xmrig_config import render_config, read_token
-        from .install_xmrig import dry_run
+        from .xmrig_config import read_token, render_config
 
-        document = render_config(cfg, read_token(), executable, runner=dry_run)
+        document = render_config(cfg, read_token(), executable,
+                                 runner=runner, layout=layout)
         document["pools"] = []
         document["http"] = {"enabled": False}
-        tree.write(BENCHMARK, ((json.dumps(document) + "\n").encode(), 0o640, gid))
+        anchor.write(BENCHMARK, ((json.dumps(document) + "\n").encode(), 0o640, gid))
     document = {"generation": generation, "mode": mode, "binary": str(executable), "config": target}
-    tree.write(SPEC, ((json.dumps(document) + "\n").encode(), 0o640, gid))
+    anchor.write(SPEC, ((json.dumps(document) + "\n").encode(), 0o640, gid))
 
 
-def protected(name: str, gid: int) -> bytes:
-    tree = Tree()
+def protected(name: str, gid: int, *, tree: Tree | None = None,
+               layout: Layout | None = None) -> bytes:
+    anchor = Tree(layout=layout) if tree is None else tree
     with ExitStack() as stack:
-        parent = tree.pin(stack, str(Path(name).parent))
+        parent = anchor.pin(stack, str(Path(name).parent))
         info = os.stat(Path(name).name, dir_fd=parent, follow_symlinks=False)
         if info.st_uid != 0 or info.st_gid != gid or stat.S_IMODE(info.st_mode) != 0o640 or not stat.S_ISREG(info.st_mode):
             raise DeploymentError("operation", "incorrect protected file ownership/mode")
@@ -57,28 +76,28 @@ def protected(name: str, gid: int) -> bytes:
             directory = os.fstat(parent)
             if directory.st_gid != gid or stat.S_IMODE(directory.st_mode) != 0o750:
                 raise DeploymentError("operation", "incorrect protected operation directory")
-    data = tree.read(name)
+    data = anchor.read(name)
     if data is None:
         raise DeploymentError("operation", "missing protected file")
     return data
 
 
-def miner() -> int:
+def miner(*, layout: Layout | None = None) -> int:
     try:
         account = pwd.getpwnam("xmrig")
         if os.geteuid() == 0 or os.geteuid() != account.pw_uid:
             raise DeploymentError("identity", "miner execution requires the unprivileged xmrig identity")
-        document = mapping(LOAD_JSON(protected(SPEC, account.pw_gid)))
+        document = mapping(LOAD_JSON(protected(SPEC, account.pw_gid, layout=layout)))
         keys(document, "generation mode binary config")
         _ = integer(document["generation"])
         mode = text(document["mode"])
         if mode not in {"mine", "benchmark"}:
             raise DeploymentError("operation", "unrecognized mode")
-        cfg_data = Tree().read("/etc/sparehash/config.toml")
+        cfg_data = Tree(layout=layout).read("/etc/sparehash/config.toml")
         if cfg_data is None:
             raise DeploymentError("config", "missing public configuration")
         cfg = config.load()
-        executable = binary(text(document["binary"]))
+        executable = binary(text(document["binary"]), layout=layout)
         if str(executable) != cfg.xmrig.binary:
             raise DeploymentError("operation", "binary differs from the protected configuration")
         target = BENCHMARK if mode == "benchmark" else FALLBACK

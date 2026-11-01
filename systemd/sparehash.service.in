@@ -10,13 +10,15 @@ NotifyAccess=main
 TimeoutStartSec=30s
 User=root
 Group=root
+# ExecStart must remain the exact trusted CLI (/usr/local/bin/sparehash); never root-exec a foreign helper.
 ExecStart=/usr/local/bin/sparehash __controller__
 ExecStopPost=/usr/local/bin/sparehash __cleanup__
 Restart=on-failure
 RestartSec=5s
 StateDirectory=sparehash
 RuntimeDirectory=sparehash sparehash-miner
-RuntimeDirectoryMode=0750
+RuntimeDirectoryMode=0711
+RuntimeDirectoryPreserve=yes
 Environment=PYTHONDONTWRITEBYTECODE=1
 NoNewPrivileges=yes
 ProtectSystem=strict

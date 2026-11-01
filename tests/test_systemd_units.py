@@ -61,7 +61,8 @@ class UnitTests(unittest.TestCase):
             "ExecStart": "/usr/local/bin/sparehash __controller__",
             "ExecStopPost": "/usr/local/bin/sparehash __cleanup__", "Restart": "on-failure", "RestartSec": "5s",
             "StateDirectory": "sparehash", "RuntimeDirectory": "sparehash sparehash-miner",
-            "RuntimeDirectoryMode": "0750", "Environment": "PYTHONDONTWRITEBYTECODE=1",
+            "RuntimeDirectoryMode": "0711", "RuntimeDirectoryPreserve": "yes",
+            "Environment": "PYTHONDONTWRITEBYTECODE=1",
             "NoNewPrivileges": "yes", "ProtectSystem": "strict",
             "ProtectHome": "read-only", "PrivateTmp": "yes", "RestrictAddressFamilies": "AF_UNIX AF_INET AF_INET6"}.items()})
         self.assertEqual(dict(unit["Install"]), {"wantedby": "multi-user.target"})
@@ -166,11 +167,17 @@ class ProbeRunner:
         if self.outcome == "timeout" and "stop" not in argv:
             raise subprocess.TimeoutExpired(argv, timeout)
         code = 1 if self.outcome == "reject" or (self.outcome == "cleanup" and "stop" in argv) else 0
-        output = "Result=success\nExecMainCode=1\nExecMainStatus=0\nControlGroup=/system.slice/probe\nCPUWeight=0\nActiveState=active\n"
+        output = "Result=success\nMainPID=123\nSubState=running\nControlGroup=/system.slice/probe\nCPUWeight=0\nActiveState=active\n"
         if self.outcome == "garbage":
             output = "invalid"
         if self.outcome == "traversal":
             output = output.replace("/system.slice/probe", "/../outside")
+        if self.outcome == "exited":
+            output = output.replace("MainPID=123", "MainPID=0").replace("SubState=running", "SubState=exited")
+        if self.outcome == "empty-group":
+            output = output.replace("ControlGroup=/system.slice/probe", "ControlGroup=")
+        if self.outcome == "malformed-pid":
+            output = output.replace("MainPID=123", "MainPID=²")
         return subprocess.CompletedProcess(argv, code, output, "rejected" if code else "")
 
 
@@ -181,7 +188,6 @@ class ProbeTests(unittest.TestCase):
             root = Path(tmp)
             cgroup = root / "sys/fs/cgroup"
             cgroup.mkdir(parents=True)
-            _ = (cgroup / "cpu.idle").write_text("0")
             effective = cgroup / "system.slice/probe"
             effective.mkdir(parents=True)
             _ = (effective / "cpu.idle").write_text("1")
@@ -202,7 +208,6 @@ class ProbeTests(unittest.TestCase):
         # Given
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            _ = (root / "cpu.idle").write_text("0")
             group = root / "system.slice/probe"
             group.mkdir(parents=True)
             _ = (group / "cpu.idle").write_text("1")
@@ -211,7 +216,9 @@ class ProbeTests(unittest.TestCase):
             result = systemd.probe_cpuweight_idle({}, runner, systemd.ProbeContext(0, root, True))
             # Then
             self.assertTrue(result)
-            self.assertIn("/usr/bin/true", runner.calls[0])
+            self.assertEqual(runner.calls[0][-2:], ("/usr/bin/sleep", "30"))
+            self.assertIn("--property=Type=exec", runner.calls[0])
+            self.assertIn("--property=RuntimeMaxSec=30s", runner.calls[0])
             self.assertIn("--property=CPUWeight=idle", runner.calls[0])
             self.assertIn("--property=CollectMode=inactive-or-failed", runner.calls[0])
             unit = runner.calls[0][1].removeprefix("--unit=")
@@ -219,7 +226,7 @@ class ProbeTests(unittest.TestCase):
 
     def test_probe_when_uncertain_always_cleans(self) -> None:
         # Given
-        for outcome in ("reject", "timeout", "garbage", "traversal", "cleanup", "success"):
+        for outcome in ("reject", "timeout", "garbage", "traversal", "cleanup", "success", "exited", "empty-group"):
             with self.subTest(outcome=outcome), tempfile.TemporaryDirectory() as tmp:
                 root = Path(tmp)
                 _ = (root / "cpu.idle").write_text("0")
@@ -234,13 +241,37 @@ class ProbeTests(unittest.TestCase):
         # Given
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            for uid, v2 in ((1000, True), (0, False), (0, True)):
+            for uid, v2 in ((1000, True), (0, False)):
                 runner = ProbeRunner()
                 # When
                 result = systemd.probe_cpuweight_idle({}, runner, systemd.ProbeContext(uid, root, v2))
                 # Then
                 self.assertFalse(result)
                 self.assertEqual(runner.calls, [])
+
+    def test_child_kernel_evidence_is_required_without_root_idle(self) -> None:
+        for text in (None, "0\n", "unknown\n", "1\n"):
+            with self.subTest(text=text), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                group = root / "system.slice/probe"
+                group.mkdir(parents=True)
+                if text is not None:
+                    (group / "cpu.idle").write_text(text)
+                runner = ProbeRunner()
+                self.assertEqual(systemd.probe_cpuweight_idle({}, runner, systemd.ProbeContext(0, root, True)),
+                                 text == "1\n")
+                self.assertEqual(runner.calls[-1][1], "stop")
+
+    def test_exited_or_untracked_probe_cannot_claim_support(self) -> None:
+        for outcome in ("exited", "empty-group", "cleanup", "garbage", "traversal", "malformed-pid"):
+            with self.subTest(outcome=outcome), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                group = root / "system.slice/probe"
+                group.mkdir(parents=True)
+                (group / "cpu.idle").write_text("1\n")
+                runner = ProbeRunner(outcome)
+                self.assertFalse(systemd.probe_cpuweight_idle({}, runner, systemd.ProbeContext(0, root, True)))
+                self.assertEqual(runner.calls[-1][1], "stop")
 
 
 class AnalyzerTests(unittest.TestCase):

@@ -1,5 +1,6 @@
 import configparser
 import os
+import pwd
 import tempfile
 import unittest
 from pathlib import Path
@@ -7,7 +8,9 @@ from typing import final
 from unittest.mock import patch
 
 from sparehash import gaming_ini as ini
-from tests.gaming_install_consent import ConsentTests as ConsentTests
+from sparehash import gaming_install
+from sparehash.gaming import User, UserError
+from sparehash.ipc import Uid
 
 
 @final
@@ -63,8 +66,15 @@ class IniTests(unittest.TestCase):
         changed = ini.edit(self.target, True)
         # Then
         self.assertFalse(changed)
-        self.assertEqual(self.file.stat(), before)
-        self.assertEqual((self.directory / ini.BACKUP).stat(), backup)
+        # Reads may update atime (including at a relatime timestamp boundary).
+        # No-op means unchanged content/inode/modification/ownership, not no reads.
+        for path, prior in ((self.file, before), (self.directory / ini.BACKUP, backup)):
+            after = path.stat()
+            for field in ("st_mode", "st_uid", "st_gid", "st_ino", "st_dev", "st_nlink",
+                          "st_size", "st_mtime_ns", "st_ctime_ns"):
+                self.assertEqual(getattr(after, field), getattr(prior, field), field)
+        self.assertEqual(self.file.read_bytes(), ini.transform(self.original, True))
+        self.assertEqual((self.directory / ini.BACKUP).read_bytes(), self.original)
 
     def test_merge_when_backup_exists_never_overwrites_it(self) -> None:
         # Given
@@ -82,6 +92,25 @@ class IniTests(unittest.TestCase):
         # When
         _ = ini.edit(self.target, False)
         # Then
+        self.assertEqual(self.file.read_bytes(), self.original)
+
+    def test_legacy_unmerge_resolves_and_rechecks_the_owned_account(self) -> None:
+        account = pwd.getpwuid(os.getuid())
+        user = User(Uid(account.pw_uid), account.pw_name)
+        fixture = pwd.struct_passwd((*account[:5], str(self.home), account.pw_shell))
+        self.file.write_bytes(ini.transform(self.original, True))
+        with patch.object(gaming_install.pwd, "getpwnam", return_value=fixture):
+            self.assertTrue(gaming_install.unmerge(user))
+        self.assertEqual(self.file.read_bytes(), self.original)
+
+    def test_legacy_unmerge_rejects_changed_uid_without_editing(self) -> None:
+        account = pwd.getpwuid(os.getuid())
+        user = User(Uid(account.pw_uid), account.pw_name)
+        changed = pwd.struct_passwd((account.pw_name, "x", account.pw_uid + 1,
+                                     account.pw_gid, "", str(self.home), account.pw_shell))
+        self.file.write_bytes(self.original)
+        with patch.object(gaming_install.pwd, "getpwnam", return_value=changed), self.assertRaises(UserError):
+            gaming_install.unmerge(user)
         self.assertEqual(self.file.read_bytes(), self.original)
 
     def test_unmerge_when_created_file_is_untouched_removes_owned_leftovers(self) -> None:

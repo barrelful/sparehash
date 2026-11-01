@@ -12,8 +12,8 @@ Python 3.11 or newer.
 For development, we recommend [uv](https://docs.astral.sh/uv/):
 
 ```bash
-uv sync
-uv run pytest tests/ -q
+uv sync --locked
+.venv/bin/python -m pytest tests/ -q
 ```
 
 You can also use the system Python directly:
@@ -27,19 +27,19 @@ python3 -m pytest tests/ -q
 Unit tests:
 
 ```bash
-uv run pytest tests/ -q
+.venv/bin/python -m pytest tests/ -q
 ```
 
 README inventory checker:
 
 ```bash
-uv run python qa/check_readme.py
+.venv/bin/python qa/check_readme.py
 ```
 
 Type checking (required; CI runs mypy):
 
 ```bash
-uv run mypy sparehash
+.venv/bin/mypy sparehash
 ```
 
 Build the wheel and source distribution (also required in CI):
@@ -59,7 +59,7 @@ them, it must be discussed explicitly in the issue or pull request.
 - **Unprivileged miner.** XMRig must never run as root.
 - **Controller loss stops mining.** `BindsTo=` and cleanup paths must keep this
   true.
-- **No MSR/kernel/firewall changes in v1.**
+- **No MSR/kernel/firewall changes in v0.2.**
 - **Localhost-only XMRig API.**
 - **Receipt-authoritative install/uninstall.** Files, units, and identities are
   removed only if the install ledger records them as created by SpareHash.
@@ -82,10 +82,21 @@ them, it must be discussed explicitly in the issue or pull request.
 - Destructive integration tests belong in `qa/` and must run only in a
   disposable VM. Do not add destructive host mutation to the unit-test suite.
 - A frozen release candidate requires `qa/qa_release_smoke.sh` in an explicitly
-  approved disposable systemd VM. See `qa/README.md`; synthetic local hashing
-  only, never a real pool. Unit tests exercise its opt-in refusal, not VM success.
+  approved disposable systemd VM, with `--yes` and a verified source SHA-256.
+  See `qa/README.md`; the fixture never hashes or connects to a pool. Unit tests
+  exercise its refusal and digest contracts, not VM success.
 - If you add a new CLI command or config key, update the README and run
   `qa/check_readme.py`.
+
+### VM lab workflow
+
+The VM lab (`docs/development/vm-testing.md` when available) provides
+disposable-VM acceptance procedures for cross-distribution testing. Unit tests
+exercise algorithms only; real systemd/cgroup/SELinux and OS persistence require
+VMs or boot media. Before submitting changes that affect installation,
+lifecycle, gaming integration, or platform support, verify behavior in a
+disposable VM matching the target distribution. See `docs/platforms.md` for the
+support matrix and `qa/README.md` for destructive-suite invocation.
 
 ## Pull request workflow
 

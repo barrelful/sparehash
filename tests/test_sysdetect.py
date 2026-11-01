@@ -8,7 +8,7 @@ import unittest
 from collections.abc import Mapping
 from pathlib import Path
 
-from sparehash.sysdetect import Capabilities, TIMEOUT_SECONDS
+from sparehash.sysdetect import TIMEOUT_SECONDS, Capabilities
 
 
 class FakeRunner:
@@ -98,7 +98,7 @@ class SysdetectTests(unittest.TestCase):
             result = Capabilities.detect(root=tmp, proc_root=Path(tmp) / "proc", environ={}, runner=FakeRunner())
         self.assertIsNone(result.battery_present)
 
-    def test_cgroup2_requires_cpu_idle_and_probe(self) -> None:
+    def test_cgroup2_without_explicit_probe_retains_fallback(self) -> None:
         with self.fixture() as tmp:
             root = Path(tmp)
             proc = root / "proc/1"
@@ -120,9 +120,7 @@ class SysdetectTests(unittest.TestCase):
             proc = root / "proc/1"
             proc.mkdir(parents=True)
             _ = (proc / "mountinfo").write_text("1 0 0:1 / /sys/fs/cgroup rw - cgroup2 cgroup rw\n")
-            cpu_idle = root / "sys/fs/cgroup/cpu.idle"
-            cpu_idle.parent.mkdir(parents=True)
-            _ = cpu_idle.write_text("0\n")
+            # Root cpu.idle is absent even on supported kernels.
             def supported(env: Mapping[str, str]) -> bool:
                 return bool(env == {})
             result = Capabilities.detect(root=root, proc_root=root / "proc", environ={}, runner=FakeRunner(), euid=0,
@@ -135,24 +133,33 @@ class SysdetectTests(unittest.TestCase):
             proc = root / "proc/1"
             proc.mkdir(parents=True)
             _ = (proc / "mountinfo").write_text("1 0 0:1 / /sys/fs/cgroup rw - cgroup2 cgroup rw\n")
-            cpu_idle = root / "sys/fs/cgroup/cpu.idle"
-            cpu_idle.parent.mkdir(parents=True)
-            _ = cpu_idle.write_text("0\n")
             def unsupported(env: Mapping[str, str]) -> bool:
                 return bool(env.get("manager-enabled", False))
             result = Capabilities.detect(root=root, proc_root=root / "proc", environ={}, runner=FakeRunner(), euid=0,
                                          manager_probe=unsupported)
         self.assertFalse(result.cpuweight_idle)
 
-    def test_cpu_idle_obeys_sysfs_override(self) -> None:
+    def test_manager_probe_never_runs_for_nonroot_or_non_v2(self) -> None:
+        for uid, kind in ((1000, "cgroup2"), (0, "cgroup")):
+            with self.subTest(uid=uid, kind=kind), self.fixture() as tmp:
+                root = Path(tmp)
+                proc = root / "proc/1"
+                proc.mkdir(parents=True)
+                (proc / "mountinfo").write_text(f"1 0 0:1 / /sys/fs/cgroup rw - {kind} cgroup rw\n")
+
+                def forbidden(env: Mapping[str, str]) -> bool:
+                    raise AssertionError("manager mutation forbidden")
+
+                result = Capabilities.detect(root=root, proc_root=root / "proc", environ={},
+                                             runner=FakeRunner(), euid=uid, manager_probe=forbidden)
+                self.assertFalse(result.cpuweight_idle)
+
+    def test_manager_probe_receives_explicit_environment_without_root_control(self) -> None:
         with self.fixture() as tmp:
             root = Path(tmp)
             proc = root / "proc/1"
             proc.mkdir(parents=True)
             _ = (proc / "mountinfo").write_text("1 0 0:1 / /sys/fs/cgroup rw - cgroup2 cgroup rw\n")
-            custom = root / "custom/fs/cgroup/cpu.idle"
-            custom.parent.mkdir(parents=True)
-            _ = custom.write_text("0\n")
             def supported(env: Mapping[str, str]) -> bool:
                 return bool(env.get("SPAREHASH_SYSFS_ROOT"))
             result = Capabilities.detect(root=root, proc_root=root / "proc", environ={"SPAREHASH_SYSFS_ROOT": str(root / "custom")},

@@ -122,7 +122,7 @@ class WizardTests(unittest.TestCase):
         for candidate in ("missing/account", "sparehash_nonexistent_93eac"):
             with self.subTest(candidate=candidate):
                 # Given
-                replies = [WALLET, "pool.example", "", "", "rig", "", "", "n", "y", "", ACCOUNT, "n"]
+                replies = [WALLET, "pool.example", "", "", "rig", "", "", "n", "y", ACCOUNT, "n"]
                 # When
                 result = self.scripted(replies, username=candidate)
                 # Then
@@ -194,7 +194,6 @@ class WizardTests(unittest.TestCase):
                      ("resume_c = 75", "resume_c = 1.5"), ("enabled = false", 'enabled = "false"'),
                      ("[gaming]\nenabled = true", '[gaming]\nenabled = 1'),
                      (f'users = ["{ACCOUNT}"]', "users = [1]"), (f'users = ["{ACCOUNT}"]', 'users = "root"'),
-                     (f'users = ["{ACCOUNT}"]', "users = []"),
                      (f'users = ["{ACCOUNT}"]', 'users = ["missing/account"]'),
                      ("pages = 1280", "pages = true"), ("pages = 1280", "pages = 0"),
                      ("pages = 1280", "pages = 1280\npages_1gb = true"),

@@ -97,7 +97,7 @@ mining is allowed. There are four blockers:
 | Blocker | Source | Fail-closed behavior |
 |---|---|---|
 | battery | UPower + `/sys/class/power_supply` | Unknown or stale state inhibits mining |
-| gaming | `gamemoded -s` per configured user | Unknown user/session state inhibits mining |
+| gaming | Lutris-derived Steam reaper scan | Genuine scan failures/stale results inhibit; successful no-match may clear |
 | thermal | CPU sensor (`coretemp`, `k10temp`, `zenpower`) | Default off; when enabled, missing/unreadable sensor inhibits mining |
 | manual | `sparehash pause` / `sparehash resume` | Persists across controller restarts via state file |
 
@@ -134,7 +134,7 @@ Group=xmrig
 
 ## IPC trust and authorization
 
-The control socket is a Unix domain socket at `/run/sparehash/control.sock`,
+The control socket is a Unix domain socket at `/run/sparehash/ipc/control.sock`,
 owned `root:sparehash` with mode `0660`. The server uses `SO_PEERCRED` to learn
 the caller's UID/GID.
 
@@ -174,16 +174,58 @@ retained uninstall lease before removing the retirement latch; it refuses to
 erase an update hold or an unreadable record. Deleting the latch alone doesn't
 clear the sidecar lease.
 
-## GameMode flow
+## Best-effort gaming flow
 
 A gaming user calls `sparehash gaming-start`. The controller records the peer
 UID in a `hooks` set and activates the gaming blocker. The user must later call
-`sparehash gaming-end` to remove their UID from the set. The controller also
-queries `gamemoded -s` independently; if any configured user reports active,
-the gaming blocker stays active regardless of hook state.
+`sparehash gaming-end` to remove their UID from the set. Independently, the
+existing gaming worker scans Steam reaper arguments once per second. Recognised
+games or scan failures keep the gaming blocker active regardless of hook state.
 
 This design trusts gaming users: a member of the `sparehash` group can block
 mining indefinitely by never sending `gaming-end`. Only add users you trust.
+
+### Gaming observation and account modules
+
+`sparehash/gaming_scan.py` is the single automatic detector: a bounded,
+standard-library-only adaptation of Lutris's pinned Steam reaper function,
+recognising any numeric App ID. See `THIRD_PARTY_NOTICES.md` for GPL attribution.
+`sparehash/gaming.py` retains NSS/name validation and fixed authenticated hooks;
+there is no GameMode polling, session-completeness guard or log-reader fallback.
+
+Each immutable scan carries a monotonic timestamp. The controller checks its
+two-second freshness independently of worker completion, slow aggregate samples
+and START authorization. Late out-of-generation CLEAR cannot erase a newer hold.
+Successful no-match scans release only gaming, subject to all other blockers
+and existing restart dwell. Genuine faults/stale results inhibit; normal process
+disappearance is churn. Only one scan may be in flight; no scan backlog is queued.
+
+`gaming.enabled` controls scanning; `gaming.users` grants existing hook-account
+permissions, not scanner coverage. New setup needs no Steam, Lutris, GameMode,
+session bus, user-home reads or per-game options. Legacy GameMode removal still
+checks receipts and account/path ownership. Migration is documented in
+`docs/gaming-integration-contract.md`; explicit old policies are not silently
+changed into the new detector.
+
+Best-effort misses are accepted limitations, not proof of game absence.
+Non-Steam/unrecognised games, changed markers or surviving children may be missed.
+Low priority does not guarantee zero contention. Actual gameplay, KDE/Gaming Mode
+and hardware behavior remain pending owner testing, not certified by synthetic
+fixtures. Historical completeness/admission investigations remain research only.
+
+### Latency objectives
+
+The system targets ≤1 second callback latency and ≤5 second empty proof from
+trigger, including detection and queued job time. These are initial engineering
+objectives subject to feasibility testing, not hard real-time guarantees. Actual
+values depend on system load, detection queues, and job scheduling.
+
+### Manual pause independence
+
+Manual pause (`sparehash pause`) and gaming blockers are separate. Both must
+clear for mining to start. Manual pause persists across controller restarts via
+state file. `sparehash resume` clears only the manual pause and cannot bypass
+an active gaming blocker.
 
 ## Battery evidence
 
@@ -199,8 +241,9 @@ battery) is allowed to mine.
 ## Deferred optional workflows
 
 Public `config edit`, `update`, and `benchmark` are unsupported in experimental
-v0.1.1: dispatch exits 2 before workflow imports or effects. `config show` remains
-supported. The internal benchmark mechanism remains, but is not public release
+v0.2: dispatch exits 2 before workflow imports or effects. `config show` remains
+supported; unused CLI edit/benchmark adapters were removed during consolidation.
+The internal benchmark mechanism remains, but is not public release
 acceptance. Its controller flow is:
 
 1. Calls `authorize()` to verify all blockers are clear.
@@ -212,6 +255,46 @@ acceptance. Its controller flow is:
 
 The benchmark authorization is single-use. A second authorization for the same
 benchmark is denied.
+
+## Runtime and deployer separation
+
+The runtime is deployer-agnostic. It reads protected deployment descriptions and
+configuration from fixed paths, but does not claim ownership of package manager
+files or invoke imperative installers. An externally provisioned deployment
+(future RPM/Nix package) can run the same controller contract without
+`install.sh` or installer receipts.
+
+The runtime entry point (`runtime.run()`) strips test environment variables
+(`SPAREHASH_RUN_DIR`, `SPAREHASH_HWMON_ROOT`, `SPAREHASH_STATE_FILE`) before
+accessing configuration. Protected paths come from fixed locations or explicit
+deployment descriptions, not environment overrides. The runtime does not import
+wizard or install command modules; it uses shared validation interfaces from
+`deployment.py` and `install_manifest.py` for read-only integrity checks.
+
+Runtime reads:
+
+- `/etc/sparehash/config.toml` (public configuration, mode 0644)
+- `/etc/sparehash/xmrig.json` (generated XMRig config with API token, mode 0640)
+- `/etc/sparehash/deployment.json` (schema 1, deployment owner and layout)
+- `/opt/xmrig/current` (managed binary symlink)
+
+Runtime manages:
+
+- `/var/lib/sparehash/` (runtime state, leases, manifests)
+- `/run/sparehash/ipc/` (protected IPC socket)
+- `/run/sparehash-miner/private/` (protected operation spec/benchmark config)
+- systemd unit lifecycle (start/stop/authorize)
+
+Runtime does not:
+
+- Rewrite package manager files
+- Chown package-owned directories
+- Invoke `install.sh` or wizard
+- Claim ownership of `/usr`, `/opt`, `/etc` package content
+
+Native packaging remains deferred; the former proposal is preserved in
+[Git history](https://github.com/barrelful/sparehash/blob/af7f2cf/docs/packaging-roadmap.md),
+not shipped as an approved distribution channel.
 
 ## Hugepage lease and restore
 
@@ -252,12 +335,16 @@ rejects symlinks, foreign ownership, or unrecorded directories.
 
 Internal updates add a new version, repoint `current`, and optionally prune old versions.
 Rollback points `current` back to the previous version.
+These are retained internal research mechanisms, not supported public v0.2
+upgrade/rollback workflows. Public upgrade/recovery/completion and in-place
+reconfiguration entrypoints refuse before effects; never remove a hold to bypass
+that refusal. Native packaging and benchmark are also deferred.
 
-## Why no MSR in v1
+## Why no MSR in v0.2
 
 MSR access would require either a kernel module, a setuid helper, or privileged
 instructions. All of these increase the attack surface and could affect other
-workloads. SpareHash v1 deliberately excludes MSR optimisation. The rendered
+workloads. SpareHash v0.2 deliberately excludes MSR optimisation. The rendered
 XMRig config sets `rdmsr: false` and `wrmsr: false`, and the config schema
 rejects any enabled MSR section.
 
@@ -272,7 +359,7 @@ rejects any enabled MSR section.
 - `sparehash/cli_uninstall.py`: retirement before receipt-owned removal
 - `sparehash/state.py` — blocker registry
 - `sparehash/ipc.py` — Unix socket transport
-- `sparehash/power.py`, `sparehash/thermal.py`, `sparehash/gaming.py` — blockers
+- `sparehash/power.py`, `sparehash/thermal.py`, `sparehash/gaming_scan.py` — automatic blockers
 - `sparehash/install_ledger.py`, `sparehash/xmrig_manifest.py` — receipts
 - `sparehash/xmrig_paths.py`, `sparehash/xmrig_layout.py` — path trust
 - `systemd/sparehash*.service.in` — unit templates

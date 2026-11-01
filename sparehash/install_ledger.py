@@ -9,13 +9,22 @@ import grp
 from collections.abc import Callable
 from dataclasses import replace
 from datetime import datetime, timezone
-from typing import TypeAlias, final, assert_never
+from typing import TypeAlias, assert_never, final
 from uuid import uuid4
 
 from .deployment import DeploymentError, Tree
 from .install_manifest import StoreContext, locked_store
-from .xmrig_ledger import Action, Artifact, GroupIdentity, Installer, Membership, Operation, UserIdentity
-from .xmrig_manifest import MAX_METADATA_BYTES, Manifest, format_manifest
+from .xmrig_ledger import (
+    Action,
+    Artifact,
+    GroupIdentity,
+    Installer,
+    ManifestError,
+    Membership,
+    Operation,
+    UserIdentity,
+)
+from .xmrig_manifest import Manifest, format_manifest, metadata_cap
 
 Receipt: TypeAlias = UserIdentity | GroupIdentity | Membership | Artifact
 
@@ -33,31 +42,35 @@ class Ledger:
             gid = 0
         return StoreContext(self.tree.trust, gid=gid if self.tree.uid == 0 else None, create=True)
 
-    def initialize(self) -> None:
-        with locked_store(self.context()) as store:
+    def initialize(self, context: StoreContext | None = None) -> None:
+        with locked_store(self.context() if context is None else context) as store:
             prior = store.read()
             manifest = prior.manifest if prior else Manifest("/opt/xmrig", ())
             if manifest.installer is None:
-                store.write(replace(manifest, installer=Installer(1, "installing", (), (), (), ())))
+                store.write(replace(manifest, installer=Installer(2, "installing", (), (), (), ())))
 
-    def begin(self, target: str, operation: Operation) -> int:
-        with locked_store(self.context()) as store:
+    def begin(self, target: str, operation: Operation, context: StoreContext | None = None) -> int:
+        with locked_store(self.context() if context is None else context) as store:
             prior = store.read()
             manifest = prior.manifest if prior else Manifest("/opt/xmrig", ())
-            installer = manifest.installer or Installer(1, "installing", (), (), (), ())
+            installer = manifest.installer or Installer(2, "installing", (), (), (), ())
             if any(item.state == "pending" for item in installer.actions):
                 raise DeploymentError("recovery", "pending installer action requires inspection; do not delete the manifest or rotate the token")
             sequence = max((item.sequence for item in installer.actions), default=0) + 1
             action = Action(sequence, self.install_id, datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"), operation, target, "pending")
             updated = replace(manifest, installer=replace(installer, phase="installing", actions=(*installer.actions, action)))
             reserve = 16384 if operation == "merge-gaming" else 8192
-            if len(format_manifest(updated)) + reserve > MAX_METADATA_BYTES:
+            try:
+                size = len(format_manifest(updated))
+            except ManifestError as error:
+                raise DeploymentError("manifest-budget", "next action receipt exceeds the metadata bound; no mutation performed") from error
+            if size + reserve > metadata_cap(updated.schema):
                 raise DeploymentError("manifest-budget", "insufficient space for action receipt; no mutation performed")
             store.write(updated)
             return sequence
 
-    def applied(self, sequence: int, receipts: tuple[Receipt, ...] = ()) -> None:
-        with locked_store(self.context()) as store:
+    def applied(self, sequence: int, receipts: tuple[Receipt, ...] = (), context: StoreContext | None = None) -> None:
+        with locked_store(self.context() if context is None else context) as store:
             prior = store.read()
             if prior is None or prior.manifest.installer is None:
                 raise DeploymentError("ledger", "write-ahead record disappeared")
@@ -82,12 +95,13 @@ class Ledger:
                               actions=tuple(replace(item, state="applied") if item.sequence == sequence else item for item in installer.actions))
             store.write(replace(prior.manifest, installer=updated))
 
-    def perform(self, action: tuple[str, Operation], mutate: Callable[[], tuple[Receipt, ...]]) -> None:
-        sequence = self.begin(*action)
-        self.applied(sequence, mutate())
+    def perform(self, action: tuple[str, Operation], mutate: Callable[[], tuple[Receipt, ...]],
+                context: StoreContext | None = None) -> None:
+        sequence = self.begin(*action, context=context)
+        self.applied(sequence, mutate(), context=context)
 
-    def ready(self) -> None:
-        with locked_store(self.context()) as store:
+    def ready(self, context: StoreContext | None = None) -> None:
+        with locked_store(self.context() if context is None else context) as store:
             prior = store.read()
             if prior is None or prior.manifest.installer is None:
                 raise DeploymentError("ledger", "missing installer ledger")

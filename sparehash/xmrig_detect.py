@@ -15,6 +15,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Final, Protocol
 
+from .layout import Layout, LayoutError
 from .xmrig_paths import MAX_BINARY_BYTES as MAX_BINARY_BYTES, PathTrust, snapshot as snapshot
 
 MIN_VERSION: Final = (6, 21, 2)
@@ -83,8 +84,10 @@ def metadata_adapter(runner: SystemRunner) -> MetadataRunner:
     return runner
 
 
-def ownership(path: Path, *, runner: MetadataRunner, marker: Path, manifest: Path) -> ManagedBy:
-    if _PATH_TRUST.records(path, (marker, manifest)):
+def ownership(path: Path, *, runner: MetadataRunner, marker: Path, manifest: Path,
+              trust: PathTrust | None = None) -> ManagedBy:
+    selected = trust or _PATH_TRUST
+    if selected.records(path, (marker, manifest)):
         return ManagedBy.SPAREHASH
     return ManagedBy.DISTRO if _package_owned(path, runner=runner) else ManagedBy.USER
 
@@ -139,27 +142,43 @@ def _package_owned(path: Path, *, runner: MetadataRunner) -> bool:
 def detect_installations(
     caps: Capabilities | None = None, *, probe: IsolationProbe | None = None,
     runner: SystemRunner | None = None, marker: Path | None = None,
-    manifest: Path | None = None,
+    manifest: Path | None = None, layout: Layout | None = None,
+    trust: PathTrust | None = None, uid: int = 65534,
 ) -> list[Install]:
     """Discover configured, fixed-PATH, and approved candidates; absence is normal.
 
     Todo11/Todo18 production seam: inject ``IsolationProbe(snapshot, *, timeout, uid, required_properties)``.
-    The implementation must use systemd-run transient unit as nobody (uid 65534),
+    The implementation must run as the resolved non-root probe identity passed as
+    ``uid`` (defaulting to the conventional nobody UID) using the transient unit
     with ProtectSystem=strict, ProtectHome=yes, PrivateNetwork=yes,
     NoNewPrivileges=yes, PrivateTmp=yes, bounded output/time, and unconditional
     unit cleanup. No default adapter exists; omission means unverified.
+
+    ``layout``/``trust`` pin the managed-current authorization; the default
+    module trust keeps the logical persistent prefix spelling.
     """
     metadata_runner: MetadataRunner = _metadata_runner if runner is None else metadata_adapter(runner)
-    managed_marker = marker or Path("/opt/xmrig/.sparehash-managed")
-    install_manifest = manifest or Path("/var/lib/sparehash/install-manifest.json")
+    if trust is not None:
+        selected = trust
+    elif layout is not None:
+        selected = PathTrust(layout=layout)
+    else:
+        selected = _PATH_TRUST
+    effective_layout = layout if layout is not None else selected.layout
     results: list[Install] = []
     with tempfile.TemporaryDirectory(prefix="sparehash-xmrig-") as scratch:
         private = Path(scratch)
         private.chmod(0o755)
         for path in candidate_paths(caps):
-            is_current = path == _PATH_TRUST.managed_root / "current/xmrig"
-            snapshot_result = (_PATH_TRUST.current_snapshot(private, managed_marker, install_manifest)
-                               if is_current else snapshot(path, private_dir=private))
+            is_current = path == selected.logical_managed_root / "current/xmrig"
+            try:
+                managed_marker = marker or selected.marker_path
+                install_manifest = manifest or selected.manifest_path
+                snapshot_result = (selected.current_snapshot(private, managed_marker, install_manifest)
+                                   if is_current else snapshot(path, private_dir=private,
+                                                              layout=effective_layout))
+            except LayoutError:
+                snapshot_result = None
             if snapshot_result is None:
                 if os.path.lexists(path):
                     results.append(Install(path, None, ManagedBy.USER, False, True,
@@ -169,7 +188,7 @@ def detect_installations(
             version = None
             if probe is not None:
                 try:
-                    output = probe(private_snapshot, timeout=PROBE_TIMEOUT, uid=65534,
+                    output = probe(private_snapshot, timeout=PROBE_TIMEOUT, uid=uid,
                                    required_properties=("ProtectSystem=strict", "ProtectHome=yes",
                                                        "PrivateNetwork=yes", "NoNewPrivileges=yes", "PrivateTmp=yes"))
                 except (OSError, subprocess.SubprocessError, TimeoutError):
@@ -177,7 +196,8 @@ def detect_installations(
                 version = parse_version(output or "")
             private_snapshot.unlink(missing_ok=True)
             managed = (ManagedBy.SPAREHASH if is_current else
-                       ownership(path, runner=metadata_runner, marker=managed_marker, manifest=install_manifest))
+                       ownership(path, runner=metadata_runner, marker=managed_marker,
+                                 manifest=install_manifest, trust=selected))
             results.append(Install(path, version, managed, version is not None, writable,
                                    FORTIFY_WARNING if version is not None and not is_supported(version) else None))
     return results

@@ -15,7 +15,16 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Final, TypeGuard, TypeVar
 
-from .config import Config, ConfigError, Cpu, Gaming, Hugepages, Pool, RawConfig, validate
+from .config import (
+    Config,
+    ConfigError,
+    Cpu,
+    Gaming,
+    Hugepages,
+    Pool,
+    RawConfig,
+    validate,
+)
 from .gaming import User, UserError
 from .sysdetect import Capabilities
 from .thermal import SensorPath, find_sensor
@@ -27,6 +36,11 @@ MSR_NOTICE: Final = "MSR optimisation is not supported in v1; SpareHash never wr
 NUMA_NOTICE: Final = (
     "Automatic hugepages unavailable: require exactly one credibly detected online "
     "memory-bearing NUMA node; multiple or unknown nodes are unsupported. Mining still works."
+)
+GAMING_NOTICE: Final = (
+    "Best-effort Steam reaper detection can miss non-Steam and unrecognised games. "
+    "Scan failures inhibit mining; low priority does not promise zero contention. "
+    "No Lutris, GameMode, session bus or running Steam client is required."
 )
 
 
@@ -57,8 +71,6 @@ def _wallet(value: str) -> str:
 
 def _users(value: str) -> tuple[str, ...]:
     users = tuple(value.split())
-    if not users:
-        raise WizardError("gaming.users", "specify at least one existing account or disable gaming")
     if any(re.fullmatch(r"[a-zA-Z_][a-zA-Z0-9_.-]*\$?", name) is None for name in users):
         raise WizardError("gaming.users", "enter valid local account names")
     try:
@@ -77,7 +89,7 @@ def _checked(cfg: Config, caps: Capabilities, sensor: SensorPath | None) -> Conf
     _ = _hostname(cfg.pool.host)
     if not cfg.pool.worker or any(ord(c) < 32 or ord(c) == 127 for c in cfg.pool.worker):
         raise WizardError("pool.worker", "enter a nonempty worker without control characters")
-    if cfg.gaming.users or cfg.gaming.enabled:
+    if cfg.gaming.users:
         _ = _users(" ".join(cfg.gaming.users))
         if any(len(name.split()) != 1 or name.split()[0] != name for name in cfg.gaming.users):
             raise WizardError("gaming.users", "each entry must be one account name")
@@ -91,6 +103,9 @@ def _checked(cfg: Config, caps: Capabilities, sensor: SensorPath | None) -> Conf
 def _config_shape(data: Mapping[str, TomlValue]) -> TypeGuard[RawConfig]:
     defaults = Config()
     raw = defaults.to_dict()
+    # Deprecated inert defaults remain readable; Config checks values and emits
+    # migration guidance. They are never written into new answers/configuration.
+    raw["gaming"] = {**raw.get("gaming", {}), "integration": "auto", "steam_log": False}
     schema: dict[str, TomlValue] = {
         "version": defaults.version, "wallet": defaults.wallet, "donate_level": defaults.donate_level,
         "pool": raw.get("pool", {}), "cpu": raw.get("cpu", {}), "thermal": raw.get("thermal", {}),
@@ -116,7 +131,8 @@ def _config_shape(data: Mapping[str, TomlValue]) -> TypeGuard[RawConfig]:
 
 
 def load_answers(path: str | Path, caps: Capabilities, *,
-                 sensor_probe: Callable[[], SensorPath | None] = find_sensor) -> Config:
+                 sensor_probe: Callable[[], SensorPath | None] = find_sensor,
+                 unattended: bool = False) -> Config:
     """Parse partial Config TOML with explicit required wallet/pool and safety gates."""
     try:
         with Path(path).open("rb") as source:
@@ -131,12 +147,14 @@ def load_answers(path: str | Path, caps: Capabilities, *,
     try:
         with warnings.catch_warnings():
             warnings.simplefilter("error", UserWarning)
+            warnings.filterwarnings("default", r"gaming\.(integration|steam_log) is deprecated", UserWarning)
             if not _config_shape(parsed):
                 raise WizardError("answers", "invalid configuration shape")
             cfg = Config.from_dict(parsed)
     except (ConfigError, UserWarning) as error:
         raise WizardError("answers", str(error)) from error
-    return _checked(cfg, caps, sensor_probe())
+    cfg = _checked(cfg, caps, sensor_probe())
+    return cfg
 
 
 @dataclass(frozen=True, slots=True)
@@ -241,10 +259,10 @@ def run_interactive(caps: Capabilities, input_fn: Callable[[str], str],
         except WizardError:
             output_fn("SUDO_USER is not a valid existing account; no gaming user default.")
     gaming = replace(seed.gaming, enabled=False)
-    if dict(caps.helper_paths).get("gamemoded") is None:
-        output_fn("GameMode was not detected; gaming pause requires GameMode installation and user-session hooks.")
-    if prompts.boolean("Enable gaming guard", seed.gaming.enabled):
-        users = prompts.ask(f"Gaming account names [{default_user}]: ", lambda v: _users(v or default_user))
+    output_fn(GAMING_NOTICE)
+    if prompts.boolean("Enable best-effort Steam detection", seed.gaming.enabled):
+        users = prompts.ask(f"Optional hook account names (empty allowed) [{default_user}]: ",
+                            lambda v: _users(v or default_user))
         gaming = Gaming(users=users)
     hugepages = seed.hugepages
     output_fn("Regular 2 MiB hugepages: 1280 pages reserve 2560 MiB (~2.5 GiB) temporarily while mining; " +
@@ -257,6 +275,7 @@ def run_interactive(caps: Capabilities, input_fn: Callable[[str], str],
         enabled = prompts.boolean("Enable dynamic 2 MiB hugepages", hugepages.enabled)
         pages = prompts.integer(f"2 MiB page count [{hugepages.pages}]: ", (1, 2**31 - 1, hugepages.pages)) if enabled else hugepages.pages
         hugepages = Hugepages(enabled, pages)
-    return _checked(replace(seed, wallet=wallet, pool=pool, donate_level=donate,
-                            cpu=Cpu(mode, percent, custom), thermal=thermal,
-                            gaming=gaming, hugepages=hugepages), caps, sensor)
+    result = _checked(replace(seed, wallet=wallet, pool=pool, donate_level=donate,
+                              cpu=Cpu(mode, percent, custom), thermal=thermal,
+                              gaming=gaming, hugepages=hugepages), caps, sensor)
+    return result

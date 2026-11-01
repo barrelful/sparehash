@@ -11,6 +11,7 @@ StartLimitBurst=5
 Type=simple
 User=xmrig
 Group=xmrig
+# ExecCondition=+/path/to/trusted/sparehash must remain the exact root-executed trusted CLI.
 ExecCondition=+/usr/local/bin/sparehash __authorize_miner__
 ExecStart=/usr/local/bin/sparehash __miner_exec__
 Restart=on-failure

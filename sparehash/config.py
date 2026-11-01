@@ -32,7 +32,7 @@ class RawConfig(TypedDict, total=False):
     cpu: dict[str, str | int]
     thermal: dict[str, bool | int]
     power: dict[str, bool]
-    gaming: dict[str, bool | list[str]]
+    gaming: dict[str, bool | list[str] | str]
     hugepages: dict[str, bool | int]
     api: dict[str, int]
     controller: dict[str, int]
@@ -74,8 +74,26 @@ class Power:
     maintenance_mode: bool = False
 
 
+def _legacy_gaming(gaming: dict[str, str | int | bool | list[str] | dict[str, str | int | float | bool]]) -> None:
+    """Read inert old defaults, but never silently replace an explicit policy."""
+    for key, inert in (("integration", "auto"), ("steam_log", False)):
+        if key not in gaming:
+            continue
+        value = gaming[key]
+        if type(value) is not type(inert) or value != inert:
+            raise ConfigError(
+                f"gaming.{key} is retired; v0.2 uses best-effort Steam reaper detection, "
+                "which can miss games. Remove integration/steam_log and explicitly choose "
+                "gaming.enabled=true or false; see docs/gaming-integration-contract.md"
+            )
+        warnings.warn(f"gaming.{key} is deprecated and ignored; remove it from configuration",
+                      UserWarning, stacklevel=3)
+
+
 @dataclass(frozen=True, slots=True)
 class Gaming:
+    """Best-effort scanning switch and existing hook-authorized accounts."""
+
     enabled: bool = True
     users: tuple[str, ...] = ()
 
@@ -122,7 +140,9 @@ class Config:
         return _construct(data)
 
     def to_dict(self) -> RawConfig:
-        return cast(RawConfig, cast(object, {**asdict(self), "gaming": {**asdict(self.gaming), "users": list(self.gaming.users)}}))
+        gaming = asdict(self.gaming)
+        gaming["users"] = list(self.gaming.users)
+        return cast(RawConfig, cast(object, {**asdict(self), "gaming": gaming}))
 
 
 DEFAULTS: Final = Config()
@@ -181,11 +201,12 @@ def _construct(data: RawConfig) -> Config:
         warnings.warn("disabled legacy [msr] settings are ignored", UserWarning, stacklevel=3)
     pool, cpu = _table(data, "pool"), _table(data, "cpu")
     thermal, gaming = _table(data, "thermal"), _table(data, "gaming")
+    _legacy_gaming(gaming)
     power = _table(data, "power")
     _unknown(power, ("maintenance_mode",), "power.")
     hugepages, api = _table(data, "hugepages"), _table(data, "api")
     controller, xmrig = _table(data, "controller"), _table(data, "xmrig")
-    sections = ((pool, ("host", "port", "tls", "worker"), "pool."), (cpu, ("mode", "max_threads_percent", "custom_json"), "cpu."), (thermal, ("enabled", "pause_c", "resume_c"), "thermal."), (gaming, ("enabled", "users"), "gaming."), (hugepages, ("enabled", "pages"), "hugepages."), (api, ("port",), "api."), (controller, ("min_dwell_seconds", "reconcile_seconds"), "controller."), (xmrig, ("binary",), "xmrig."))
+    sections = ((pool, ("host", "port", "tls", "worker"), "pool."), (cpu, ("mode", "max_threads_percent", "custom_json"), "cpu."), (thermal, ("enabled", "pause_c", "resume_c"), "thermal."), (gaming, ("enabled", "users", "integration", "steam_log"), "gaming."), (hugepages, ("enabled", "pages"), "hugepages."), (api, ("port",), "api."), (controller, ("min_dwell_seconds", "reconcile_seconds"), "controller."), (xmrig, ("binary",), "xmrig."))
     for section, allowed, prefix in sections:
         _unknown(section, allowed, prefix)
     try:

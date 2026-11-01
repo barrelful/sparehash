@@ -1,48 +1,90 @@
 # SpareHash
 
-> **Experimental v0.1.1 software.** SpareHash is a young system-level project.
+> **Experimental v0.2.0 software.** SpareHash is a young system-level project.
 > It has been tested on a limited set of Linux distributions. Review this
-> README, `SECURITY.md`, and the v1 limitations section before installing on a
-> machine you care about.
+> README, `SECURITY.md`, `docs/platforms.md`, and the limitations section
+> before installing on a machine you care about.
+
+Current acceptance status and selected source/artifact identities are in the
+[candidate report](docs/release-0.2-candidate.md). For a supervised installation
+and real-game tests, use the [owner checklist](docs/testing-0.2-owner.md).
 
 SpareHash is a CPU-only Monero (RandomX) miner manager for Linux x86_64. It runs
 [XMRig](https://xmrig.com/) in the background using spare CPU cycles, and
-pauses automatically when games, thermal limits, or power conditions demand the
-hardware.
+uses best-effort Steam detection and strict thermal/power/manual blockers to
+pause mining. Unrecognised games can be missed.
 
 SpareHash is CPU-only. There is no GPU mining, no MSR helper, no kernel module,
 and no network or firewall policy change. The miner runs as a dedicated
 unprivileged `xmrig` user, never as root.
 
-Licensed under the GNU General Public License v3.0 (GPLv3). See `LICENSE`.
+Licensed under GPL-3.0-or-later. See `LICENSE` and `THIRD_PARTY_NOTICES.md`.
 
 ## What SpareHash does and does not do
 
 - **Does:** install and manage an unprivileged XMRig service that mines only
   when every safety blocker is clear.
-- **Does:** pause mining on battery, during GameMode sessions, above a thermal
+- **Does:** pause mining on battery, on best-effort Steam game detection, above a thermal
   threshold, or when you run `sparehash pause`.
-- **Does:** use kernel idle scheduling (`Nice=19`, `SCHED_IDLE`, cgroup idle
-  weights where supported) so normal foreground work always wins without
-  frequent stop/start cycles.
+- **Does:** use low-priority kernel scheduling (`Nice=19`, `SCHED_IDLE`, cgroup
+  idle weights where supported). This is not a promise of zero contention.
 - **Does:** verify XMRig downloads against a pinned GPG fingerprint and
   SHA-256 checksum.
 - **Does:** keep the XMRig HTTP API on `127.0.0.1` only.
 - **Does not:** mine as root.
 - **Does not:** change DNS, firewall, SELinux, AppArmor, sysctl, or bootloader
   settings.
-- **Does not:** enable MSR optimisation, GPU mining, or 1GiB hugepages in v1.
+- **Does not:** enable MSR optimisation, GPU mining, or 1GiB hugepages in v0.2.
 - **Does not:** provide public pool presets or calculate mining profitability.
 
 ## Supported platforms
 
+SpareHash classifies every host into one of three support tiers. Run `sudo ./install.sh --preflight` to see the tier before any changes are made. See `docs/platforms.md` for the full support matrix, preflight behavior, and platform-specific guidance.
+
+| Tier | Meaning |
+|---|---|
+| **VALIDATED** | Matches a tested release line; evidence is limited to the named VM images |
+| **UNVERIFIED** | Known distribution family but no VM evidence for this version |
+| **UNSUPPORTED** | Known incompatible; installation refused (NixOS, Proxmox VE) |
+
+**Synthetic lifecycle evidence:** Ubuntu 24.04 on `ubuntu-noble-20260926-v1`
+and Bazzite 44 on `bazzite-kde-44-20261012-v1`. Install/removal/reinstall/reboot,
+permissions and synthetic safety callbacks passed; see the
+[S3 report](docs/development/s3-lifecycle-reliability.md). Real native/Proton
+gameplay, KDE/Gaming Mode and hardware validation remain pending owner testing.
+
+**UNVERIFIED:** Debian, Mint, Ubuntu 22.04 and other releases, Fedora Workstation,
+Silverblue/Kinoite, Bazzite-Deck and other Atomic images, openSUSE and Arch.
+Preflight's VALIDATED label means the release ID matches a tested release line,
+not that it authenticated this exact image or certified all derivatives/hardware.
+
+**UNSUPPORTED:** NixOS (imperative installer cannot operate within the Nix store model), Proxmox VE (hypervisor host; scheduling and thermal risks not mitigated).
+
+Requirements:
+
 - Linux x86_64
-- systemd as PID 1 (systemd 248+ recommended for `LoadCredential` support)
+- systemd as PID 1 (tested: Ubuntu systemd 255; Bazzite systemd 259)
 - Python 3.11 or newer
 - No additional Python packages required at runtime
 
-Primary testing target: recent Debian, Ubuntu, and Linux Mint. Other systemd
-distributions may work but are not guaranteed in v1.
+## Preflight check
+
+Before installing, run a read-only preflight to see compatibility, support tier, gaming coverage, and planned effects:
+
+```
+sudo ./install.sh --preflight
+```
+
+The report shows support (VALIDATED/UNVERIFIED/UNSUPPORTED), readiness (READY/ACTION_REQUIRED/REFUSED_UNSUPPORTED/REFUSED_UNSAFE/INCONCLUSIVE), gaming detection (BEST_EFFORT/DISABLED), effects (paths, units, accounts, protected directories), missing evidence, reasons, unsafe conditions, and remediation guidance. Gaming readiness is not proof of gameplay coverage. Add `--json` for machine-readable output:
+
+```
+sudo ./install.sh --preflight --json
+```
+
+Preflight makes no persistent host changes. It does not bootstrap a CLI, create
+users, start services or download XMRig. Exit codes: **0 READY, 2 ACTION_REQUIRED,
+1 REFUSED_UNSUPPORTED/REFUSED_UNSAFE/INCONCLUSIVE**. Syntax/consent/deferred-mode
+refusals return 2. See `docs/platforms.md` for the full installer exit contract.
 
 ## Quick start
 
@@ -54,7 +96,7 @@ sudo ./install.sh
 
 The installer walks you through an interactive setup: wallet address, pool
 host/port, CPU mode, thermal guard, hugepages, and gaming users. It creates the
-`xmrig` and `sparehash` system accounts, selects the latest supported XMRig
+`xmrig` system user and the `xmrig`/`sparehash` groups (no `sparehash` user), selects the latest supported XMRig
 release from GitHub and verifies it (pinned GPG fingerprint, SHA-256 checksum),
 or reuses an already verified managed installation, writes configuration to
 `/etc/sparehash/`, and installs two systemd units. It then asks:
@@ -68,15 +110,30 @@ already-running controller on reinstall). The installer never enables or starts
 the miner directly. Its final summary reports boot startup, controller activity,
 and whether mining is blocked (or unknown if controller status is unavailable).
 
-For unattended installs, supply a TOML answers file:
+For unattended installs, supply a TOML answers file and explicit `--yes`
+consent for the disclosed effects:
 
 ```
-sudo ./install.sh --answers answers.toml
+sudo ./install.sh --answers answers.toml --yes
 ```
 
-In `--answers` mode, both startup choices default to Yes without reading stdin:
-the controller is enabled at boot and started immediately. If you declined
-startup interactively, you can enable and start it later with:
+`--answers` without `--yes` refuses before any effect is applied. `--no-start`
+and `--no-enable` skip the two startup prompts (defaulting each to No) so QA or
+an operator can stage a service without starting the controller.
+
+A dry, read-only preflight reports support, readiness, and gaming coverage
+without changing the host, in human or `--json` form:
+
+```
+sudo ./install.sh --preflight
+sudo ./install.sh --preflight --json
+```
+
+A `READY` report exits 0; `ACTION_REQUIRED` exits 2; refused or inconclusive
+outcomes exit 1. In `--answers` mode, both startup choices default to Yes
+without reading stdin: the controller is enabled at boot and started
+immediately. If you declined startup interactively, you can enable and start it
+later with:
 
 ```
 sudo sparehash start
@@ -99,7 +156,8 @@ Every public command:
 
 | Command | Flags | Requires root | Description |
 |---|---|---|---|
-| `install` | `--answers FILE`, `--use-existing`, `--clear-lifecycle-latch` | yes | Run the installer |
+| `install` | `--answers FILE`, `--use-existing`, `--clear-lifecycle-latch`, `--operation-id ID`, `--no-start`, `--no-enable`, `--preflight`, `--json`, `--yes` | yes | Fresh install or explicit reinstall after completed removal; not an in-place upgrade |
+| `complete-upgrade` | `OPERATION_ID` | no effects | Deferred; exits 2 and retains journals/holds |
 | `uninstall` | `--purge` | yes | Remove SpareHash; configuration retained unless `--purge` |
 | `status` | `--json` | yes | Show controller, miner, blockers, power, thermal, hugepages, gaming, API |
 | `start` | | yes | Enable and start the controller (`systemctl enable --now`) |
@@ -107,10 +165,10 @@ Every public command:
 | `pause` | | no | Manually pause mining via controller IPC |
 | `resume` | | no | Clear manual pause (mining resumes only when all blockers are clear) |
 | `config show` | | no | Print current public configuration as JSON |
-| `config edit` | | yes | Unsupported in experimental v0.1.1; exits 2 without effects |
+| `config edit` | | yes | Unsupported in experimental v0.2.0; exits 2 without effects |
 | `logs` | `-f`, `--follow` | no | Stream the last 100 lines from both unit journals |
-| `benchmark` | | yes | Unsupported in experimental v0.1.1; exits 2 without effects |
-| `update` | | yes | Unsupported in experimental v0.1.1; exits 2 without effects |
+| `benchmark` | | yes | Unsupported in experimental v0.2.0; exits 2 without effects |
+| `update` | | no effects | Deferred in experimental v0.2.0; exits 2 without effects; no alternate upgrade path |
 | `gaming-start` | | no | Signal that a configured user started gaming |
 | `gaming-end` | | no | Signal that a configured user stopped gaming |
 | `debug set-blocker` | `NAME` | yes | Force a named blocker active (debugging only) |
@@ -124,7 +182,7 @@ not user-facing.
 
 The public configuration lives at `/etc/sparehash/config.toml`. Use the installer
 wizard or an answers file to configure installation; `config show` is read-only.
-`config edit` is unsupported in v0.1.1. All keys and their defaults:
+`config edit` is unsupported in v0.2.0. All keys and their defaults:
 
 ```toml
 version = 1
@@ -152,7 +210,7 @@ maintenance_mode = false     # opt-in AC maintenance discharge exception, at mos
 
 [gaming]
 enabled = true
-users = []                   # list of Unix account names to monitor for GameMode
+users = []                   # optional verified hook accounts; scanner needs none
 
 [hugepages]
 enabled = false
@@ -176,7 +234,7 @@ Never share it.
 
 ### MSR
 
-MSR (model-specific register) access is unavailable in v1. The rendered XMRig
+MSR (model-specific register) access is unavailable in v0.2. The rendered XMRig
 configuration sets `rdmsr: false` and `wrmsr: false`. No kernel module, no
 sysctl drop-in, and no MSR helper is installed or required. The `[msr]` config
 section accepts only `enabled = false`; any other value is rejected.
@@ -189,7 +247,7 @@ clear. The four registry blockers are:
 
 - **Battery**: credible battery inventory with on-battery/Discharging status, or
   unknown/stale power evidence (fail-closed)
-- **Gaming**: a configured user has an active GameMode session
+- **Gaming**: a Steam reaper is recognised, scanning fails/is stale, or an authenticated hook holds inhibition
 - **Manual**: operator issued `sparehash pause`
 - **Thermal**: CPU temperature at or above `thermal.pause_c`, or sensor unreadable
   (fail-safe)
@@ -250,32 +308,58 @@ UPower on-battery, and unknown/stale inventory still block mining. The default
 is `false`, preserving the conservative policy. This section is also accepted
 in TOML answers files.
 
-## GameMode and gaming hooks
+## Best-effort Steam detection and gaming hooks
 
-When `gaming.enabled = true` and `gaming.users` lists one or more accounts,
-SpareHash monitors those users for active GameMode sessions. The controller
-queries `gamemoded -s` per user via `runuser` and the user's D-Bus session bus.
+`gaming.enabled = true` uses one Lutris-derived Steam reaper detector for any
+numeric App ID. It requires no Lutris, GameMode package, per-game options,
+running Steam client, session bus or user logs. `gaming.users` may be empty;
+those accounts retain hook permissions, not process-scanner scope.
 
-To activate GameMode for a Steam game, add this to the game's launch options:
+Healthy scans with no recognised game may release gaming inhibition. Recognised
+games, genuine scanner faults and stale results inhibit. Scans run once per
+second, with bounded work and controller-owned two-second freshness. Recovery
+respects the existing restart dwell; battery, thermal, manual and lifecycle
+blockers remain independent.
 
-```
-gamemoderun %command%
-```
+**Best effort is not exhaustive coverage.** Non-Steam games, changed/unrecognised
+markers and games surviving their marker may be missed. Low priority does not
+promise zero contention. Actual native/Proton gameplay and KDE/Gaming Mode
+validation remain pending owner testing after RC. See
+[`docs/gaming-integration-contract.md`](docs/gaming-integration-contract.md).
 
-SpareHash does not perform blanket process detection. It checks only the
-configured accounts through the official GameMode socket.
+### Latency objectives (not guarantees)
 
-### Active session-bus requirement
+The system targets ≤1 second callback latency and ≤5 second empty proof from
+trigger, including detection and queued job time. These are initial engineering
+objectives subject to feasibility testing, not hard real-time guarantees and not
+zero game-start overlap. Actual values depend on system load and scheduling.
 
-The gaming check runs `runuser -u <name> -- env DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/<uid>/bus gamemoded -s`.
-If the configured user is not logged in (no `/run/user/<uid>/bus` socket), the
-query is inconclusive and SpareHash inhibits mining. Add gaming users only if
-they will have an active graphical or session bus while playing.
+### Status and migration
+
+Status reports `gaming_detection` as Steam reaper / best effort with enabled,
+detected/not detected/unknown, scan age/duration and fixed failure reasons.
+`coverage_tier` is `BEST_EFFORT`, `DISABLED`, or `UNVERIFIED` when unavailable,
+never FULL coverage. No-match status is not independent mining permission.
+
+New configuration writes only `gaming.enabled` and `gaming.users`. Legacy
+`integration="auto"` and `steam_log=false` are deprecated readable no-ops.
+Conservative/GameMode modes or `steam_log=true` are refused with migration
+guidance: review the best-effort limits, remove those keys, explicitly choose
+enabled or disabled. No automatic fallback or log reader remains.
+The installer no longer installs GameMode, edits its INI or adds hook memberships;
+ownership-safe removal handling for previously installed hooks remains.
+
+### Manual pause interaction
+
+A manual `sparehash pause` is independent of gaming blockers. Both must clear
+for mining to start. `sparehash resume` clears only the manual pause and cannot
+bypass an active gaming blocker.
 
 ### Group membership and `sg`
 
-The installer adds configured gaming users to the `sparehash` group so they can
-access the control socket at `/run/sparehash/control.sock`. Group membership
+Existing hook users need authorized access to the control socket at
+`/run/sparehash/control.sock`; new setup does not add group memberships.
+Only grant `sparehash` group access to trusted users. Group membership
 takes effect at next login. To apply it to the current session without logging
 out:
 
@@ -298,7 +382,7 @@ Key constraints:
   cgroup is empty. If the kernel does not honor the reduction, the lease is
   marked degraded
 - **1GiB pages remain disabled**: `randomx.1gb-pages` is set to `false`. The
-  incremental 1-3% gain from 1GiB pages is distinct and not pursued in v1
+  incremental 1-3% gain from 1GiB pages is distinct and not pursued in v0.2
 
 ## Thermal guard
 
@@ -321,16 +405,19 @@ removal. A partial failure after retirement leaves the system retired too.
 An existing uninstall sidecar lease is retained; no lease is required or created
 for offline uninstall. Configuration is retained by default.
 
-If you later want to reinstall after uninstall, opt in explicitly:
+If you later want to reinstall after uninstall, opt in explicitly. When the
+retirement record carries an operation id, pass the same id:
 
 ```
-sudo ./install.sh --clear-lifecycle-latch
+sudo ./install.sh --clear-lifecycle-latch --operation-id <ID>
 ```
 
-This clears the retained uninstall lease before removing the latch. An active
-update hold or an unreadable lease isn't cleared; a failure leaves the system
-retired. Never delete lifecycle records manually to bypass retirement.
-Inspect and resolve any partial-uninstall failure before opting into reinstall.
+The installer prints the exact command, including the recorded id, when it
+refuses a retired system. This clears the retained uninstall lease before
+removing the latch. An active update hold, a mismatched operation id, or an
+unreadable lease isn't cleared; a failure leaves the system retired. Never
+delete lifecycle records manually to bypass retirement. Inspect and resolve any
+partial-uninstall failure before opting into reinstall.
 
 ## DNS filtering
 
@@ -357,12 +444,23 @@ This streams the last 100 lines (or follows live) from `sparehash.service` and
 `sparehash-xmrig.service` via `journalctl`. No pager, no caller-controlled
 query.
 
-## Update and uninstall
+## Deferred workflows and uninstall
 
-`update`, `config edit`, and `benchmark` are unsupported in experimental v0.1.1.
-They refuse with exit code 2 before workflow effects. The underlying update
-sidecar lease still gates internal update operations and survives controller
-restart; it is not a supported public update workflow in this release.
+**Upgrades, rollback, native packaging, benchmark and in-place reconfiguration
+are deferred.** There is no supported v0.1.1 → v0.2 upgrade or automatic updater.
+`update`, `complete-upgrade`, `config edit`, `benchmark` and installer flags
+`--upgrade`, `--recover`, `--complete-upgrade`, `--reconfigure` refuse with exit 2
+before host inspection/effects. There is no public rollback command. Internal
+research implementations/tests remain, not a supported bypass.
+
+Preserve any existing migration journal, staging and safety hold; do not delete
+them or clear an update lease to force a new install. Seek maintainer assistance
+for a partial old migration. See [upgrade status](docs/upgrade-v020.md).
+Fresh installation and explicit reinstall after completed removal are the
+experimental path. Native RPM/DEB/Nix/Flatpak channels are not delivered by v0.2.
+Ordinary installation also refuses an existing protected CLI after a read-only
+check, before clearing retirement or collecting capabilities. Omitting deferred
+flags is not an alternate in-place reconfiguration route.
 
 Remove SpareHash:
 
@@ -370,12 +468,17 @@ Remove SpareHash:
 sudo sparehash uninstall
 ```
 
-Configuration is retained by default. Remove everything including configuration
-with:
+Configuration and manual state are retained by default. To also remove unchanged,
+receipt-owned configuration:
 
 ```
 sudo sparehash uninstall --purge
 ```
+
+`--purge` does **not** erase all `/var/lib/sparehash` state, retirement/receipt
+records, foreign files or an externally owned XMRig. Changed owned files cause
+safe refusal instead of deletion. Removal needs no running controller or network;
+resolve a partial removal before explicitly clearing retirement for reinstall.
 
 Uninstall does not require a running controller or a successful IPC reply.
 After protected receipt/sidecar checks, it durably latches retirement, stops and
@@ -401,6 +504,15 @@ before retirement or service changes.
 | `/etc/systemd/system/sparehash-xmrig.service` | Miner unit (static) |
 | `/usr/local/bin/sparehash` | CLI entry point |
 
+### Atomic/redirect paths
+
+On Atomic distributions (Fedora Silverblue, Bazzite, Kinoite), the filesystem
+redirects `/opt` to `/var/opt` and `/usr/local` to `/var/usrlocal`. The
+installer recognizes these redirects and operates on the physical paths while
+receipting the logical identities. Configuration at `/etc/sparehash/` is not
+redirected. The installer never creates, modifies, or removes OS-level redirect
+links. See `docs/platforms.md` for details.
+
 ## What SpareHash does not do
 
 - No GPU mining
@@ -416,14 +528,13 @@ before retirement or service changes.
 
 ## Known limitations
 
-- `config edit`, `update`, and `benchmark` are unsupported in v0.1.1.
+- `config edit`, `update`, and `benchmark` are unsupported in v0.2.0.
 - The `systemd-run` isolated version probe has been observed to fail in certain
   VM environments where transient unit creation is restricted. The rest of the
   post-install verification still passes.
 - Multi-NUMA hugepage allocation is not automatic.
 - Only Linux x86_64 is supported.
-- GameMode detection requires the configured user to have an active D-Bus
-  session bus.
+- Best-effort Steam detection can miss games; see the gaming contract above.
 
 ## Troubleshooting
 
@@ -478,21 +589,24 @@ resolver. SpareHash does not change DNS settings.
 
 An internal or older update operation may be holding
 the lease; the public update/config-edit/benchmark commands are unsupported in
-v0.1.1. Let an active operation finish, then retry. If it failed or is stuck,
+v0.2.0. Let an active operation finish, then retry. If it failed or is stuck,
 inspect `sparehash logs` and the lifecycle records before recovery. A controller
 restart doesn't clear an external hold, and the reinstall flag doesn't erase an
 update hold. Don't delete lifecycle files to bypass the safety barrier.
 
 ### Reinstall says "this system was previously uninstalled"
 
-After resolving any partial-uninstall failure, explicitly opt into reinstall:
+After resolving any partial-uninstall failure, explicitly opt into reinstall.
+The installer prints the exact command, including the recorded operation id:
 
 ```
-sudo ./install.sh --clear-lifecycle-latch
+sudo ./install.sh --clear-lifecycle-latch --operation-id <ID>
 ```
 
-This clears both the retained uninstall lease and the retirement latch. Removing
-`lifecycle.json` alone isn't equivalent and may leave mining inhibited.
+This clears both the retained uninstall lease and the retirement latch. A
+mismatched or missing operation id, an active update hold, or a corrupt record
+is refused and leaves the system retired. Removing `lifecycle.json` alone isn't
+equivalent and may leave mining inhibited.
 
 ## Profitability and electricity
 
@@ -509,11 +623,13 @@ which tests are destructive and must run only in a disposable VM. See
 `qa/README.md` for details. **Do not run destructive QA scripts on a production
 machine.**
 
-`qa/qa_release_smoke.sh` is the required disposable-VM acceptance procedure for
-a frozen candidate SHA. It checks eight checkpoints through offline uninstall,
-using only synthetic local hashing on `127.0.0.1:3333` with zero donation.
-Real-pool mining is forbidden during QA. Passing unit tests does not establish
-VM acceptance; see `qa/README.md` for invocation and evidence requirements.
+`qa/qa_release_smoke.sh` is the required disposable-VM acceptance entrypoint.
+It requires `--yes`, `SPAREHASH_QA_DISPOSABLE_VM=YES` and a verified source SHA-256,
+exercises actual install/operation/removal paths, and ends purged/retired. Its
+attributed synthetic miner never hashes or contacts a pool; no real-pool mining
+is permitted. S5 separately freezes candidate commit/artifact identity. Passing
+unit tests does not establish VM acceptance; see `qa/README.md` for invocation
+and evidence requirements.
 
 ## Contributing
 

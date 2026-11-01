@@ -3,7 +3,8 @@
 ## Supported versions
 
 Only the latest release in the v0.x series is supported with security updates.
-SpareHash v1 is the initial public release.
+The v0.2 tree is experimental candidate work, not a newly declared supported RC
+or stable release. Report vulnerabilities in the experimental tree as well.
 
 | Version | Supported          |
 | ------- | ------------------ |
@@ -52,19 +53,39 @@ SpareHash is designed around these security properties:
   miner cgroup empty, and removes only receipt-owned artifacts. It does not need
   controller IPC or create a lease. Config is retained by default; retirement
   remains after partial failure. The durable sidecar still gates internal updates,
-  but public `update`, `config edit`, and `benchmark` are unsupported in v0.1.1.
+  but public updates/rollback, config editing, benchmark and in-place
+  reconfiguration are deferred in experimental v0.2.
+
+- **Preserved internal migration protections, not a public upgrade route.**
+  Historical update holds and journals remain independent safety records. Public
+  `update`, `complete-upgrade`, `config edit`, `benchmark` and installer
+  `--upgrade`, `--recover`, `--complete-upgrade`, `--reconfigure` refuse before
+  effects. Do not delete journals/staging or clear update holds to bypass this;
+  seek maintainer assistance for partial historical migrations.
 
 - **Verified supply chain.** XMRig releases are downloaded from GitHub and
   verified against a pinned GPG fingerprint and SHA-256 checksum before any file
   is executed or symlinked into place.
+  Explicit `--use-existing` is different: a root-protected external binary is
+  safely snapshotted and probed unprivileged, not authenticated as an upstream
+  signed release. The operator is responsible for that artifact's provenance.
 
 - **No network exposure.** The XMRig HTTP API is bound to `127.0.0.1` only.
   SpareHash does not open firewall ports, change DNS settings, or run a public
   service.
 
 - **No privileged optimisation.** MSR access, kernel modules, sysctl drop-ins,
-  and 1GiB hugepages are not implemented in v1. The miner runs with standard
+  and 1GiB hugepages are not implemented in v0.2. The miner runs with standard
   idle scheduling and optional 2MiB hugepages.
+
+- **Gaming detection is best effort.** The Lutris-derived Steam reaper scanner
+  can miss non-Steam/unrecognised games, changed markers or surviving children.
+  A successful no-match scan may release gaming inhibition; it is not proof of
+  game absence. Genuine failures and stale scans inhibit. Low priority does not
+  guarantee noninterference during a missed game. No raw argv/environment data
+  is published, no user logs/homes are read for detection, and no GameMode or
+  Lutris installation is required. Real gameplay/mode validation remains pending.
+  See `docs/gaming-integration-contract.md` for migration and exact limitations.
 
 ## What we consider in scope
 
