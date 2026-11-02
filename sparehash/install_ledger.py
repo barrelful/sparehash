@@ -51,6 +51,9 @@ class Ledger:
 
     def begin(self, target: str, operation: Operation, context: StoreContext | None = None) -> int:
         with locked_store(self.context() if context is None else context) as store:
+            from .upgrade import pending
+
+            pending(self.tree)
             prior = store.read()
             manifest = prior.manifest if prior else Manifest("/opt/xmrig", ())
             installer = manifest.installer or Installer(2, "installing", (), (), (), ())

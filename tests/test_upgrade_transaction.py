@@ -1,278 +1,234 @@
-"""Inhibited local-release upgrade: staged publication, preserved choices, deterministic recovery.
-
-Historical internal transaction regressions, not supported public CLI workflows.
-The happy path exercises the retained upgrade/completion functions directly;
-entrypoints on a private receipt-owned tree. The failure matrix injects a fault at
-each durable publication boundary and proves the compatible hold and private
-staging survive, then that recovery either rolls forward or refuses a staging it
-cannot trust. No host mutation: roots, services and empty proof are injected.
-"""
-
+"""App publication/recovery on private receipt-owned trees; never host services."""
 from __future__ import annotations
 
-import errno
 import os
-import subprocess
+from dataclasses import replace
 from pathlib import Path
-from unittest import mock
+from unittest.mock import patch
 
 import pytest
 
-from sparehash import install, upgrade
-from sparehash.deployment import Tree
+from sparehash import upgrade
+from sparehash.deployment import DeploymentError, Tree
 from sparehash.install_ledger import Ledger
-from sparehash.xmrig_manifest import parse_manifest
-
-OPID = "op-upgrade-1"
-EXPECTED_LEAVES = frozenset((
-    "sparehash/__init__.py",
-    "sparehash/alpha.py",
-    "sparehash/beta.py",
-    "systemd/sparehash.service.in",
-    "systemd/sparehash-xmrig.service.in",
-))
+from sparehash.lifecycle_lease import ActiveLease, LeaseStore
+from sparehash.update_record import BACKUP, JOURNAL, STAGE_PREFIX, load, save
+from sparehash.xmrig_ledger import leaf_identity
+from tests.install_fixture import capabilities
 
 
-class Fixture:
-    """A private, non-root v0.1.1 installation plus a selected local release."""
-
-    def __init__(self, root: Path) -> None:
-        self.root = root
-        self.tree = Tree(root, os.getuid())
-        self.source = root / "release"
-        self.manual = b'{"manual": true, "reason": "maintenance", "source": "operator"}\n'
-
-    def write(self, relative: str, data: bytes) -> Path:
-        path = self.root / relative
-        path.parent.mkdir(parents=True, exist_ok=True)
-        _ = path.write_bytes(data)
-        path.chmod(0o644)
-        return path
-
-    def write_source(self, relative: str, data: bytes) -> None:
-        path = self.source / relative
-        path.parent.mkdir(parents=True, exist_ok=True)
-        _ = path.write_bytes(data)
-        path.chmod(0o644)
-
-    def build(self) -> None:
-        for name in ("opt/sparehash/src/sparehash", "opt/sparehash/src/systemd", "usr/local/bin",
-                     "etc/systemd/system", "etc/sparehash", "var/lib/sparehash"):
-            (self.root / name).mkdir(parents=True, exist_ok=True)
-        self.root.chmod(0o755)
-        for path in self.root.rglob("*"):
-            if path.is_dir():
-                path.chmod(0o755)
-        self.write("opt/sparehash/src/sparehash/__init__.py", b"")
-        self.write("opt/sparehash/src/sparehash/alpha.py", b"OLD = 1\n")
-        self.write("opt/sparehash/src/systemd/sparehash.service.in", b"old-controller\n")
-        self.write("opt/sparehash/src/systemd/sparehash-xmrig.service.in", b"old-miner\n")
-        self.write("usr/local/bin/sparehash", b"#!/usr/bin/python3\n")
-        self.write("etc/systemd/system/sparehash.service", b"# Managed by SpareHash\nold\n")
-        self.write("etc/systemd/system/sparehash-xmrig.service", b"# Managed by SpareHash\nold\n")
-        self.write("etc/sparehash/config.toml", b'version = 1\nwallet = ""\n')
-        self.write("var/lib/sparehash/state.json", self.manual)
-        self.write_source("sparehash/__init__.py", b"")
-        self.write_source("sparehash/alpha.py", b"NEW = 2\n")
-        self.write_source("sparehash/beta.py", b"BETA = 3\n")
-        self.write_source("systemd/sparehash.service.in", b"new-controller\n")
-        self.write_source("systemd/sparehash-xmrig.service.in", b"new-miner\n")
-        ledger = Ledger(self.tree)
-        ledger.initialize()
-        ledger.applied(0, (self.tree.receipt("/opt/sparehash/src", True),))
-
-    def staging(self, operation_id: str) -> Path:
-        return self.root / "opt/sparehash" / (".upgrade-" + operation_id)
-
-    def target(self) -> Path:
-        return self.root / "opt/sparehash/src"
-
-    def state(self) -> Path:
-        return self.root / "var/lib/sparehash/state.json"
-
-    def lease(self) -> Path:
-        return self.root / "var/lib/sparehash/lifecycle-lease.json"
-
-    def journal(self) -> Path:
-        return self.root / "var/lib/sparehash/migration.json"
-
-    def leaves(self, base: Path) -> frozenset[str]:
-        return frozenset(str(path.relative_to(base)) for path in base.rglob("*") if path.is_file())
-
-    def context(self, operation_id: str) -> upgrade.UpgradeContext:
-        return upgrade.UpgradeContext(
-            operation_id=operation_id, source_root=self.source, target_root=self.root,
-            staging_root=self.staging(operation_id), preserve_startup_choices=True)
-
-    def prepare(self, operation_id: str) -> tuple[upgrade.UpgradeContext, upgrade.MigrationJournal]:
-        context = self.context(operation_id)
-        _ = upgrade.acquire_compatible_hold(operation_id, lease=upgrade.lease_for(self.root))
-        _ = upgrade.begin(context)
-        staged = upgrade.stage_source(context, self.tree)
-        _ = upgrade.verify_pre_publication(context, self.tree, upgrade.deployment_spec(context, self.tree, staged))
-        return context, upgrade.read_journal(self.root, operation_id)
-
-    def publish(self, context: upgrade.UpgradeContext, journal: upgrade.MigrationJournal) -> upgrade.MigrationJournal:
-        return upgrade.publish(context, journal, Ledger(self.tree).context())
-
-    def full_upgrade(self, operation_id: str) -> None:
-        install.upgrade_install(self.tree, operation_id, source_root=self.source)
-
-
-def run_internal(fx: Fixture, complete: bool, calls: list[tuple[str, ...]]) -> int:
-    def command(argv_: tuple[str, ...], timeout: float = 10) -> subprocess.CompletedProcess[str]:
-        _ = timeout
-        calls.append(argv_)
-        return subprocess.CompletedProcess(argv_, 0, "", "")
-
-    with (mock.patch.object(install, "Tree", return_value=fx.tree),
-          mock.patch.object(install, "is_retired", return_value=False),
-          mock.patch.object(install.platform, "machine", return_value="x86_64"),
-          mock.patch.object(install, "upgrade_source_root", return_value=fx.source),
-          mock.patch.object(install, "empty_proof", return_value=True),
-          mock.patch.object(install, "command", side_effect=command)):
-        if complete:
-            install.complete_install(fx.tree, OPID)
+@pytest.fixture
+def installation(tmp_path: Path, monkeypatch):
+    # Tree's production paths remain unchanged. Only this private root and
+    # process-owned UID/GID are used, even when pytest itself is unprivileged.
+    root = tmp_path / "root"
+    root.mkdir(mode=0o755)
+    tree = Tree(root, os.getuid())
+    real_chown = os.fchown
+    monkeypatch.setattr(os, "fchown", lambda fd, uid, gid: real_chown(fd, os.getuid(), os.getgid()))
+    for name in ("opt/sparehash/src/sparehash", "opt/sparehash/src/systemd", "usr/local/bin",
+                 "etc/systemd/system", "etc/sparehash", "var/lib/sparehash"):
+        (root / name).mkdir(parents=True, exist_ok=True)
+    for path in root.rglob("*"):
+        if path.is_dir():
+            path.chmod(0o755)
+    source = tmp_path / "candidate"
+    (source / "sparehash").mkdir(parents=True)
+    (source / "systemd").mkdir()
+    repo = Path(__file__).resolve().parents[1]
+    for version, commit, target in (("0.3.0", "a" * 40, tree.path(upgrade.SOURCE)),
+                                    ("0.3.1", "b" * 40, source)):
+        files = {"__init__.py": f'__version__ = "{version}"\n', "_build.py": f'COMMIT = "{commit}"\n',
+                 "__main__.py": "# entrypoint\n", "upgrade.py": "# known good recovery\n",
+                 "runtime.py": "# runtime\n", "cli_update.py": "# update\n", "config.py": "# config\n"}
+        if version == "0.3.0":
+            files["obsolete.py"] = "# old module\n"
         else:
-            install.upgrade_install(fx.tree, OPID, source_root=fx.source)
-        return 0
+            files["added.py"] = "# new module\n"
+        for name, content in files.items():
+            (target / "sparehash" / name).write_text(content)
+            (target / "sparehash" / name).chmod(0o644)
+        for name in upgrade.UNIT_TEMPLATES:
+            (target / "systemd" / name).write_bytes((repo / "systemd" / name).read_bytes())
+            (target / "systemd" / name).chmod(0o644)
+    tree.write(upgrade.LAUNCHER, (b"#!/usr/bin/python3\n# old launcher\n", 0o755, os.getgid()))
+    for unit in upgrade.systemd.UNIT_NAMES:
+        tree.write(upgrade.UNITS + "/" + unit, (b"# Managed by SpareHash\n# old unit\n", 0o644, os.getgid()))
+    for name, data in (("/etc/sparehash/config.toml", b"# config\n"),
+                       ("/etc/sparehash/xmrig.json", b'{"secret":"test only"}\n'),
+                       ("/etc/sparehash/xmrig.runtime.json", b'{"secret":"test only"}\n'),
+                       ("/var/lib/sparehash/state.json", b'{"manual":true}\n')):
+        tree.write(name, (data, 0o640, os.getgid()))
+    ledger = Ledger(tree)
+    ledger.initialize()
+    names = [upgrade.SOURCE, upgrade.SOURCE + "/sparehash", upgrade.SOURCE + "/systemd", upgrade.LAUNCHER,
+             *(upgrade.UNITS + "/" + n for n in upgrade.systemd.UNIT_NAMES)]
+    names += [upgrade.SOURCE + "/" + str(path.relative_to(tree.path(upgrade.SOURCE)))
+              for path in tree.path(upgrade.SOURCE).rglob("*") if path.is_file()]
+    for name in names:
+        identity = leaf_identity(name) or name
+        artifact = tree.receipt(name, True, identity=identity)
+        ledger.perform((identity, "create-directory" if artifact.kind == "directory" else "write-file"),
+                       lambda artifact=artifact: (artifact,))
+    ledger.ready()
+    state = {"active": False, "boot": "disabled", "starts": 0, "stops": 0}
+
+    def stop():
+        state["active"] = False
+        state["stops"] += 1
+
+    def ready():
+        assert tree.read(JOURNAL) is not None, "startup must remain inhibited during verification"
+        state["active"] = True
+        state["starts"] += 1
+
+    infra = upgrade.Infrastructure(active=lambda: state["active"], boot=lambda: state["boot"],
+                                   stop=stop, ready=ready, proof=lambda: None, reload=lambda: None,
+                                   verify_units=lambda path: None, verify_identity=lambda path: None,
+                                   validate_config=lambda path: None)
+    return tree, source, state, infra
 
 
-def _no_mutation_calls(calls: list[tuple[str, ...]]) -> bool:
-    return not any(len(argv) > 1 and argv[1] in {"enable", "disable", "start", "daemon-reload"} for argv in calls)
+def prepare(installation, *, active=False):
+    tree, source, state, infra = installation
+    state["active"] = active
+    stage = STAGE_PREFIX + "c" * 32
+    stage_digest = upgrade.candidate_bundle(tree, stage, source, capabilities())
+    with patch.object(upgrade, "acquire", return_value="token"), patch.object(upgrade, "await_ready"):
+        record = upgrade.prepare(tree, stage, stage_digest, infra)
+    return record
 
 
-def _fail_once() -> object:
-    real = upgrade._fsync
-    state = {"raised": False}
-
-    def fake(descriptor: int) -> None:
-        if not state["raised"]:
-            state["raised"] = True
-            raise OSError(errno.EIO, "Injected fsync failure")
-        real(descriptor)
-
-    return fake
-
-
-def _assert_held_and_staged(fx: Fixture, operation_id: str) -> upgrade.MigrationJournal:
-    assert upgrade.lease_for(fx.root).load() is not None, "compatible hold must be retained"
-    assert fx.staging(operation_id).is_dir(), "private staging must be preserved"
-    return upgrade.read_journal(fx.root, operation_id)
-
-
-def test_accepts_complete_local_upgrade(tmp_path: Path) -> None:
-    # Given an established v0.1.1 tree with preserved startup/manual state
-    fx = Fixture(tmp_path)
-    fx.build()
-    before_config = (fx.root / "etc/sparehash/config.toml").read_bytes()
-    before_units = {path.name: path.read_bytes() for path in (fx.root / "etc/systemd/system").iterdir()}
-    calls: list[tuple[str, ...]] = []
-    # When the upgrade stages and publishes under a compatible hold
-    assert run_internal(fx, False, calls) == 0
-    # Then a published journal and a still-present private staging exist
-    assert fx.staging(OPID).is_dir()
-    assert upgrade.read_journal(fx.root, OPID).phase == "published"
-    assert upgrade.lease_for(fx.root).load().purpose == "update"
-    assert _no_mutation_calls(calls)
-    # And the old startup choices, config and units are untouched
-    assert (fx.root / "etc/sparehash/config.toml").read_bytes() == before_config
-    assert {path.name: path.read_bytes() for path in (fx.root / "etc/systemd/system").iterdir()} == before_units
-    # And the manual pause state is byte-identical
-    assert fx.state().read_bytes() == fx.manual
-    # And no foreign leaf was published
-    assert fx.leaves(fx.target()) == EXPECTED_LEAVES
-    assert (fx.target() / "sparehash/alpha.py").read_bytes() == b"NEW = 2\n"
-    manifest = parse_manifest((fx.root / "var/lib/sparehash/install-manifest.json").read_text())
-    assert manifest is not None and manifest.installer is not None
-    by_id = {item.id: item for item in manifest.installer.artifacts}
-    assert by_id["/opt/sparehash/src"].created
-    assert not by_id["package-file:beta.py"].created
-    # When the explicit completion runs
-    assert run_internal(fx, True, calls) == 0
-    # Then staging and the old-tree backup are cleaned only after COMPLETE
-    assert not fx.staging(OPID).exists()
-    assert not (fx.staging(OPID).parent / (fx.staging(OPID).name + ".old")).exists()
-    assert not fx.journal().exists()
-    assert upgrade.lease_for(fx.root).load() is None
-    # And the preserved choices and manual state still stand
-    assert (fx.root / "etc/sparehash/config.toml").read_bytes() == before_config
-    assert fx.state().read_bytes() == fx.manual
+@pytest.mark.parametrize("active", [False, True])
+def test_update_preserves_activity_boot_secrets_and_receipts(installation, active) -> None:
+    tree, _, state, infra = installation
+    preserved = upgrade.preserved(tree)
+    record = prepare(installation, active=active)
+    assert record.backup_digest and load(tree).phase == "prepared"
+    assert upgrade.publish(tree, infra)
+    assert state["active"] is active and state["boot"] == "disabled"
+    assert upgrade.identity(tree.path(upgrade.SOURCE)) == ("0.3.1", "b" * 40)
+    assert not tree.path(upgrade.SOURCE + "/sparehash/obsolete.py").exists()
+    assert tree.path(upgrade.SOURCE + "/sparehash/added.py").is_file()
+    upgrade.validate_live(tree, upgrade._manifest(tree))
+    assert all(a.created for a in upgrade._manifest(tree).installer.artifacts)
+    assert upgrade.preserved(tree) == preserved
+    assert load(tree) is None and LeaseStore(tree.path("/var/lib/sparehash/lifecycle-lease.json")).load() is None
+    assert tree.path(BACKUP).is_dir() and not tree.path(record.stage).exists()
+    assert not upgrade.recover(tree, infra), "retained backup must not provide post-success rollback"
+    assert upgrade.identity(tree.path(upgrade.SOURCE))[0] == "0.3.1"
 
 
-CASES = ("enospc", "fsync", "foreign-leaf", "manual-drift", "missing-hold",
-         "wrong-operation-id", "target-replaced", "staging-digest-mismatch", "empty-proof-missing")
+def test_ordinary_activation_failure_automatically_restores(installation) -> None:
+    tree, _, state, infra = installation
+    prepare(installation, active=True)
+    real_ready = infra.ready
+
+    def ready():
+        if upgrade.identity(tree.path(upgrade.SOURCE))[0] == "0.3.1":
+            raise DeploymentError("activation", "signed candidate fails")
+        real_ready()
+
+    assert not upgrade.publish(tree, replace(infra, ready=ready))
+    assert upgrade.identity(tree.path(upgrade.SOURCE)) == ("0.3.0", "a" * 40)
+    assert state["active"] and state["boot"] == "disabled"
+    upgrade.validate_live(tree, upgrade._manifest(tree))
+    assert load(tree) is None
 
 
-@pytest.mark.parametrize("case", CASES)
-def test_recovers_interrupted_publication(tmp_path: Path, case: str) -> None:
-    fx = Fixture(tmp_path)
-    fx.build()
-    operation_id = "op-" + case
+def test_interrupted_publication_recovers_missing_cli_and_source(installation) -> None:
+    tree, _, _, infra = installation
+    record = prepare(installation)
+    save(tree, record, phase="installing")
+    tree.path(upgrade.LAUNCHER).unlink()
+    tree.path(upgrade.SOURCE + "/sparehash/__main__.py").unlink()
+    tree.write(upgrade.SOURCE + "/sparehash/__init__.py", (b'__version__ = "0.3.1"\n', 0o644, os.getgid()))
+    assert upgrade.recover(tree, infra)
+    upgrade.validate_live(tree, upgrade._manifest(tree))
+    assert upgrade.identity(tree.path(upgrade.SOURCE)) == ("0.3.0", "a" * 40)
+    assert not upgrade.recover(tree, infra)
 
-    if case == "enospc":
-        context, journal = fx.prepare(operation_id)
-        error = OSError(errno.ENOSPC, "No space left on device")
-        with mock.patch.object(upgrade, "_materialize", side_effect=error):
-            with pytest.raises(upgrade.UpgradeError):
-                _ = fx.publish(context, journal)
-        _ = _assert_held_and_staged(fx, operation_id)
-        install.recover_install(fx.tree, operation_id)
-        assert fx.leaves(fx.target()) == EXPECTED_LEAVES
-    elif case == "fsync":
-        context, journal = fx.prepare(operation_id)
-        with mock.patch.object(upgrade, "_fsync", side_effect=_fail_once()):
-            with pytest.raises(upgrade.UpgradeError):
-                _ = fx.publish(context, journal)
-        _ = _assert_held_and_staged(fx, operation_id)
-        install.recover_install(fx.tree, operation_id)
-        assert fx.leaves(fx.target()) == EXPECTED_LEAVES
-    elif case == "foreign-leaf":
-        fx.write_source("sparehash/notes.txt", b"foreign\n")
-        with pytest.raises(upgrade.UpgradeError):
-            fx.full_upgrade(operation_id)
-        assert upgrade.lease_for(fx.root).load() is not None
-        assert not fx.staging(operation_id).exists()
-        with pytest.raises(upgrade.UpgradeError):
-            install.recover_install(fx.tree, operation_id)
-    elif case == "manual-drift":
-        fx.full_upgrade(operation_id)
-        drifted = b'{"manual": false}\n'
-        _ = fx.state().write_bytes(drifted)
-        install.recover_install(fx.tree, operation_id)
-        assert fx.state().read_bytes() == drifted
-    elif case == "missing-hold":
-        fx.full_upgrade(operation_id)
-        fx.lease().unlink()
-        with pytest.raises(upgrade.UpgradeError):
-            install.recover_install(fx.tree, operation_id)
-    elif case == "wrong-operation-id":
-        fx.full_upgrade(operation_id)
-        with pytest.raises(upgrade.UpgradeError):
-            install.recover_install(fx.tree, "op-other")
-        assert fx.lease().exists()
-    elif case == "target-replaced":
-        context, journal = fx.prepare(operation_id)
-        sentinel = fx.target() / "sparehash/foreign.txt"
-        _ = sentinel.write_bytes(b"sentinel\n")
-        with pytest.raises(upgrade.UpgradeError):
-            _ = fx.publish(context, journal)
-        _ = _assert_held_and_staged(fx, operation_id)
-        with pytest.raises(upgrade.UpgradeError):
-            _ = upgrade.recover_from_staging(operation_id, fx.root)
-        assert sentinel.read_bytes() == b"sentinel\n"
-    elif case == "staging-digest-mismatch":
-        fx.full_upgrade(operation_id)
-        tampered = fx.staging(operation_id) / "sparehash/alpha.py"
-        _ = tampered.write_bytes(b"TAMPERED\n")
-        with pytest.raises(upgrade.UpgradeError):
-            _ = upgrade.recover_from_staging(operation_id, fx.root)
-        assert fx.lease().exists()
-    elif case == "empty-proof-missing":
-        fx.full_upgrade(operation_id)
-        with pytest.raises(upgrade.UpgradeError):
-            install.complete_install(fx.tree, operation_id, proof=lambda: False)
-        assert upgrade.read_journal(fx.root, operation_id).phase == "published"
-        _ = _assert_held_and_staged(fx, operation_id)
-    else:
-        raise AssertionError(f"unhandled case {case}")
+
+def test_interrupted_restoration_is_repeatable(installation) -> None:
+    tree, _, _, infra = installation
+    record = prepare(installation)
+    save(tree, record, phase="installing")
+    original = Tree.write
+    failed = False
+
+    def write(self, name, data):
+        nonlocal failed
+        if name.startswith(upgrade.SOURCE + "/") and not failed:
+            failed = True
+            raise OSError("write failure")
+        return original(self, name, data)
+
+    with patch.object(Tree, "write", write), pytest.raises(OSError, match="write failure"):
+        upgrade.recover(tree, infra)
+    assert load(tree).phase == "restoring"
+    assert upgrade.recover(tree, infra)
+    assert upgrade.identity(tree.path(upgrade.SOURCE))[0] == "0.3.0"
+
+
+def test_committed_failure_never_restores_previous_version(installation) -> None:
+    tree, _, _, infra = installation
+    prepare(installation)
+    real = upgrade.finalise
+    with patch.object(upgrade, "finalise", side_effect=OSError("interrupted finalisation")), pytest.raises(OSError):
+        upgrade.publish(tree, infra)
+    assert load(tree).phase == "committed"
+    assert upgrade.identity(tree.path(upgrade.SOURCE))[0] == "0.3.1"
+    real(tree, load(tree), infra)
+    assert load(tree) is None and upgrade.identity(tree.path(upgrade.SOURCE))[0] == "0.3.1"
+
+
+def test_corrupt_backup_or_foreign_live_content_keeps_inhibition(installation) -> None:
+    tree, _, _, infra = installation
+    record = prepare(installation)
+    save(tree, record, phase="installing")
+    tree.write(BACKUP + "/src/sparehash/upgrade.py", (b"tampered", 0o644, os.getgid()))
+    with pytest.raises(DeploymentError, match="inventory"):
+        upgrade.recover(tree, infra)
+    assert load(tree) is not None
+    assert LeaseStore(tree.path("/var/lib/sparehash/lifecycle-lease.json")).load() is not None
+
+
+def test_unrelated_hold_and_modified_live_source_refuse_before_downtime(installation) -> None:
+    tree, source, state, infra = installation
+    store = LeaseStore(tree.path("/var/lib/sparehash/lifecycle-lease.json"))
+    store.save(ActiveLease("a" * 32, "unrelated", "update"))
+    stage = STAGE_PREFIX + "c" * 32
+    stamp = upgrade.candidate_bundle(tree, stage, source, capabilities())
+    with pytest.raises(DeploymentError, match="unrelated"):
+        upgrade.prepare(tree, stage, stamp, infra)
+    assert state["stops"] == 0 and load(tree) is None
+    store.clear()
+    tree.write(upgrade.SOURCE + "/sparehash/obsolete.py", (b"foreign", 0o644, os.getgid()))
+    with pytest.raises(DeploymentError, match="modified"):
+        upgrade.prepare(tree, stage, stamp, infra)
+    assert state["stops"] == 0 and load(tree) is None
+
+
+def test_journal_corruption_and_missing_hold_inhibit(installation) -> None:
+    tree, _, _, _ = installation
+    store = LeaseStore(tree.path("/var/lib/sparehash/lifecycle-lease.json"))
+    assert not store.update_pending()
+    tree.write(JOURNAL, (b"{corrupt", 0o600, os.getgid()))
+    assert store.update_pending() and store.load() is None
+    with pytest.raises(DeploymentError, match="corrupt"):
+        load(tree)
+
+
+def test_cleanup_resumes_without_deleting_foreign_contents(installation) -> None:
+    tree, source, _, _ = installation
+    stage = STAGE_PREFIX + "c" * 32
+    stamp = upgrade.candidate_bundle(tree, stage, source, capabilities())
+    tree.path(stage + "/src/sparehash/__main__.py").unlink()
+    foreign = tree.path(stage + "/foreign")
+    foreign.write_text("foreign")
+    with pytest.raises(DeploymentError, match="foreign"):
+        upgrade.discard_bundle(tree, stage, backup=False, expected=stamp)
+    assert foreign.read_text() == "foreign"
+    foreign.unlink()  # Only withdraw our own test sentinel.
+    upgrade.discard_bundle(tree, stage, backup=False, expected=stamp)
+    assert not tree.path(stage).exists()

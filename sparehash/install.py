@@ -25,7 +25,7 @@ from types import FrameType
 from typing import Final
 from uuid import uuid4
 
-from . import config, host, ipc, lifecycle, systemd, upgrade, wizard, xmrig_config
+from . import config, host, ipc, lifecycle, systemd, wizard, xmrig_config
 from .bootstrap import Bootstrapper, ConsentRefused, staging_path
 from .deployment import ENV, DeploymentError, Tree, checked, command
 from .install_ledger import Ledger
@@ -323,47 +323,6 @@ def empty_proof() -> bool:
         if result.returncode == 0 and result.stdout.strip() == "active":
             return False
     return True
-
-
-def _upgrade_context(tree: Tree, operation_id: str, source_root: Path | None) -> upgrade.UpgradeContext:
-    root = source_root if source_root is not None else upgrade_source_root()
-    return upgrade.UpgradeContext(
-        operation_id=operation_id,
-        source_root=root,
-        target_root=tree.root,
-        staging_root=tree.path("/opt/sparehash") / (".upgrade-" + operation_id),
-        preserve_startup_choices=True,
-    )
-
-
-def upgrade_install(tree: Tree, operation_id: str, *, source_root: Path | None = None) -> None:
-    """Acquire the hold, stage and publish the selected local release; completion is explicit."""
-    context = _upgrade_context(tree, operation_id, source_root)
-    lease = upgrade.lease_for(tree.root)
-    _ = upgrade.acquire_compatible_hold(operation_id, lease=lease)
-    _ = upgrade.begin(context)
-    staged = upgrade.stage_source(context, tree)
-    _ = upgrade.verify_pre_publication(context, tree, upgrade.deployment_spec(context, tree, staged))
-    journal = upgrade.read_journal(tree.root, operation_id)
-    _ = upgrade.publish(context, journal, Ledger(tree).context())
-    print(f"upgrade: staged and published under hold; run --complete-upgrade {operation_id} to commit")
-
-
-def recover_install(tree: Tree, operation_id: str) -> None:
-    """Roll a recorded staging forward; refuse when the matching hold or staging is gone."""
-    lease = upgrade.lease_for(tree.root)
-    hold = lease.load()
-    if hold is None or hold.purpose != "update" or hold.request_id != operation_id:
-        raise upgrade.UpgradeError("recover", "matching update hold is absent; refusing recovery")
-    _ = upgrade.recover_from_staging(operation_id, tree.root)
-    print(f"upgrade: staging for {operation_id} rolled forward; hold retained until --complete-upgrade")
-
-
-def complete_install(tree: Tree, operation_id: str, *, proof: Callable[[], bool] | None = None) -> None:
-    """Commit a published upgrade; manual pause and startup choices remain untouched."""
-    _ = upgrade.complete(tree.root, operation_id, lease=upgrade.lease_for(tree.root),
-                         empty_proof=proof if proof is not None else empty_proof)
-    print(f"upgrade: operation {operation_id} committed; startup choices and manual state preserved")
 
 
 def preflight_report(tree: Tree, caps: Capabilities) -> tuple[int, dict[str, object]]:

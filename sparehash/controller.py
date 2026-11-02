@@ -233,7 +233,8 @@ class Controller:
     def apply(self) -> None:
         """Queue at most one ordered job; never wait for stop/start completion."""
         self._expire_gaming()
-        allowed = self.ready and not self.stopping and not self.excluded and self.state.mining_allowed() and not self.debug
+        allowed = (self.ready and not self.stopping and not self.excluded and not self.store.update_pending()
+                   and self.state.mining_allowed() and not self.debug)
         if not allowed:
             if self.mode is Mode.BENCHMARK and not self.excluded:
                 self.excluded, self.next_mode = True, Mode.MINE
@@ -307,7 +308,7 @@ class Controller:
         fresh = self.observation is not None and 0 <= self.ports.clock() - self.observation.at <= 1
         allowed = (fresh and self.observed_generation == self.generation and self.launch_permitted
                    and not self.collecting and self.ready and not self.stopping and not self.excluded
-                   and self.state.mining_allowed() and not self.debug
+                    and self.state.mining_allowed() and not self.debug and not self.store.update_pending()
                    and self.ports.jobs.published() == self.operation)
         if not fresh or self.observed_generation != self.generation:
             self.refresh()
@@ -398,6 +399,8 @@ class Controller:
 
     def end_external(self, token: str, outcome: Outcome) -> bool:
         """Update commits release for fresh observation; uninstall commits retire."""
+        if self.store.update_pending():
+            return False
         lease = self._active_lease()
         if lease is None or not secrets.compare_digest(lease.token, token):
             raise StaleToken()

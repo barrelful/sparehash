@@ -101,6 +101,20 @@ class LeaseStore:
             raise LeaseError(f"lease record unreadable: {error}") from error
         return _decode(text)
 
+    def update_pending(self) -> bool:
+        """Any journal entry inhibits, including corrupt records and broken links.
+
+        No parsing is necessary to deny mining. Recovery owns the stricter parser;
+        generic lifecycle completion must not bypass an application transaction.
+        """
+        try:
+            self._path.with_name("update.json").lstat()
+        except FileNotFoundError:
+            return False
+        except OSError:
+            return True
+        return True
+
     def save(self, lease: ActiveLease) -> None:
         """Durably publish the record; failure raises before any acknowledgment."""
         payload = json.dumps({"token": lease.token, "request_id": lease.request_id, "purpose": lease.purpose})

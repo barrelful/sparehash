@@ -216,6 +216,7 @@ def test_scope_recovery_preserves_controller_dwell_and_manual_hold(tmp_path: Pat
     state = BlockerState(tmp_path / "state.json", io.clock, 60)
     store = Mock(spec=LeaseStore)
     store.load.return_value = None
+    store.update_pending.return_value = False
     owner = Controller(state, Ports(io, io, io, io.clock), lease_store=store)
 
     def observe() -> PowerSample:

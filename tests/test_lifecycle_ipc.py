@@ -163,6 +163,28 @@ class LifecycleReplayTests(LeaseHarness):
 
 @final
 class RestartExclusionTests(LeaseHarness):
+    def test_corrupt_app_journal_inhibits_without_separate_hold(self) -> None:
+        journal = self.lease_path.with_name("update.json")
+        journal.write_text("{corrupt")
+        owner = self.controller()
+        with mock.patch("sparehash.controller.is_retired", return_value=False):
+            owner.start()
+        self.fresh(owner)
+        self.finish(owner)
+        self.assertTrue(owner.ready)
+        self.assertFalse(owner.authorize())
+        self.assertIsNone(owner.pending)
+        self.assertTrue(self.send(owner, {"cmd": "status"})["ok"])
+        self.assertIsNone(self.store.load())
+
+    def test_generic_completion_cannot_release_app_transaction(self) -> None:
+        owner = self.controller()
+        token = self.token_of(self.begin(owner))
+        self.lease_path.with_name("update.json").write_text("{corrupt")
+        self.assertFalse(self.end(owner, token, "abort")["ok"])
+        self.assertFalse(self.end(owner, token, "commit")["ok"])
+        self.assertIsNotNone(self.store.load())
+
     def test_restart_adopts_record_and_blocks_until_fresh_empty_barrier(self) -> None:
         # Given a hold established by a first controller process
         first = self.controller()

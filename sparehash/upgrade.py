@@ -1,567 +1,627 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (c) 2026 SpareHash contributors
+"""One app transaction and previous-app backup; recovery restores, never rolls forward.
 
-"""Inhibited local-release upgrade publication with deterministic recovery.
-
-Publication is a journaled sequence of individually fsynced object writes, never
-one atomic multi-object rename. The compatible lifecycle hold is acquired before
-any installed mutation, and every failure retains that hold plus the private
-staging tree so the same local release can be rolled forward. Recovery refuses a
-missing or digest-mismatched staging. The staged tree and the old-tree backup are
-removed only at explicit COMPLETE.
-
-The transaction is self-contained on the current receipt infrastructure: it
-stages the new source payload beside ``/opt/sparehash/src``, refuses foreign
-leaves, unexpected symlinks and sub-tree mutation, publishes through one passed
-``StoreContext`` (never a nested ``locked_store``), and refreshes old/new inode
-receipts while preserving original ``created``/owned flags. It never invokes the
-old installer and never claims the several published objects commit atomically.
+The journal reserves mutations under short manifest locks. Service/IPC waits never
+hold that lock. Publication runs from the verified protected backup source, not
+the source being replaced. Committed transactions can only finish finalisation.
 """
-
 from __future__ import annotations
 
 import hashlib
 import json
 import os
-import re
 import secrets
-import shutil
-import stat
-from collections.abc import Callable, Mapping
-from dataclasses import asdict, dataclass, replace
+import subprocess
+import time
+from collections.abc import Callable
+from contextlib import ExitStack, suppress
+from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Final, Literal, TypeAlias
 
-from .deployment import DeploymentError, Tree
+from . import config, ipc, systemd
+from .app_release import _literal, version_tuple
+from .bootstrap import MAX_MODULES, SHIM_SOURCE, SHIM_TEMPLATE, _collect_source
+from .cli_lifecycle import acquire, await_ready
+from .deployment import ENV, DeploymentError, Tree, checked, command
+from .hugepages import LeaseManager
 from .install_manifest import StoreContext, locked_store
+from .lifecycle import is_retired
 from .lifecycle_lease import ActiveLease, LeaseStore
-from .xmrig_ledger import PACKAGE_LEAF, UNIT_TEMPLATES, Artifact, leaf_identity
-from .xmrig_manifest import Manifest
+from .runtime_jobs import empty
+from .sysdetect import Capabilities
+from .update_record import BACKUP, JOURNAL, PRESERVED, UpdateRecord, load, save
+from .xmrig_ledger import PACKAGE_LEAF, UNIT_TEMPLATES, Action, Artifact, leaf_identity
+from .xmrig_manifest import Manifest, format_manifest, inventory_digest, parse_manifest
 
-Phase: TypeAlias = Literal["prepared", "staged", "published", "complete"]
-
-SOURCE_LOGICAL: Final = "/opt/sparehash/src"
-SOURCE_PARENT_LOGICAL: Final = "/opt/sparehash"
-CLI_LOGICAL: Final = "/usr/local/bin/sparehash"
-JOURNAL_RELATIVE: Final = "var/lib/sparehash/migration.json"
-LEASE_RELATIVE: Final = "var/lib/sparehash/lifecycle-lease.json"
-RUNTIME_PATHS: Final[tuple[str, ...]] = (
-    SOURCE_LOGICAL,
-    CLI_LOGICAL,
-    "/etc/systemd/system/sparehash.service",
-    "/etc/systemd/system/sparehash-xmrig.service",
-    "/etc/sparehash/config.toml",
-)
-_OPERATION: Final = re.compile(r"[A-Za-z0-9._-]{1,128}")
-_JOURNAL_MAX: Final = 64 * 1024
-_JOURNAL_FIELDS: Final = frozenset(
-    ("operation_id", "phase", "target", "staged_source", "inventory_digest", "old_receipts", "new_receipts")
-)
-_PHASES: Final[tuple[Phase, ...]] = ("prepared", "staged", "published", "complete")
+SOURCE = "/opt/sparehash/src"
+LAUNCHER = "/usr/local/bin/sparehash"
+UNITS = "/etc/systemd/system"
+FALLBACK = "sudo /usr/bin/python3 -I -B /opt/sparehash/.update-backup/src/sparehash/__main__.py update --recover"
+INDEX = "inventory.json"
 
 
-class UpgradeError(DeploymentError):
-    """A staged upgrade step failed; the hold and staging are retained for recovery."""
+def digest(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
 
 
-@dataclass(frozen=True, slots=True)
-class UpgradeContext:
-    operation_id: str
-    source_root: Path
-    target_root: Path
-    staging_root: Path
-    preserve_startup_choices: bool
-
-
-@dataclass(frozen=True, slots=True)
-class StagedSource:
-    path: Path
-    digest: str
-    leaves: tuple[tuple[str, str], ...]
-
-    def inventory(self) -> dict[str, str]:
-        return dict(self.leaves)
-
-
-@dataclass(frozen=True, slots=True)
-class DeploymentSpec:
-    runtime_paths: tuple[str, ...]
-    inventory: Mapping[str, str]
-
-
-@dataclass(frozen=True, slots=True)
-class MigrationJournal:
-    operation_id: str
-    phase: str
-    target: str
-    staged_source: str
-    inventory_digest: str
-    old_receipts: tuple[dict[str, object], ...]
-    new_receipts: tuple[dict[str, object], ...]
-
-
-def validate_operation_id(value: str) -> str:
-    if _OPERATION.fullmatch(value) is None:
-        raise UpgradeError("operation", "operation id must be 1..128 of [A-Za-z0-9._-]")
-    return value
-
-
-def lease_for(root: Path) -> LeaseStore:
-    """The old-readable update sidecar lives beside the record on the same root."""
-    return LeaseStore(root / LEASE_RELATIVE)
-
-
-def journal_path(root: Path) -> Path:
-    return root / JOURNAL_RELATIVE
-
-
-def acquire_compatible_hold(operation_id: str, *, lease: LeaseStore | None = None) -> ActiveLease:
-    """Acquire the pinned three-field update hold before any installed mutation.
-
-    An existing record is only replayed when it is the same operation; any other
-    or corrupt hold refuses rather than being adopted or cleared.
-    """
-    validate_operation_id(operation_id)
-    store = lease if lease is not None else LeaseStore()
-    existing = store.load()
-    if existing is not None:
-        if existing.purpose == "update" and existing.request_id == operation_id:
-            return existing
-        raise UpgradeError("hold", f"unrelated {existing.purpose} hold retained; recovery uses its own request id")
-    record = ActiveLease(token=secrets.token_hex(16), request_id=operation_id, purpose="update")
-    store.save(record)
-    return record
-
-
-def begin(ctx: UpgradeContext) -> MigrationJournal:
-    """Persist the PREPARED journal before staging has any side effect."""
-    validate_operation_id(ctx.operation_id)
-    journal = MigrationJournal(ctx.operation_id, "prepared", SOURCE_LOGICAL, str(ctx.staging_root), "", (), ())
-    write_journal(ctx.target_root, journal)
-    return journal
-
-
-def deployment_spec(ctx: UpgradeContext, layout: Tree, staged: StagedSource) -> DeploymentSpec:
-    """Declare the managed runtime paths and the staged payload the upgrade installs."""
-    _ = ctx, layout
-    return DeploymentSpec(RUNTIME_PATHS, staged.inventory())
-
-
-def stage_source(ctx: UpgradeContext, layout: Tree) -> StagedSource:
-    """Copy the selected local release into a private 0700 staging next to the target.
-
-    Foreign leaves, unexpected symlinks, extra directories and any sub-tree
-    mutation observed during the copy are refused; a refused staging is removed.
-    """
-    validate_operation_id(ctx.operation_id)
-    source = ctx.source_root
-    if os.path.islink(source) or not source.is_dir():
-        raise UpgradeError("source", f"selected source is not a protected directory: {source}")
-    source_digest, leaves = _scan(source)
-    staging = ctx.staging_root
-    _validate_staging_location(staging, layout)
-    if staging.exists():
-        if any(staging.iterdir()):
-            raise UpgradeError("staging", "private staging is not empty; resolve or recover the prior attempt first")
-        os.chmod(staging, 0o700)
-    else:
-        staging.mkdir(mode=0o700, parents=True)
-        os.chmod(staging, 0o700)
-    for relative, _ in leaves:
-        _write_leaf(staging / relative, (source / relative).read_bytes(), 0o600)
-    staged_digest, staged_leaves = _scan(staging)
-    if staged_digest != source_digest or staged_leaves != leaves:
-        _discard(staging)
-        raise UpgradeError("staging", "staged payload does not match the source inventory; refused")
-    rescan, _ = _scan(source)
-    if rescan != source_digest:
-        _discard(staging)
-        raise UpgradeError("staging", "source subtree mutated during staging; refused")
-    journal = read_journal(ctx.target_root, ctx.operation_id)
-    journal = replace(journal, phase="staged", staged_source=str(staging), inventory_digest=source_digest)
-    write_journal(ctx.target_root, journal)
-    return StagedSource(staging, source_digest, leaves)
-
-
-def verify_pre_publication(ctx: UpgradeContext, layout: Tree, deployment_spec: DeploymentSpec) -> str:
-    """Confirm the staged payload matches the contract and every runtime path resolves.
-
-    Each declared runtime path must exist beneath the layout's physical root as a
-    real (non-link) object; a missing or redirected path refuses before mutation.
-    """
-    staging = ctx.staging_root
-    if not staging.is_dir() or os.path.islink(staging):
-        raise UpgradeError("verify", "private staging is missing")
-    digest, leaves = _scan(staging)
-    inventory = dict(leaves)
-    if set(inventory) != set(deployment_spec.inventory):
-        raise UpgradeError("verify", "deployment inventory does not match the staged payload")
-    for relative, expected in deployment_spec.inventory.items():
-        if inventory.get(relative) != expected:
-            raise UpgradeError("verify", f"staged digest mismatch: {relative}")
-    for logical in deployment_spec.runtime_paths:
-        physical = layout.path(logical)
-        if os.path.islink(physical):
-            raise UpgradeError("verify", f"runtime path is an unexpected symlink: {logical}")
-        if not physical.exists():
-            raise UpgradeError("verify", f"runtime path does not resolve beneath the layout root: {logical}")
-        if not _within(physical, layout.root):
-            raise UpgradeError("verify", f"runtime path escapes the layout root: {logical}")
-    return digest
-
-
-def publish(ctx: UpgradeContext, journal: MigrationJournal, store: StoreContext) -> MigrationJournal:
-    """Publish the staged source through one passed StoreContext, never nesting the lock.
-
-    The old source tree is renamed to a bounded backup before the new tree is
-    written; any filesystem failure rolls the backup back and leaves the private
-    staging untouched for verified roll-forward recovery. Receipts are refreshed
-    in the same single transaction with original ``created`` flags preserved.
-    """
-    staging = Path(journal.staged_source)
-    if not staging.is_dir() or os.path.islink(staging):
-        raise UpgradeError("publish", "staged source is missing")
-    digest, _ = _scan(staging)
-    if digest != journal.inventory_digest:
-        raise UpgradeError("publish", "staged source digest no longer matches the journal")
-    layout = Tree(ctx.target_root, os.getuid())
-    target = ctx.target_root / journal.target.removeprefix("/")
-    backup = staging.parent / (staging.name + ".old")
-    if backup.exists():
-        raise UpgradeError("publish", "a prior old-tree backup is present; recover or complete it first")
-    with locked_store(store) as handle:
-        prior = handle.read()
-        if prior is None or prior.manifest.installer is None:
-            raise UpgradeError("publish", "no protected installation manifest; refusing to migrate an unowned tree")
-        old_receipts = _snapshot(layout, journal.target)
+def _unlink(tree: Tree, path: str, *, missing_ok: bool = False) -> None:
+    with ExitStack() as stack:
+        parent = tree.pin(stack, str(Path(path).parent))
         try:
-            if target.exists():
-                _rename(target, backup)
-            _materialize(staging, target)
-        except OSError as error:
-            _rollback(target, backup)
-            raise UpgradeError("publish", f"publication failed ({error.strerror or error}); staging preserved") from error
-        new_receipts = _snapshot(layout, journal.target)
-        updated = _merge_receipts(prior.manifest, journal.target, old_receipts, new_receipts)
-        handle.write(updated)
-        published = replace(
-            journal,
-            phase="published",
-            old_receipts=tuple(dict(asdict(receipt)) for receipt in old_receipts),
-            new_receipts=tuple(dict(asdict(receipt)) for receipt in new_receipts),
-        )
-        write_journal(ctx.target_root, published)
-        return published
+            os.unlink(Path(path).name, dir_fd=parent)
+        except FileNotFoundError:
+            if not missing_ok:
+                raise
+        os.fsync(parent)
 
 
-def recover_from_staging(operation_id: str, root: Path) -> MigrationJournal:
-    """Roll the recorded staging forward to the target, or refuse an unusable staging.
-
-    A missing staging directory or a recorded inventory digest that no longer
-    matches the staged tree is a refusal; the hold and journal are retained.
-    """
-    journal = read_journal(root, operation_id)
-    if journal.phase == "complete":
-        raise UpgradeError("recovery", "operation is already complete")
-    staging = Path(journal.staged_source)
-    if not staging.is_dir() or os.path.islink(staging):
-        raise UpgradeError("recovery", "recorded staging is gone; cannot recover")
-    digest, _ = _scan(staging)
-    if digest != journal.inventory_digest:
-        raise UpgradeError("recovery", "recorded staging digest mismatches; refusing recovery")
-    target = root / journal.target.removeprefix("/")
-    if target.exists():
-        current, _ = _scan(target)
-        if current == journal.inventory_digest:
-            published = replace(journal, phase="published")
-            write_journal(root, published)
-            return published
-    backup = staging.parent / (staging.name + ".old")
-    try:
-        if target.exists():
-            if backup.exists():
-                shutil.rmtree(target, ignore_errors=True)
-            else:
-                _rename(target, backup)
-        _materialize(staging, target)
-    except OSError as error:
-        raise UpgradeError("recovery", f"roll-forward failed ({error.strerror or error}); staging preserved") from error
-    published = replace(journal, phase="published")
-    write_journal(root, published)
-    return published
+def _rmdir(tree: Tree, path: str) -> None:
+    with ExitStack() as stack:
+        parent = tree.pin(stack, str(Path(path).parent))
+        os.rmdir(Path(path).name, dir_fd=parent)
+        os.fsync(parent)
 
 
-def complete(root: Path, operation_id: str, *, lease: LeaseStore | None = None,
-             empty_proof: Callable[[], bool] | None = None) -> MigrationJournal:
-    """Durably commit a published upgrade: remove only the journal and matching hold.
-
-    The published payload must still match the recorded digest and a fresh empty
-    proof must hold; a missing journal, mismatched hold or unreadable evidence is
-    a refusal, never a force-clear. Staging and backup are removed here only.
-    """
-    journal = read_journal(root, operation_id)
-    if journal.phase != "published":
-        raise UpgradeError("complete", "publication is not complete; run --recover or finish --upgrade")
-    store = lease if lease is not None else LeaseStore()
-    hold = store.load()
-    if hold is None or hold.purpose != "update" or hold.request_id != operation_id:
-        raise UpgradeError("complete", "matching update hold is absent; refusing completion")
-    target = root / journal.target.removeprefix("/")
-    if not target.is_dir():
-        raise UpgradeError("complete", "published source tree is missing")
-    digest, _ = _scan(target)
-    if digest != journal.inventory_digest:
-        raise UpgradeError("complete", "published source digest mismatches; refusing completion")
-    if empty_proof is None or not empty_proof():
-        raise UpgradeError("complete", "fresh empty proof is unavailable; miner may still be running")
-    remove_journal(root)
-    store.clear()
-    staging = Path(journal.staged_source)
-    backup = staging.parent / (staging.name + ".old")
-    for candidate in (staging, backup):
-        if candidate.exists():
-            shutil.rmtree(candidate, ignore_errors=True)
-    _fsync_dir(staging.parent)
-    return replace(journal, phase="complete")
+def pending(tree: Tree) -> None:
+    """Call under the existing store lock before any competing mutation."""
+    if tree.read(JOURNAL) is not None:
+        raise DeploymentError("update", "pending app update; run sparehash update --recover first")
 
 
-def read_journal(root: Path, operation_id: str) -> MigrationJournal:
-    validate_operation_id(operation_id)
-    data = _read_bounded(journal_path(root))
-    if data is None:
-        raise UpgradeError("journal", "migration journal is absent")
-    try:
-        document = json.loads(data.decode("utf-8"))
-    except (ValueError, UnicodeError) as error:
-        raise UpgradeError("journal", f"migration journal is corrupt: {error}") from error
-    if not isinstance(document, dict) or set(document) != _JOURNAL_FIELDS:
-        raise UpgradeError("journal", "migration journal fields are invalid")
-    phase = document.get("phase")
-    if not isinstance(phase, str) or phase not in _PHASES:
-        raise UpgradeError("journal", "migration journal phase is invalid")
-    operation = document.get("operation_id")
-    if not isinstance(operation, str) or operation != operation_id:
-        raise UpgradeError("journal", "migration journal operation id mismatches")
-    target, staged, digest = (document.get("target"), document.get("staged_source"), document.get("inventory_digest"))
-    if not isinstance(target, str) or not isinstance(staged, str) or not isinstance(digest, str):
-        raise UpgradeError("journal", "migration journal paths are invalid")
-    return MigrationJournal(
-        operation_id,
-        phase,
-        target,
-        staged,
-        digest,
-        _receipts(document.get("old_receipts")),
-        _receipts(document.get("new_receipts")),
-    )
+def _property(name: str) -> str:
+    return checked(("/usr/bin/systemctl", "show", "sparehash.service", f"--property={name}", "--value"))
 
 
-def write_journal(root: Path, journal: MigrationJournal) -> None:
-    payload = json.dumps(
-        {
-            "operation_id": journal.operation_id,
-            "phase": journal.phase,
-            "target": journal.target,
-            "staged_source": journal.staged_source,
-            "inventory_digest": journal.inventory_digest,
-            "old_receipts": list(journal.old_receipts),
-            "new_receipts": list(journal.new_receipts),
-        },
-        separators=(",", ":"),
-    ).encode("utf-8")
-    if len(payload) > _JOURNAL_MAX:
-        raise UpgradeError("journal", "migration journal would exceed its bounded capacity")
-    path = journal_path(root)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temp = path.parent / (path.name + ".tmp-" + secrets.token_hex(8))
-    try:
-        fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
-        with os.fdopen(fd, "wb") as target:
-            _ = target.write(payload)
-            target.flush()
-            _fsync(target.fileno())
-        os.rename(temp, path)
-        _fsync_dir(path.parent)
-    except OSError as error:
-        if temp.exists():
-            temp.unlink(missing_ok=True)
-        raise UpgradeError("journal", f"migration journal cannot be persisted: {error}") from error
+def _active() -> bool:
+    state = _property("ActiveState")
+    if state not in ("active", "inactive", "failed"):
+        raise DeploymentError("service", f"controller is {state}; wait for its current transition")
+    return state == "active"
 
 
-def remove_journal(root: Path) -> None:
-    path = journal_path(root)
-    try:
-        path.unlink(missing_ok=True)
-        _fsync_dir(path.parent)
-    except OSError as error:
-        raise UpgradeError("journal", f"migration journal cannot be removed: {error}") from error
+def _boot() -> str:
+    state = command(("/usr/bin/systemctl", "is-enabled", "sparehash.service")).stdout.strip()
+    if state not in ("enabled", "disabled"):
+        raise DeploymentError("service", f"unsupported controller startup state: {state}")
+    return state
 
 
-def _receipts(value: object) -> tuple[dict[str, object], ...]:
-    if not isinstance(value, list):
-        raise UpgradeError("journal", "migration journal receipts are invalid")
-    records: list[dict[str, object]] = []
-    for item in value:
-        if not isinstance(item, dict):
-            raise UpgradeError("journal", "migration journal receipts are invalid")
-        records.append({str(key): item[key] for key in item})
-    return tuple(records)
+def _stop() -> None:
+    checked(("/usr/bin/systemctl", "stop", "sparehash.service", "sparehash-xmrig.service"), 60)
 
 
-def _validate_staging_location(staging: Path, layout: Tree) -> None:
-    parent = layout.path(SOURCE_PARENT_LOGICAL)
-    if not _within(staging, parent):
-        raise UpgradeError("staging", "private staging must be adjacent to the installed source tree")
+def _proof() -> None:
+    if not empty():
+        raise DeploymentError("update-stop", "miner cgroup is not empty; mining remains inhibited")
+    result = LeaseManager(empty_proof=empty).cleanup()
+    if result.warning is not None:
+        raise DeploymentError("update-stop", f"owned hugepage cleanup failed: {result.warning}")
 
 
-def _within(candidate: Path, parent: Path) -> bool:
-    try:
-        return os.path.commonpath([os.path.abspath(candidate), os.path.abspath(parent)]) == os.path.abspath(parent)
-    except ValueError:
-        return False
+def _ready() -> None:
+    checked(("/usr/bin/systemctl", "start", "sparehash.service"), 60)
+    deadline = time.monotonic() + 30
+    while time.monotonic() < deadline:
+        try:
+            row = ipc.call({"cmd": "status"}, timeout=1)
+            if row.get("ok") is True and row.get("ready") is True and row.get("running") is False and empty():
+                return
+        except ipc.IPCError:
+            pass
+        time.sleep(0.2)
+    raise DeploymentError("update-activation", "controller readiness/empty proof failed under update inhibition")
 
 
-def _relative_leaf(relative: str) -> bool:
-    parts = relative.split("/")
-    if len(parts) != 2:
-        return False
-    if parts[0] == "sparehash":
-        return PACKAGE_LEAF.fullmatch(parts[1]) is not None
-    if parts[0] == "systemd":
-        return parts[1] in UNIT_TEMPLATES
-    return False
+def _version(source: Path) -> None:
+    version, commit = identity(source)
+    output = checked(("/usr/bin/python3", "-I", "-B", str(source / "sparehash/__main__.py"), "--version"), 30)
+    if output != f"SpareHash {version} (commit {commit})":
+        raise DeploymentError("update-identity", "installed isolated CLI identity mismatch")
 
 
-def _scan(root: Path) -> tuple[str, tuple[tuple[str, str], ...]]:
-    if os.path.islink(root) or not root.is_dir():
-        raise UpgradeError("inventory", f"not a protected directory: {root}")
-    leaves: list[tuple[str, str]] = []
-    for base, dirs, files in os.walk(root):
-        dirs.sort()
+@dataclass(frozen=True)
+class Infrastructure:
+    active: Callable[[], bool] = _active
+    boot: Callable[[], str] = _boot
+    stop: Callable[[], None] = _stop
+    ready: Callable[[], None] = _ready
+    proof: Callable[[], None] = _proof
+    reload: Callable[[], object] = lambda: checked(("/usr/bin/systemctl", "daemon-reload"), 30)
+    verify_units: Callable[[Path], object] = systemd.verify_units
+    verify_identity: Callable[[Path], None] = _version
+    validate_config: Callable[[Path], object] = config.load
+
+
+def identity(source: Path) -> tuple[str, str]:
+    version = _literal(source / "sparehash/__init__.py", "__version__")
+    version_tuple(version)
+    commit = _literal(source / "sparehash/_build.py", "COMMIT")
+    import re
+
+    if re.fullmatch(r"[0-9a-f]{40}", commit) is None:
+        raise DeploymentError("update-identity", "installation/candidate requires a full source commit stamp")
+    return version, commit
+
+
+def preserved(tree: Tree) -> dict[str, str | None]:
+    return {name: None if (data := tree.read(name)) is None else digest(data) for name in PRESERVED}
+
+
+def _preservation(tree: Tree, record: UpdateRecord, infra: Infrastructure) -> None:
+    if preserved(tree) != record.preserved or infra.boot() != record.boot:
+        raise DeploymentError("update-preservation", "configuration/manual state or boot preference changed; hold retained")
+
+
+def _bundle_allowed(name: str, backup: bool) -> bool:
+    if name in ("launcher", *("units/" + unit.removesuffix(".in") for unit in UNIT_TEMPLATES)):
+        return True
+    if name == "manifest.json":
+        return backup
+    parts = name.split("/")
+    return (len(parts) == 3 and parts[0] == "src" and
+            ((parts[1] == "sparehash" and PACKAGE_LEAF.fullmatch(parts[2]) is not None)
+             or (parts[1] == "systemd" and parts[2] in UNIT_TEMPLATES)))
+
+
+def _scan_bundle(tree: Tree, root: str, backup: bool, *, complete: bool = True) -> dict[str, dict[str, object]]:
+    result: dict[str, dict[str, object]] = {}
+    expected_dirs = {"src", "src/sparehash", "src/systemd", "units"}
+    # Pin ancestors and reject foreign ownership/modes before walking; no links
+    # are followed by the walk, and every leaf is read through Tree's pins.
+    with ExitStack() as stack:
+        tree.pin(stack, root)
+    for base, dirs, files in os.walk(tree.path(root), followlinks=False):
         for name in dirs:
-            full = Path(base) / name
-            if os.path.islink(full):
-                raise UpgradeError("inventory", f"unexpected symlink: {full}")
-            relative = str(full.relative_to(root))
-            if relative not in {"sparehash", "systemd"}:
-                raise UpgradeError("inventory", f"unexpected directory: {relative}")
-        for name in sorted(files):
-            full = Path(base) / name
-            if os.path.islink(full):
-                raise UpgradeError("inventory", f"unexpected symlink: {full}")
-            relative = str(full.relative_to(root))
-            if not _relative_leaf(relative):
-                raise UpgradeError("inventory", f"foreign leaf: {relative}")
-            leaves.append((relative, _sha256_file(full)))
-    leaves.sort()
-    digest = hashlib.sha256("\n".join(f"{relative} {digest}" for relative, digest in leaves).encode()).hexdigest()
-    return digest, tuple(leaves)
+            path = Path(base) / name
+            relative = str(path.relative_to(tree.path(root)))
+            if relative not in expected_dirs or path.is_symlink():
+                raise DeploymentError("update-bundle", "foreign directory in update material")
+        for name in files:
+            relative = str((Path(base) / name).relative_to(tree.path(root)))
+            if relative == INDEX:
+                continue
+            if not _bundle_allowed(relative, backup) or len(result) >= MAX_MODULES + 6:
+                raise DeploymentError("update-bundle", "foreign or excessive update material")
+            receipt = tree.receipt(root + "/" + relative, True)
+            if receipt.kind != "file" or receipt.uid != tree.uid or receipt.mode & 0o022:
+                raise DeploymentError("update-bundle", "unsafe update material")
+            result[relative] = {"sha256": receipt.sha256, "mode": receipt.mode, "gid": receipt.gid}
+    required = {"src/sparehash/__main__.py", "src/sparehash/__init__.py", "src/sparehash/_build.py",
+                "src/sparehash/upgrade.py", "launcher", *("units/" + name.removesuffix(".in") for name in UNIT_TEMPLATES)}
+    if backup:
+        required.add("manifest.json")
+    if complete and not required <= result.keys():
+        raise DeploymentError("update-bundle", "incomplete update material")
+    return result
 
 
-def _sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
-    with os.fdopen(fd, "rb") as source:
-        while block := source.read(1024 * 1024):
-            digest.update(block)
-    return digest.hexdigest()
+def seal(tree: Tree, root: str, *, backup: bool) -> str:
+    index = _scan_bundle(tree, root, backup)
+    data = json.dumps(index, sort_keys=True, separators=(",", ":")).encode()
+    tree.write(root + "/" + INDEX, (data, 0o600, 0))
+    # Files and their immediate parent are fsynced by Tree.write; flush all
+    # created directory entries before announcing a ready backup in the journal.
+    for directory in ("src/sparehash", "src/systemd", "src", "units", ""):
+        with ExitStack() as stack:
+            os.fsync(tree.pin(stack, root + ("/" + directory if directory else "")))
+    return digest(data)
 
 
-def _write_leaf(path: Path, data: bytes, mode: int) -> None:
-    path.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, mode)
-    with os.fdopen(fd, "wb") as target:
-        _ = target.write(data)
-        target.flush()
-        _fsync(target.fileno())
-        os.fchmod(target.fileno(), mode)
+def bundle(tree: Tree, root: str, expected: str | None = None, *, backup: bool) -> dict[str, dict[str, object]]:
+    data = tree.read(root + "/" + INDEX)
+    if data is None or (expected is not None and digest(data) != expected):
+        raise DeploymentError("update-backup", "update inventory missing or digest mismatched")
+    current = _scan_bundle(tree, root, backup)
+    if json.dumps(current, sort_keys=True, separators=(",", ":")).encode() != data:
+        raise DeploymentError("update-backup", "update material no longer matches protected inventory")
+    return current
 
 
-def _materialize(staging: Path, target: Path) -> None:
-    """Write the staged payload into a fresh target directory, one fsynced leaf at a time."""
-    digest, leaves = _scan(staging)
-    _ = digest
-    os.mkdir(target, 0o755)
-    os.chmod(target, 0o755)
-    for relative, _ in leaves:
-        _write_leaf(target / relative, (staging / relative).read_bytes(), 0o644)
-    for directory in sorted({(target / relative).parent for relative, _ in leaves}):
-        if directory != target:
-            os.chmod(directory, 0o755)
-    _fsync_dir(target)
-    _fsync_dir(target.parent)
-
-
-def _rollback(target: Path, backup: Path) -> None:
-    if target.exists():
-        shutil.rmtree(target, ignore_errors=True)
-    if backup.exists():
-        _rename(backup, target)
-    _fsync_dir(target.parent)
-
-
-def _rename(source: Path, destination: Path) -> None:
-    os.rename(source, destination)
-
-
-def _fsync(descriptor: int) -> None:
-    os.fsync(descriptor)
-
-
-def _fsync_dir(directory: Path) -> None:
-    descriptor = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+def discard_bundle(tree: Tree, root: str, *, backup: bool, expected: str | None = None) -> None:
+    """Delete only validated leaves; replay a partially interrupted cleanup."""
+    data = tree.read(root + "/" + INDEX)
+    if data is None:
+        # Index is removed only after all leaves/subdirectories. A crash between
+        # index unlink and final rmdir leaves at most this empty owned directory.
+        if any(tree.path(root).iterdir()):
+            raise DeploymentError("update-cleanup", "unindexed nonempty update material retained")
+        _rmdir(tree, root)
+        return
+    if expected is not None and digest(data) != expected:
+        raise DeploymentError("update-cleanup", "update inventory changed")
     try:
-        _fsync(descriptor)
-    finally:
-        os.close(descriptor)
+        entries = json.loads(data)
+        if not isinstance(entries, dict) or len(entries) > MAX_MODULES + 6 or not all(
+            isinstance(name, str) and _bundle_allowed(name, backup) and isinstance(meta, dict)
+            and set(meta) == {"sha256", "mode", "gid"} for name, meta in entries.items()
+        ):
+            raise ValueError("invalid cleanup inventory")
+    except (ValueError, UnicodeError) as error:
+        raise DeploymentError("update-cleanup", "invalid cleanup inventory") from error
+    current = _scan_bundle(tree, root, backup, complete=False)
+    if not all(name in entries and meta == entries[name] for name, meta in current.items()):
+        raise DeploymentError("update-cleanup", "foreign or modified update material retained")
+    for relative in current:
+        _unlink(tree, root + "/" + relative)
+    for name in ("src/sparehash", "src/systemd", "src", "units"):
+        with suppress(FileNotFoundError):
+            _rmdir(tree, root + "/" + name)
+    _unlink(tree, root + "/" + INDEX)
+    _rmdir(tree, root)
 
 
-def _discard(staging: Path) -> None:
-    shutil.rmtree(staging, ignore_errors=True)
+def _new_bundle(tree: Tree, root: str) -> None:
+    if os.path.lexists(tree.path(root)):
+        raise DeploymentError("update-bundle", "refusing existing update material: " + root)
+    tree.directory(root, 0)
+    with ExitStack() as stack:
+        fd = tree.pin(stack, root)
+        os.fchmod(fd, 0o700)
+        os.fsync(fd)
+    for name in ("src", "src/sparehash", "src/systemd", "units"):
+        tree.directory(root + "/" + name, 0)
 
 
-def _snapshot(layout: Tree, logical_target: str) -> tuple[Artifact, ...]:
-    physical = layout.path(logical_target)
-    if not physical.is_dir():
-        return ()
-    _, leaves = _scan(physical)
-    receipts = [layout.receipt(logical_target, False)]
-    for relative, _ in leaves:
-        logical = logical_target + "/" + relative
-        identity = leaf_identity(logical)
-        if identity is None:
-            continue
-        receipts.append(layout.receipt(logical, False, identity=identity))
-    return tuple(receipts)
+def candidate_bundle(tree: Tree, root: str, source: Path, caps: Capabilities) -> str:
+    """Only authenticated runtime source/templates enter the transaction bundle."""
+    files = _collect_source(source, MAX_MODULES)
+    for required in ("__init__.py", "_build.py", "__main__.py", "upgrade.py", "cli_update.py", "runtime.py", "config.py"):
+        if "sparehash/" + required not in files:
+            raise DeploymentError("update-candidate", "missing required runtime module: " + required)
+    identity(source)
+    _new_bundle(tree, root)
+    for relative, path in files.items():
+        tree.write(root + "/src/" + relative, (path.read_bytes(), 0o644, 0))
+    units = systemd.render(caps, templates=source / "systemd")
+    for unit in systemd.UNIT_NAMES:
+        tree.write(root + "/units/" + unit, (units[unit].encode(), 0o644, 0))
+    shim = SHIM_TEMPLATE.format(source=str(tree.path(SHIM_SOURCE))).encode()
+    tree.write(root + "/launcher", (shim, 0o755, 0))
+    return seal(tree, root, backup=False)
 
 
-def _merge_receipts(manifest: Manifest, logical_target: str,
-                    old_receipts: tuple[Artifact, ...], new_receipts: tuple[Artifact, ...]) -> Manifest:
+def _live_name(relative: str) -> str:
+    if relative.startswith("src/"):
+        return SOURCE + "/" + relative.removeprefix("src/")
+    if relative.startswith("units/"):
+        return UNITS + "/" + relative.removeprefix("units/")
+    if relative == "launcher":
+        return LAUNCHER
+    raise DeploymentError("update-path", "not an application publication path")
+
+
+def _is_app(artifact: Artifact) -> bool:
+    return (artifact.path == SOURCE or artifact.path.startswith(SOURCE + "/")
+            or artifact.path == LAUNCHER or artifact.path in (UNITS + "/" + unit for unit in systemd.UNIT_NAMES))
+
+
+def _manifest(tree: Tree) -> Manifest:
+    with locked_store(StoreContext(tree.trust)) as store:
+        prior = store.read()
+    if prior is None or prior.manifest.installer is None or prior.manifest.installer.phase != "ready":
+        raise DeploymentError("update-receipts", "requires a ready receipt-owned installation")
+    if any(action.state != "applied" for action in prior.manifest.installer.actions):
+        raise DeploymentError("update-receipts", "installation has unresolved actions")
+    return prior.manifest
+
+
+def validate_live(tree: Tree, manifest: Manifest) -> None:
     installer = manifest.installer
-    if installer is None:
-        raise UpgradeError("publish", "installation manifest has no installer ledger")
-    previous = {receipt.id: receipt for receipt in (*old_receipts, *installer.artifacts)}
-    kept = {
-        artifact.id: artifact
-        for artifact in installer.artifacts
-        if not (artifact.path == logical_target or artifact.path.startswith(logical_target + "/"))
-    }
-    for receipt in new_receipts:
-        prior = previous.get(receipt.id)
-        kept[receipt.id] = replace(receipt, created=receipt.created or (prior.created if prior is not None else False))
-    artifacts = tuple(sorted(kept.values(), key=lambda artifact: artifact.id))
-    return replace(manifest, installer=replace(installer, artifacts=artifacts))
+    assert installer is not None
+    if set(os.listdir(tree.path(SOURCE))) != {"sparehash", "systemd"}:
+        raise DeploymentError("update-receipts", "foreign source-root contents")
+    for directory in ("sparehash", "systemd"):
+        if any(not entry.is_file() or entry.is_symlink() for entry in (tree.path(SOURCE) / directory).iterdir()):
+            raise DeploymentError("update-receipts", "foreign source directory contents")
+    expected = {a.path for a in installer.artifacts if _is_app(a)}
+    inventory = _collect_source(tree.path(SOURCE), MAX_MODULES)
+    actual = {SOURCE, SOURCE + "/sparehash", SOURCE + "/systemd", LAUNCHER,
+              *(SOURCE + "/" + name for name in inventory), *(UNITS + "/" + unit for unit in systemd.UNIT_NAMES)}
+    if expected != actual:
+        raise DeploymentError("update-receipts", "foreign/missing application files or directory receipts")
+    for artifact in installer.artifacts:
+        if _is_app(artifact) and tree.receipt(artifact.path, artifact.created, identity=artifact.id) != artifact:
+            raise DeploymentError("update-receipts", "modified or foreign application artifact: " + artifact.path)
+    version, _ = identity(tree.path(SOURCE))
+    if version_tuple(version) < (0, 3, 0):
+        raise DeploymentError("update-version", "updates require a fresh v0.3+ installation")
 
 
-def _read_bounded(path: Path) -> bytes | None:
+def _backup(tree: Tree, manifest: Manifest) -> str:
+    if os.path.lexists(tree.path(BACKUP)):
+        discard_bundle(tree, BACKUP, backup=True)
+    _new_bundle(tree, BACKUP)
+    assert manifest.installer is not None
+    for artifact in manifest.installer.artifacts:
+        if not _is_app(artifact) or artifact.kind != "file":
+            continue
+        if artifact.path.startswith(SOURCE + "/"):
+            relative = "src/" + artifact.path.removeprefix(SOURCE + "/")
+        elif artifact.path == LAUNCHER:
+            relative = "launcher"
+        else:
+            relative = "units/" + Path(artifact.path).name
+        data = tree.read(artifact.path)
+        if data is None:
+            raise DeploymentError("update-backup", "application file disappeared")
+        tree.write(BACKUP + "/" + relative, (data, artifact.mode, artifact.gid))
+    tree.write(BACKUP + "/manifest.json", (format_manifest(manifest), 0o600, 0))
+    return seal(tree, BACKUP, backup=True)
+
+
+def _clean_unfinished_backup(tree: Tree) -> None:
+    """A pre-publication copy failure never creates restoration authority.
+
+    Validate any unsealed partial copy against the still-intact old installation
+    before deleting it. A sealed prior backup has its own bounded inventory.
+    """
+    if not os.path.lexists(tree.path(BACKUP)):
+        return
+    if tree.read(BACKUP + "/" + INDEX) is not None:
+        discard_bundle(tree, BACKUP, backup=True)
+        return
+    entries = _scan_bundle(tree, BACKUP, True, complete=False)
+    manifest_bytes = format_manifest(_manifest(tree))
+    for name, meta in entries.items():
+        expected = manifest_bytes if name == "manifest.json" else tree.read(_live_name(name))
+        if expected is None or digest(expected) != meta["sha256"]:
+            raise DeploymentError("update-backup", "unsealed backup contains foreign content; retained")
+    data = json.dumps(entries, sort_keys=True, separators=(",", ":")).encode()
+    tree.write(BACKUP + "/" + INDEX, (data, 0o600, 0))
+    discard_bundle(tree, BACKUP, backup=True)
+
+
+def _ensure_hold(tree: Tree, record: UpdateRecord) -> None:
+    store = LeaseStore(tree.path("/var/lib/sparehash/lifecycle-lease.json"))
+    current = store.load()
+    if current is not None:
+        if current.purpose != "update" or current.request_id != record.operation_id:
+            raise DeploymentError("update-hold", "unrelated lifecycle hold retained")
+        return
+    store.save(ActiveLease(secrets.token_hex(16), record.operation_id, "update"))
+
+
+def prepare(tree: Tree, stage: str, stage_digest: str, infra: Infrastructure) -> UpdateRecord:
+    """Reserve, quiesce, capture last manual pause, then durably back up."""
+    active, boot = infra.active(), infra.boot()
+    with locked_store(StoreContext(tree.trust)):
+        pending(tree)
+        if is_retired(tree.path("/var/lib/sparehash/lifecycle.json")):
+            raise DeploymentError("update", "retired installation")
+        if tree.read("/var/lib/sparehash/uninstall-progress.json") is not None:
+            raise DeploymentError("update", "partial removal must be resolved first")
+        lease = LeaseStore(tree.path("/var/lib/sparehash/lifecycle-lease.json"))
+        if lease.load() is not None:
+            raise DeploymentError("update", "unrelated lifecycle hold retained")
+        manifest = _manifest(tree)
+        validate_live(tree, manifest)
+        bundle(tree, stage, stage_digest, backup=False)
+        record = UpdateRecord(stage.rsplit("-", 1)[-1], "prepared", active, boot, stage_digest, "", preserved(tree))
+        save(tree, record)
     try:
-        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
-    except FileNotFoundError:
-        return None
-    except OSError as error:
-        raise UpgradeError("journal", f"unsafe migration journal: {error}") from error
-    with os.fdopen(fd, "rb") as source:
-        info = os.fstat(source.fileno())
-        if not stat.S_ISREG(info.st_mode) or info.st_size > _JOURNAL_MAX:
-            raise UpgradeError("journal", "migration journal is not a bounded protected regular file")
-        return source.read(_JOURNAL_MAX + 1)
+        if active:
+            try:
+                token = acquire(ipc.call, record.operation_id)
+                await_ready(ipc.call, token)
+            except (RuntimeError, ipc.IPCError, OSError):
+                # An unreachable controller is not proof of emptiness. Stop it
+                # and establish the same durable inhibition offline instead.
+                infra.stop()
+        infra.stop()
+        infra.proof()
+        with locked_store(StoreContext(tree.trust)):
+            _ensure_hold(tree, record)
+            record = save(tree, record, preserved=preserved(tree))
+            manifest = _manifest(tree)
+            validate_live(tree, manifest)
+            backup_digest = _backup(tree, manifest)
+            record = save(tree, record, backup_digest=backup_digest)
+        print("Broken-CLI recovery: " + FALLBACK, flush=True)
+        return record
+    except Exception:
+        # Before publication the old source is untouched. Recovery must prove
+        # that installation and operational state before releasing inhibition.
+        recover(tree, infra)
+        raise
+
+
+def _old_manifest(tree: Tree) -> Manifest:
+    data = tree.read(BACKUP + "/manifest.json")
+    manifest = parse_manifest(data.decode()) if data is not None else None
+    if manifest is None or manifest.installer is None:
+        raise DeploymentError("update-backup", "backup manifest is invalid")
+    return manifest
+
+
+def _publish(tree: Tree, source: str, wanted: dict[str, dict[str, object]],
+             allowed: dict[str, set[str]]) -> None:
+    # Before each replay, reject foreign leaves rather than delete a guessed
+    # partially published tree. Every existing file must match old or candidate.
+    current = {"launcher", *("units/" + unit for unit in systemd.UNIT_NAMES)}
+    for directory in (SOURCE, SOURCE + "/sparehash", SOURCE + "/systemd"):
+        if not os.path.lexists(tree.path(directory)):
+            tree.directory(directory, 0)
+    for base, dirs, files in os.walk(tree.path(SOURCE), followlinks=False):
+        for name in dirs:
+            relative = str((Path(base) / name).relative_to(tree.path(SOURCE)))
+            if relative not in {"sparehash", "systemd"} or (Path(base) / name).is_symlink():
+                raise DeploymentError("update-publish", "foreign live source directory")
+        for name in files:
+            relative = "src/" + str((Path(base) / name).relative_to(tree.path(SOURCE)))
+            if not _bundle_allowed(relative, False):
+                raise DeploymentError("update-publish", "foreign live source leaf")
+            current.add(relative)
+    for relative in current:
+        data = tree.read(_live_name(relative))
+        if data is not None and (relative not in allowed or digest(data) not in allowed[relative]):
+            raise DeploymentError("update-publish", "foreign live content; hold retained: " + relative)
+    for relative, meta in wanted.items():
+        if relative == "manifest.json":
+            continue
+        data = tree.read(source + "/" + relative)
+        if data is None:
+            raise DeploymentError("update-publish", "publication material disappeared")
+        tree.write(_live_name(relative), (data, int(str(meta["mode"])), int(str(meta["gid"]))))
+    for relative in current - wanted.keys():
+        _unlink(tree, _live_name(relative), missing_ok=True)
+
+
+def _refresh(tree: Tree, original: Manifest, wanted: dict[str, dict[str, object]]) -> None:
+    assert original.installer is not None
+    installer = original.installer
+    prior = {a.id: a for a in installer.artifacts}
+    artifacts = [a for a in installer.artifacts if not _is_app(a)]
+    names = [SOURCE, SOURCE + "/sparehash", SOURCE + "/systemd"]
+    names += [_live_name(name) for name in wanted if name != "manifest.json"]
+    for name in names:
+        identity_id = leaf_identity(name) or name
+        old = prior.get(identity_id)
+        artifacts.append(tree.receipt(name, old.created if old is not None else True, identity=identity_id))
+    # Replace only app action references; no ever-growing update history and no
+    # dangling action target when a module is removed. Non-app records survive.
+    app_ids = {a.id for a in installer.artifacts if _is_app(a)}
+    actions = [a for a in installer.actions if a.target not in app_ids]
+    seed = installer.actions[0] if installer.actions else None
+    if seed is None:
+        raise DeploymentError("update-receipts", "installation has no action identity")
+    for artifact in artifacts:
+        if _is_app(artifact):
+            actions.append(Action(0, seed.install_id, seed.at,
+                                  "create-directory" if artifact.kind == "directory" else "write-file", artifact.id, "applied"))
+    actions = [replace(action, sequence=i) for i, action in enumerate(actions, 1)]
+    version, _ = identity(tree.path(SOURCE))
+    listing = [(relative, digest(path.read_bytes())) for relative, path in _collect_source(tree.path(SOURCE), MAX_MODULES).items()]
+    updated = replace(original, payload_version=version, inventory_digest=inventory_digest(listing),
+                      installer=replace(installer, artifacts=tuple(artifacts), actions=tuple(actions)))
+    with locked_store(StoreContext(tree.trust)) as store:
+        store.write(updated)
+
+
+def _allowed(*inventories: dict[str, dict[str, object]]) -> dict[str, set[str]]:
+    result: dict[str, set[str]] = {}
+    for inventory in inventories:
+        for name, meta in inventory.items():
+            if name != "manifest.json":
+                result.setdefault(name, set()).add(str(meta["sha256"]))
+    return result
+
+
+def _verify(tree: Tree, record: UpdateRecord, infra: Infrastructure) -> None:
+    validate_live(tree, _manifest(tree))
+    infra.verify_identity(tree.path(SOURCE))
+    infra.verify_units(tree.path(UNITS))
+    infra.validate_config(tree.path("/etc/sparehash/config.toml"))
+    _preservation(tree, record, infra)
+    if record.active:
+        infra.ready()
+    elif infra.active():
+        raise DeploymentError("update-activity", "previously stopped controller unexpectedly active")
+    infra.proof()
+
+
+def finalise(tree: Tree, record: UpdateRecord, infra: Infrastructure) -> None:
+    """No restoration is legal once the committed record is durable."""
+    if record.phase != "committed":
+        raise DeploymentError("update", "cannot finalise an incomplete transaction")
+    _ensure_hold(tree, record)
+    infra.stop()
+    infra.proof()
+    _verify(tree, replace(record, active=False), infra)
+    # Clear the durable lease only while stopped. A new controller starts under
+    # journal inhibition alone, so it has no stale in-memory external lease.
+    # Journal deletion is the LAST durable step; an interruption before it is
+    # repeatably finalised, never interpreted as permission to restore history.
+    LeaseStore(tree.path("/var/lib/sparehash/lifecycle-lease.json")).clear()
+    if record.active:
+        infra.ready()
+    _preservation(tree, record, infra)
+    if os.path.lexists(tree.path(record.stage)):
+        discard_bundle(tree, record.stage, backup=False, expected=record.stage_digest)
+    with locked_store(StoreContext(tree.trust)):
+        _unlink(tree, JOURNAL)
+
+
+def publish(tree: Tree, infra: Infrastructure) -> bool:
+    """Execute only from the known-good backup. False means restored failure."""
+    record = load(tree)
+    if record is None or record.phase != "prepared" or not record.backup_digest:
+        raise DeploymentError("update", "no prepared complete backup")
+    old = bundle(tree, BACKUP, record.backup_digest, backup=True)
+    new = bundle(tree, record.stage, record.stage_digest, backup=False)
+    original = _old_manifest(tree)
+    try:
+        infra.stop()
+        infra.proof()
+        _ensure_hold(tree, record)
+        _preservation(tree, record, infra)
+        record = save(tree, record, phase="installing")
+        _publish(tree, record.stage, new, _allowed(old, new))
+        _refresh(tree, original, new)
+        infra.reload()
+        _verify(tree, record, infra)
+        record = save(tree, record, phase="committed")
+    except Exception:
+        recover(tree, infra)
+        return False
+    finalise(tree, record, infra)
+    return True
+
+
+def recover(tree: Tree, infra: Infrastructure) -> bool:
+    """Restore one interrupted transaction, or finalise its durable commitment."""
+    with locked_store(StoreContext(tree.trust)):
+        record = load(tree)
+        if record is None:
+            return False
+        _ensure_hold(tree, record)
+    if record.phase == "committed":
+        finalise(tree, record, infra)
+        return True
+    infra.stop()
+    infra.proof()
+    if record.phase == "prepared":
+        # Never mistake a partial backup for a ready recovery source. No live
+        # writes occurred; validate the still-intact installation directly.
+        validate_live(tree, _manifest(tree))
+        record = save(tree, record, preserved=preserved(tree))
+        if not record.backup_digest:
+            _clean_unfinished_backup(tree)
+    else:
+        old = bundle(tree, BACKUP, record.backup_digest, backup=True)
+        new = bundle(tree, record.stage, record.stage_digest, backup=False)
+        original = _old_manifest(tree)
+        record = save(tree, record, phase="restoring")
+        _publish(tree, BACKUP, old, _allowed(old, new))
+        _refresh(tree, original, old)
+        infra.reload()
+    _verify(tree, record, infra)
+    record = save(tree, record, phase="committed")
+    finalise(tree, record, infra)
+    return True
+
+
+def worker() -> int:
+    """Fixed internal dispatch, root checked by __main__; no caller paths."""
+    try:
+        tree = Tree()
+        if Path(__file__).resolve() != tree.path(BACKUP + "/src/sparehash/upgrade.py").resolve():
+            raise DeploymentError("update-worker", "publication must run from the known-good backup source")
+        return 0 if publish(tree, Infrastructure()) else 1
+    except KeyboardInterrupt:
+        print("Update interrupted; mining inhibited. Recovery: " + FALLBACK, flush=True)
+        return 1
+    except (RuntimeError, OSError, systemd.UnitError, subprocess.SubprocessError) as error:
+        print(f"Update retained for recovery: {error}\n{FALLBACK}", flush=True)
+        return 1
+
+
+def run_from_backup(tree: Tree) -> int:
+    record = load(tree)
+    if record is None:
+        raise DeploymentError("update", "journal disappeared")
+    bundle(tree, BACKUP, record.backup_digest, backup=True)
+    result = subprocess.run(("/usr/bin/python3", "-I", "-B",
+                             str(tree.path(BACKUP + "/src/sparehash/__main__.py")), "__app_update__"),
+                            env=ENV, check=False)
+    return result.returncode
