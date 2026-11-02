@@ -62,7 +62,7 @@ class UnitError(Exception):
         super().__init__(detail)
 
 
-def render(caps: Capabilities) -> Units:
+def render(caps: Capabilities, *, templates: Path | None = None) -> Units:
     """Render from already-detected facts; never perform manager probes here.
 
     The fixed B2 wrapper selects systemd's CREDENTIALS_DIRECTORY/xmrig.json,
@@ -70,8 +70,9 @@ def render(caps: Capabilities) -> Units:
     Runtime ownership, operation removal and benchmark restart suppression are
     controller/wrapper responsibilities, not caller-selectable unit commands.
     """
-    controller = (TEMPLATES / f"{UNIT_CONTROLLER}.in").read_text(encoding="utf-8")
-    miner = (TEMPLATES / f"{UNIT_MINER}.in").read_text(encoding="utf-8")
+    root = TEMPLATES if templates is None else templates
+    controller = (root / f"{UNIT_CONTROLLER}.in").read_text(encoding="utf-8")
+    miner = (root / f"{UNIT_MINER}.in").read_text(encoding="utf-8")
     weights = "CPUWeight=idle\nIOWeight=1" if (
         caps.cgroup_hierarchy == "cgroup2" and caps.cpuweight_idle
     ) else "# Idle cgroup weights unavailable; retaining Nice/SCHED_IDLE/idle I/O"

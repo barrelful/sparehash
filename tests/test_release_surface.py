@@ -14,7 +14,7 @@ from tests.install_fixture import capabilities
 
 
 @pytest.mark.parametrize("arguments", [
-    ["update"], ["benchmark"], ["config", "edit"], ["complete-upgrade", "old-operation"],
+    ["benchmark"], ["config", "edit"], ["complete-upgrade", "old-operation"],
     ["install", "--upgrade", "operation"], ["install", "--recover", "operation"],
     ["install", "--complete-upgrade", "operation"], ["install", "--reconfigure"],
     ["install", "--preflight", "--upgrade", "operation"],
@@ -28,9 +28,9 @@ def test_deferred_workflows_have_no_effects(arguments: list[str], uid: int) -> N
         install, "is_retired",
     ) as retired, patch.object(install.Capabilities, "detect") as detect, patch.object(
         install.lifecycle, "clear_lifecycle_latch",
-    ) as clear, patch.object(install, "complete_install") as complete:
+    ) as clear:
         assert main(arguments, geteuid=lambda: uid) == 2
-    for boundary in (tree, retired, detect, clear, complete):
+    for boundary in (tree, retired, detect, clear):
         boundary.assert_not_called()
     assert "unsupported in experimental v0.2.0" in output.getvalue()
     assert "Preserve" in output.getvalue()

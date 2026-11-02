@@ -196,18 +196,14 @@ class CliTests(unittest.TestCase):
                     captured.getvalue(),
                 )
 
-    def test_update_refused_root_and_nonroot(self) -> None:
-        """sparehash update is unsupported in experimental v0.1.1, exit 2, root and nonroot identical."""
-        for geteuid_fn, uid in [(os.geteuid, 0), (lambda: 1000, 1000)]:
-            with self.subTest(geteuid=uid):
-                captured = io.StringIO()
-                with contextlib.redirect_stderr(captured):
-                    result = main(["update"], geteuid=geteuid_fn)
-                self.assertEqual(result, 2)
-                self.assertIn(
-                    "sparehash: update is unsupported in experimental v0.2.0",
-                    captured.getvalue(),
-                )
+    def test_update_refused_for_nonroot(self) -> None:
+        """Mutation refuses before reading any protected installation state."""
+        for arguments in (["update"], ["update", "--recover"], ["update", "--from", "missing.tar.gz"]):
+            captured = io.StringIO()
+            with contextlib.redirect_stderr(captured):
+                result = main(arguments, geteuid=lambda: 1000)
+            self.assertEqual(result, 2)
+            self.assertIn("update requires root", captured.getvalue())
 
     def test_benchmark_refused_root_and_nonroot(self) -> None:
         """sparehash benchmark is unsupported in experimental v0.1.1, exit 2, root and nonroot identical."""

@@ -192,9 +192,9 @@ checkouts without a release stamp report `commit unknown`.
 `sparehash update --check` is unprivileged and read-only. It discovers published
 numeric releases including experimental pre-releases, but requires a source archive
 and adjacent `.asc` asset. Discovery is not signature verification. Application
-mutation (`update`, `update --from ARCHIVE`, `update --recover`) remains unavailable
-until the application transaction milestone; these modes are mutually exclusive
-with `--check`. Do not bypass missing maintainer signing trust.
+mutation (`update`, `update --from ARCHIVE`, `update --recover`) requires root;
+these modes are mutually exclusive with `--check`. See [updating and recovery](docs/updating.md).
+Do not bypass missing maintainer signing trust.
 
 Every public command:
 

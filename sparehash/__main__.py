@@ -39,12 +39,14 @@ INTERNAL_COMMANDS: Final = (
     "__authorize_miner__",
     "__miner_exec__",
     "authorize-start",
+    "__app_update__",
 )
 PRIVILEGED_COMMANDS: Final = (
     "__controller__",
     "__cleanup__",
     "__authorize_miner__",
     "authorize-start",
+    "__app_update__",
 )
 
 
@@ -74,7 +76,7 @@ def _parser() -> argparse.ArgumentParser:
         if command == "status":
             help_text = "requires root; show controller/miner/blocker/power state"
         elif command == "update":
-            help_text = "check application releases; application mutation is not yet available"
+            help_text = "check, install or recover authenticated application updates"
         elif command in ("benchmark", "complete-upgrade"):
             help_text = "deferred in experimental v0.2; refuses before effects"
         command_parser = subparsers.add_parser(command, help=help_text)
@@ -143,6 +145,12 @@ def main(
         if command in PRIVILEGED_COMMANDS and geteuid() != 0:
             print("sparehash: privileged command requires root", file=sys.stderr)
             return 2
+        if command == "__app_update__":
+            if len(arguments) != 1:
+                return 2
+            from sparehash.upgrade import worker
+
+            return worker()
         if command == "__miner_exec__" and getusername(geteuid()) != "xmrig":
             print("sparehash: miner command requires the xmrig identity", file=sys.stderr)
             return 2
@@ -165,13 +173,13 @@ def main(
         return install(arguments[1:], geteuid=geteuid)
     parsed = _parser().parse_args(arguments, namespace=CliArguments())
     command = parsed.command
-    if command == "update" and parsed.check:
-        from sparehash.cli_update import check
+    if command == "update":
+        from sparehash.cli_update import check, mutate
 
-        return check()
+        return check() if parsed.check else mutate(local=parsed.from_archive, recovery=parsed.recover, geteuid=geteuid)
     if command == "config" and parsed.config_command == "edit":
         return _unsupported("config edit")
-    if command in ("benchmark", "update", "complete-upgrade"):
+    if command in ("benchmark", "complete-upgrade"):
         return _unsupported(command)
     if command == "config":
         from sparehash.cli_config import show

@@ -305,18 +305,26 @@ def uninstall(*, purge: bool = False, geteuid: Callable[[], int] = os.geteuid, t
             gid = tree.receipt("/var/lib/sparehash/install-manifest.json", False).gid
             missing_group = True
         context = StoreContext(trust, gid=gid)
+        from .upgrade import pending
+
         installer = _receipts(trust, context)
         if missing_group and not any(isinstance(item, GroupIdentity) and item.name == "sparehash"
                                      and item.created and item.gid == gid for item in installer.identities):
             raise LifecycleError("account", "missing manifest group has no owned removal receipt")
-        lease = LeaseStore(lifecycle_path.parent / "lifecycle-lease.json").load()
-        if lease is not None and lease.purpose != "uninstall":
-            raise LeaseError(f"active {lease.purpose} hold retained; uninstall refused")
-        retire(lifecycle_path, trust=trust)
+        with locked_store(context):
+            pending(tree)
+            lease = LeaseStore(lifecycle_path.parent / "lifecycle-lease.json").load()
+            if lease is not None and lease.purpose != "uninstall":
+                raise LeaseError(f"active {lease.purpose} hold retained; uninstall refused")
+            retire(lifecycle_path, trust=trust)
         infra.run(("/usr/bin/systemctl", "disable", "--now", "sparehash.service"))
         infra.run(("/usr/bin/systemctl", "stop", "sparehash-xmrig.service"))
         if not infra.cgroup_empty():
             raise LifecycleError("cgroup", "miner cgroup is not empty; artifacts retained")
+        from .upgrade import BACKUP, discard_bundle
+
+        if os.path.lexists(tree.path(BACKUP)):
+            discard_bundle(tree, BACKUP, backup=True)
         # Validate every filesystem removal authority before any artifact unlink.
         _ = remove_leaf_receipts(trust, tree=tree, progress=progress, validate_only=True, context=context)
         _ = remove_owned_versions(trust, tree=tree, progress=progress, validate_only=True, context=context)
