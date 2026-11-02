@@ -70,6 +70,24 @@ def test_detached_signature_tampering_and_wrong_pin(signing_key, tmp_path: Path)
     assert signature.is_file(), "verification must not delete user inputs"
 
 
+def test_real_signed_offline_staging(signing_key, tmp_path: Path) -> None:
+    from sparehash import app_release
+    from tests.test_app_discovery import make_archive
+
+    gpg, pin, key, _ = signing_key
+    archive = tmp_path / "renamed.tar.gz"
+    signature = Path(str(archive) + ".asc")
+    make_archive(archive)
+    gpg("--armor", "--local-user", pin, "--output", str(signature), "--detach-sign", str(archive))
+    stage = tmp_path / "private"
+    stage.mkdir(mode=0o700)
+    verifier = app_release.verify_archive
+    with patch.object(app_release, "verify_archive", side_effect=lambda a, s: verifier(a, s, key=key, fingerprint=pin)):
+        source, version, commit = app_release.stage_release(stage, local=archive)
+    assert source == stage / "source" and version == "0.3.1" and commit == "a" * 40
+    assert archive.is_file() and signature.is_file()
+
+
 def test_clean_tag_builder_stamps_and_verifies(signing_key, tmp_path: Path, monkeypatch) -> None:
     import tarfile
 

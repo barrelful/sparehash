@@ -49,6 +49,9 @@ PRIVILEGED_COMMANDS: Final = (
 
 
 class CliArguments(argparse.Namespace):
+    check: bool = False
+    from_archive: str | None = None
+    recover: bool = False
     json: bool = False
     follow: bool = False
     command: str = ""
@@ -70,7 +73,9 @@ def _parser() -> argparse.ArgumentParser:
         help_text = None
         if command == "status":
             help_text = "requires root; show controller/miner/blocker/power state"
-        elif command in ("update", "benchmark", "complete-upgrade"):
+        elif command == "update":
+            help_text = "check application releases; application mutation is not yet available"
+        elif command in ("benchmark", "complete-upgrade"):
             help_text = "deferred in experimental v0.2; refuses before effects"
         command_parser = subparsers.add_parser(command, help=help_text)
         if command == "install":
@@ -83,6 +88,11 @@ def _parser() -> argparse.ArgumentParser:
             _ = command_parser.add_argument("--yes", action="store_true")
             _ = command_parser.add_argument("--no-start", action="store_true")
             _ = command_parser.add_argument("--no-enable", action="store_true")
+        elif command == "update":
+            mode = command_parser.add_mutually_exclusive_group()
+            _ = mode.add_argument("--check", action="store_true")
+            _ = mode.add_argument("--from", dest="from_archive", metavar="ARCHIVE")
+            _ = mode.add_argument("--recover", action="store_true")
         elif command == "complete-upgrade":
             _ = command_parser.add_argument("operation_id")
         elif command == "uninstall":
@@ -155,6 +165,10 @@ def main(
         return install(arguments[1:], geteuid=geteuid)
     parsed = _parser().parse_args(arguments, namespace=CliArguments())
     command = parsed.command
+    if command == "update" and parsed.check:
+        from sparehash.cli_update import check
+
+        return check()
     if command == "config" and parsed.config_command == "edit":
         return _unsupported("config edit")
     if command in ("benchmark", "update", "complete-upgrade"):
