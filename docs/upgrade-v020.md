@@ -21,3 +21,8 @@ Fresh installs and explicitly consented reinstalls after completed removal are
 the experimental path. See [platforms/removal](platforms.md), the [README](../README.md)
 and [S3 lifecycle evidence](development/s3-lifecycle-reliability.md). This is not
 a blanket promise that arbitrary old installations can be safely migrated.
+# Historical notice
+
+This page records the deferred v0.2 upgrade research. For the supported fresh
+v0.3+ application updater and interrupted recovery, use [updating](updating.md).
+There is no v0.2.1 migration; preserve old safety records and seek maintainer help.

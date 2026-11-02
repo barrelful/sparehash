@@ -142,11 +142,14 @@ def test_interrupted_publication_recovers_missing_cli_and_source(installation) -
     save(tree, record, phase="installing")
     tree.path(upgrade.LAUNCHER).unlink()
     tree.path(upgrade.SOURCE + "/sparehash/__main__.py").unlink()
+    # A killed Tree.write may leave a partial protected temporary before rename.
+    tree.write(upgrade.SOURCE + "/sparehash/.sparehash-" + "e" * 32, (b"partial candidate", 0o644, os.getgid()))
     tree.write(upgrade.SOURCE + "/sparehash/__init__.py", (b'__version__ = "0.3.1"\n', 0o644, os.getgid()))
     assert upgrade.recover(tree, infra)
     upgrade.validate_live(tree, upgrade._manifest(tree))
     assert upgrade.identity(tree.path(upgrade.SOURCE)) == ("0.3.0", "a" * 40)
     assert not upgrade.recover(tree, infra)
+    assert not list(tree.path(upgrade.SOURCE + "/sparehash").glob(".sparehash-*"))
 
 
 def test_interrupted_restoration_is_repeatable(installation) -> None:
@@ -232,3 +235,65 @@ def test_cleanup_resumes_without_deleting_foreign_contents(installation) -> None
     foreign.unlink()  # Only withdraw our own test sentinel.
     upgrade.discard_bundle(tree, stage, backup=False, expected=stamp)
     assert not tree.path(stage).exists()
+
+
+def test_unpaused_state_is_not_created_and_required_credentials_are_not_invented(installation) -> None:
+    tree, source, state, infra = installation
+    tree.path("/var/lib/sparehash/state.json").unlink()
+    prepare(installation)
+    assert upgrade.publish(tree, infra)
+    assert not tree.path("/var/lib/sparehash/state.json").exists()
+    tree.path("/etc/sparehash/xmrig.json").unlink()
+    stage = STAGE_PREFIX + "d" * 32
+    stamp = upgrade.candidate_bundle(tree, stage, source, capabilities())
+    stops = state["stops"]
+    with pytest.raises(DeploymentError, match="credentials missing"):
+        upgrade.prepare(tree, stage, stamp, infra)
+    assert state["stops"] == stops and load(tree) is None
+
+
+def test_backup_copy_failure_restores_activity_without_partial_backup_authority(installation) -> None:
+    tree, _, state, _ = installation
+    write = Tree.write
+    failed = False
+
+    def fail_once(self, name, payload):
+        nonlocal failed
+        if name.startswith(BACKUP + "/src/") and not failed:
+            failed = True
+            raise OSError("backup copy failed")
+        return write(self, name, payload)
+
+    with patch.object(Tree, "write", fail_once), pytest.raises(OSError, match="backup copy failed"):
+        prepare(installation, active=True)
+    assert state["active"] and state["boot"] == "disabled"
+    assert load(tree) is None and not tree.path(BACKUP).exists()
+    upgrade.validate_live(tree, upgrade._manifest(tree))
+
+
+def test_fresh_reinstall_drops_removed_application_and_action_receipts(installation) -> None:
+    from sparehash.install_manifest import StoreContext, locked_store
+
+    tree, _, _, _ = installation
+    ledger = Ledger(tree)
+    config = tree.receipt("/etc/sparehash/config.toml", True)
+    ledger.perform((config.id, "write-file"), lambda: (config,))
+    ledger.ready()
+    original = upgrade._manifest(tree)
+    for artifact in original.installer.artifacts:
+        if upgrade._is_app(artifact) and artifact.kind == "file":
+            tree.path(artifact.path).unlink()
+    ledger.initialize(fresh=True)
+    with locked_store(StoreContext(tree.trust)) as store:
+        installer = store.read().manifest.installer
+    assert installer.phase == "installing"
+    assert installer.artifacts == (config,)
+    assert installer.actions == () and installer.identities == ()
+
+
+def test_fresh_install_cannot_adopt_remaining_application_files(installation) -> None:
+    tree, _, _, _ = installation
+    before = tree.read("/var/lib/sparehash/install-manifest.json")
+    with pytest.raises(DeploymentError, match="remnants"):
+        Ledger(tree).initialize(fresh=True)
+    assert tree.read("/var/lib/sparehash/install-manifest.json") == before

@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import secrets
 import subprocess
 import time
@@ -19,7 +20,7 @@ from contextlib import ExitStack, suppress
 from dataclasses import dataclass, replace
 from pathlib import Path
 
-from . import config, ipc, systemd
+from . import config, ipc, systemd, xmrig_config
 from .app_release import _literal, version_tuple
 from .bootstrap import MAX_MODULES, SHIM_SOURCE, SHIM_TEMPLATE, _collect_source
 from .cli_lifecycle import acquire, await_ready
@@ -65,7 +66,11 @@ def _rmdir(tree: Tree, path: str) -> None:
 
 def pending(tree: Tree) -> None:
     """Call under the existing store lock before any competing mutation."""
-    if tree.read(JOURNAL) is not None:
+    try:
+        data = tree.read(JOURNAL)
+    except FileNotFoundError:
+        return
+    if data is not None:
         raise DeploymentError("update", "pending app update; run sparehash update --recover first")
 
 
@@ -115,9 +120,22 @@ def _ready() -> None:
 
 def _version(source: Path) -> None:
     version, commit = identity(source)
+    try:
+        for module in (source / "sparehash").glob("*.py"):
+            compile(module.read_bytes(), str(module), "exec", dont_inherit=True)
+    except SyntaxError as error:
+        raise DeploymentError("update-preflight", f"candidate module syntax failed: {error.filename}") from error
     output = checked(("/usr/bin/python3", "-I", "-B", str(source / "sparehash/__main__.py"), "--version"), 30)
     if output != f"SpareHash {version} (commit {commit})":
         raise DeploymentError("update-identity", "installed isolated CLI identity mismatch")
+
+
+def _configuration(path: Path) -> object:
+    cfg = config.load(path)
+    token = xmrig_config.read_token(path.with_name("xmrig.json"))
+    if xmrig_config.read_token(path.with_name("xmrig.runtime.json")) != token:
+        raise DeploymentError("update-config", "credential copies disagree; automatic rotation is refused")
+    return cfg
 
 
 @dataclass(frozen=True)
@@ -130,15 +148,13 @@ class Infrastructure:
     reload: Callable[[], object] = lambda: checked(("/usr/bin/systemctl", "daemon-reload"), 30)
     verify_units: Callable[[Path], object] = systemd.verify_units
     verify_identity: Callable[[Path], None] = _version
-    validate_config: Callable[[Path], object] = config.load
+    validate_config: Callable[[Path], object] = _configuration
 
 
 def identity(source: Path) -> tuple[str, str]:
     version = _literal(source / "sparehash/__init__.py", "__version__")
     version_tuple(version)
     commit = _literal(source / "sparehash/_build.py", "COMMIT")
-    import re
-
     if re.fullmatch(r"[0-9a-f]{40}", commit) is None:
         raise DeploymentError("update-identity", "installation/candidate requires a full source commit stamp")
     return version, commit
@@ -312,7 +328,9 @@ def validate_live(tree: Tree, manifest: Manifest) -> None:
     if set(os.listdir(tree.path(SOURCE))) != {"sparehash", "systemd"}:
         raise DeploymentError("update-receipts", "foreign source-root contents")
     for directory in ("sparehash", "systemd"):
-        if any(not entry.is_file() or entry.is_symlink() for entry in (tree.path(SOURCE) / directory).iterdir()):
+        if any(not entry.is_file() or entry.is_symlink()
+               or (PACKAGE_LEAF.fullmatch(entry.name) is None if directory == "sparehash" else entry.name not in UNIT_TEMPLATES)
+               for entry in (tree.path(SOURCE) / directory).iterdir()):
             raise DeploymentError("update-receipts", "foreign source directory contents")
     expected = {a.path for a in installer.artifacts if _is_app(a)}
     inventory = _collect_source(tree.path(SOURCE), MAX_MODULES)
@@ -358,6 +376,8 @@ def _clean_unfinished_backup(tree: Tree) -> None:
     """
     if not os.path.lexists(tree.path(BACKUP)):
         return
+    for directory in (BACKUP, BACKUP + "/src/sparehash", BACKUP + "/src/systemd", BACKUP + "/units"):
+        _clean_write_temps(tree, directory)
     if tree.read(BACKUP + "/" + INDEX) is not None:
         discard_bundle(tree, BACKUP, backup=True)
         return
@@ -396,8 +416,17 @@ def prepare(tree: Tree, stage: str, stage_digest: str, infra: Infrastructure) ->
             raise DeploymentError("update", "unrelated lifecycle hold retained")
         manifest = _manifest(tree)
         validate_live(tree, manifest)
+        if os.path.lexists(tree.path(BACKUP)):
+            bundle(tree, BACKUP, backup=True)
+        for directory in (UNITS, str(Path(LAUNCHER).parent)):
+            if any(name.startswith(".sparehash-") for name in os.listdir(tree.path(directory))):
+                raise DeploymentError("update-receipts", "pre-existing application write temporaries require inspection")
+        snapshot = preserved(tree)
+        if any(snapshot[name] is None for name in PRESERVED[:3]):
+            raise DeploymentError("update-config", "required configuration/credentials missing; no downtime applied")
+        infra.validate_config(tree.path("/etc/sparehash/config.toml"))
         bundle(tree, stage, stage_digest, backup=False)
-        record = UpdateRecord(stage.rsplit("-", 1)[-1], "prepared", active, boot, stage_digest, "", preserved(tree))
+        record = UpdateRecord(stage.rsplit("-", 1)[-1], "prepared", active, boot, stage_digest, "", snapshot)
         save(tree, record)
     try:
         if active:
@@ -434,10 +463,35 @@ def _old_manifest(tree: Tree) -> Manifest:
     return manifest
 
 
+def _clean_write_temps(tree: Tree, directory: str) -> None:
+    """Reap this transaction's interrupted protected atomic-write temporaries.
+
+    Preflight refuses pre-existing temporaries in the shared publication parents;
+    the durable journal excludes competing product mutations thereafter. Only
+    Tree.write's exact random-name grammar and protected regular files qualify.
+    Unknown names, links and foreign contents remain refusal conditions.
+    """
+    try:
+        names = os.listdir(tree.path(directory))
+    except FileNotFoundError:
+        return
+    temps = [name for name in names if re.fullmatch(r"\.sparehash-[0-9a-f]{32}", name)]
+    if len(temps) > 64:
+        raise DeploymentError("update-recovery", "excessive atomic-write temporaries; retained")
+    for name in temps:
+        path = directory + "/" + name
+        receipt = tree.receipt(path, True)
+        if receipt.kind != "file" or receipt.uid != tree.uid or receipt.mode not in (0o600, 0o644, 0o755):
+            raise DeploymentError("update-recovery", "foreign atomic-write temporary retained")
+        _unlink(tree, path)
+
+
 def _publish(tree: Tree, source: str, wanted: dict[str, dict[str, object]],
              allowed: dict[str, set[str]]) -> None:
     # Before each replay, reject foreign leaves rather than delete a guessed
     # partially published tree. Every existing file must match old or candidate.
+    for directory in (SOURCE + "/sparehash", SOURCE + "/systemd", UNITS, str(Path(LAUNCHER).parent)):
+        _clean_write_temps(tree, directory)
     current = {"launcher", *("units/" + unit for unit in systemd.UNIT_NAMES)}
     for directory in (SOURCE, SOURCE + "/sparehash", SOURCE + "/systemd"):
         if not os.path.lexists(tree.path(directory)):
@@ -460,11 +514,17 @@ def _publish(tree: Tree, source: str, wanted: dict[str, dict[str, object]],
         if relative == "manifest.json":
             continue
         data = tree.read(source + "/" + relative)
-        if data is None:
-            raise DeploymentError("update-publish", "publication material disappeared")
+        if data is None or digest(data) != meta["sha256"]:
+            raise DeploymentError("update-publish", "publication material disappeared or changed")
         tree.write(_live_name(relative), (data, int(str(meta["mode"])), int(str(meta["gid"]))))
     for relative in current - wanted.keys():
         _unlink(tree, _live_name(relative), missing_ok=True)
+    for relative, meta in wanted.items():
+        if relative == "manifest.json":
+            continue
+        installed = tree.receipt(_live_name(relative), True)
+        if (installed.sha256, installed.mode, installed.gid) != (meta["sha256"], meta["mode"], meta["gid"]):
+            raise DeploymentError("update-publish", "published bytes/mode/ownership differ from verified material")
 
 
 def _refresh(tree: Tree, original: Manifest, wanted: dict[str, dict[str, object]]) -> None:

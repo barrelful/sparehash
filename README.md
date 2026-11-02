@@ -1,12 +1,12 @@
 # SpareHash
 
-> **Experimental v0.2.1 software.** SpareHash is a young system-level project.
+> **Experimental v0.3.0 release preparation — not yet published.** SpareHash is a young system-level project.
 > It has been tested on a limited set of Linux distributions. Review this
 > README, `SECURITY.md`, `docs/platforms.md`, and the limitations section
 > before installing on a machine you care about.
 
 Release scope and limitations are in the
-[v0.2.1 release notes](docs/release-0.2.1.md); the
+[v0.3.0 release notes](docs/release-0.3.0.md); the
 [candidate report](docs/release-0.2-candidate.md) preserves historical evidence.
 For a supervised installation
 and real-game tests, use the [owner checklist](docs/testing-0.2-owner.md).
@@ -90,7 +90,38 @@ refusals return 2. See `docs/platforms.md` for the full installer exit contract.
 
 ## Quick start
 
-### Linux Mint and other UNVERIFIED platforms (v0.2.1)
+### Select and authenticate the source
+
+The v0.3.0 production signer must be independently confirmed before publication.
+Do not install an unsigned development archive or trust a key bundled only inside
+the same download. Once the experimental release is approved and published,
+obtain `sparehash-0.3.0-source.tar.gz` and its adjacent `.asc` asset from the
+[release page](https://github.com/barrelful/sparehash/releases/tag/v0.3.0), plus
+the maintainer public certificate from an independently confirmed channel.
+
+Import that certificate into an isolated keyring and compare its **full primary
+fingerprint** with the independently confirmed value. No production fingerprint
+is asserted by this development branch. Then verify the complete archive:
+
+```sh
+VERIFY_HOME=$(mktemp -d)
+chmod 700 "$VERIFY_HOME"
+gpg --no-options --homedir "$VERIFY_HOME" --import maintainer-confirmed.asc
+gpg --no-options --homedir "$VERIFY_HOME" --fingerprint
+# STOP unless the full primary fingerprint matches the independently confirmed one.
+gpg --no-options --homedir "$VERIFY_HOME" --verify sparehash-0.3.0-source.tar.gz.asc sparehash-0.3.0-source.tar.gz &&
+mkdir sparehash-0.3.0 &&
+tar -C sparehash-0.3.0 -xzf sparehash-0.3.0-source.tar.gz
+cd sparehash-0.3.0
+python3 -I -B sparehash/__main__.py --version
+sudo ./install.sh --preflight
+```
+
+Do not proceed if any verification command fails. A signed Git tag or convenience
+checksum alone does not authenticate an attached archive. Installed identity uses
+the archive's full source-commit stamp and does not need Git.
+
+### Linux Mint and other UNVERIFIED platforms
 
 v0.2.0 cannot complete installation on UNVERIFIED platforms; v0.2.1 fixes the
 compatibility-acknowledgment path. Mint remains **UNVERIFIED**, not Ubuntu-validated.
@@ -104,16 +135,9 @@ sudo ./install.sh --acknowledge-unverified --no-start --no-enable
 Without `--acknowledge-unverified`, preflight/install still returns 2. This flag
 does not override unsupported platforms, unsafe/missing capabilities, ownership
 checks or existing-install refusal. Unattended installs still require separate
-`--answers FILE --yes` consent. There is no supported in-place upgrade; complete
-receipt-aware removal before reinstalling, even if old configuration is unwanted.
-
-Select the release source first (use a separate checkout if you have local work):
-
-```sh
-git clone --branch v0.2.1 --depth 1 https://github.com/barrelful/sparehash.git
-cd sparehash
-sudo ./install.sh --preflight
-```
+`--answers FILE --yes` consent. There is no v0.2.1 migration: complete receipt-aware
+removal and fresh v0.3.0 installation first. Subsequent v0.3+ application updates
+use [the signed updater](docs/updating.md), not the installer.
 
 For a fresh installation, the interactive installer installs the required files:
 
@@ -201,7 +225,6 @@ Every public command:
 | Command | Flags | Requires root | Description |
 |---|---|---|---|
 | `install` | `--answers FILE`, `--use-existing`, `--clear-lifecycle-latch`, `--operation-id ID`, `--no-start`, `--no-enable`, `--preflight`, `--json`, `--yes` | yes | Fresh install or explicit reinstall after completed removal; not an in-place upgrade |
-| `complete-upgrade` | `OPERATION_ID` | no effects | Deferred; exits 2 and retains journals/holds |
 | `uninstall` | `--purge` | yes | Remove SpareHash; configuration retained unless `--purge` |
 | `status` | `--json` | yes | Show controller, miner, blockers, power, thermal, hugepages, gaming, API |
 | `start` | | yes | Enable and start the controller (`systemctl enable --now`) |
@@ -209,10 +232,10 @@ Every public command:
 | `pause` | | no | Manually pause mining via controller IPC |
 | `resume` | | no | Clear manual pause (mining resumes only when all blockers are clear) |
 | `config show` | | no | Print current public configuration as JSON |
-| `config edit` | | yes | Unsupported in experimental v0.2.0; exits 2 without effects |
+| `config edit` | | yes | Deferred; exits 2 without effects |
 | `logs` | `-f`, `--follow` | no | Stream the last 100 lines from both unit journals |
-| `benchmark` | | yes | Unsupported in experimental v0.2.0; exits 2 without effects |
-| `update` | | no effects | Deferred in experimental v0.2.0; exits 2 without effects; no alternate upgrade path |
+| `benchmark` | | yes | Deferred; exits 2 without effects |
+| `update` | `--check`, `--from ARCHIVE`, `--recover` | mutation only | Discover, authenticate/apply, or recover an application update |
 | `gaming-start` | | no | Signal that a configured user started gaming |
 | `gaming-end` | | no | Signal that a configured user stopped gaming |
 | `debug set-blocker` | `NAME` | yes | Force a named blocker active (debugging only) |
@@ -226,7 +249,7 @@ not user-facing.
 
 The public configuration lives at `/etc/sparehash/config.toml`. Use the installer
 wizard or an answers file to configure installation; `config show` is read-only.
-`config edit` is unsupported in v0.2.0. All keys and their defaults:
+`config edit` remains deferred. All keys and their defaults:
 
 ```toml
 version = 1
@@ -489,20 +512,25 @@ This streams the last 100 lines (or follows live) from `sparehash.service` and
 `sparehash-xmrig.service` via `journalctl`. No pager, no caller-controlled
 query.
 
-## Deferred workflows and uninstall
+## Application updates, deferred workflows and uninstall
 
-**Upgrades, rollback, native packaging, benchmark and in-place reconfiguration
-are deferred.** There is no supported v0.1.1 → v0.2 upgrade or automatic updater.
-`update`, `complete-upgrade`, `config edit`, `benchmark` and installer flags
-`--upgrade`, `--recover`, `--complete-upgrade`, `--reconfigure` refuse with exit 2
-before host inspection/effects. There is no public rollback command. Internal
-research implementations/tests remain, not a supported bypass.
+Signed v0.3+ application updates and interrupted-update recovery are supported;
+see [updating](docs/updating.md). `update --check` is read-only; root `update`
+downloads/verifies/applies, `update --from ARCHIVE` is offline, and
+`update --recover` restores one incomplete operation. No XMRig update or
+post-success rollback command is exposed. A retained backup cannot change a
+successfully committed version.
+
+**Native packaging, benchmark and in-place configuration editing/reconfiguration
+remain deferred.** `config edit`, `benchmark` and installer `--reconfigure`
+refuse with exit 2. Obsolete installer upgrade flags and `complete-upgrade` were
+removed rather than retained as alternate update engines.
 
 Preserve any existing migration journal, staging and safety hold; do not delete
 them or clear an update lease to force a new install. Seek maintainer assistance
 for a partial old migration. See [upgrade status](docs/upgrade-v020.md).
 Fresh installation and explicit reinstall after completed removal are the
-experimental path. Native RPM/DEB/Nix/Flatpak channels are not delivered by v0.2.
+experimental installation path. Native RPM/DEB/Nix/Flatpak channels are not delivered.
 Ordinary installation also refuses an existing protected CLI after a read-only
 check, before clearing retirement or collecting capabilities. Omitting deferred
 flags is not an alternate in-place reconfiguration route.
@@ -573,7 +601,7 @@ links. See `docs/platforms.md` for details.
 
 ## Known limitations
 
-- `config edit`, `update`, and `benchmark` are unsupported in v0.2.0.
+- `config edit` and `benchmark` remain deferred; updates require configured maintainer trust.
 - The `systemd-run` isolated version probe has been observed to fail in certain
   VM environments where transient unit creation is restricted. The rest of the
   post-install verification still passes.
@@ -632,10 +660,10 @@ resolver. SpareHash does not change DNS settings.
 
 ### `sparehash uninstall` fails with "lifecycle busy"
 
-An internal or older update operation may be holding
-the lease; the public update/config-edit/benchmark commands are unsupported in
-v0.2.0. Let an active operation finish, then retry. If it failed or is stuck,
-inspect `sparehash logs` and the lifecycle records before recovery. A controller
+An application or historical operation may be holding the lease. Let an active
+operation finish, then retry. For an incomplete v0.3+ app transaction use
+`sudo sparehash update --recover`; for historical holds seek maintainer help.
+Inspect `sparehash logs` and the lifecycle records before recovery. A controller
 restart doesn't clear an external hold, and the reinstall flag doesn't erase an
 update hold. Don't delete lifecycle files to bypass the safety barrier.
 

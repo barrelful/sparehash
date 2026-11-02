@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import argparse
 import grp
-import hashlib
 import json
 import os
 import platform
@@ -19,11 +18,10 @@ import signal
 import sys
 import tempfile
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import replace
 from pathlib import Path
 from types import FrameType
 from typing import Final
-from uuid import uuid4
 
 from . import config, host, ipc, lifecycle, systemd, wizard, xmrig_config
 from .bootstrap import Bootstrapper, ConsentRefused, staging_path
@@ -42,13 +40,6 @@ from .xmrig_ledger import Artifact, GroupIdentity, Operation, UserIdentity, boot
 
 UNITS: Final = "/etc/systemd/system"
 BOOTSTRAP_PATHS: Final = ("/opt/sparehash", "/opt/sparehash/src", "/usr/local/bin/sparehash")
-CONFIG_DIR: Final = "/etc/sparehash"
-STATE_DIR: Final = "/var/lib/sparehash"
-UPGRADE_BACKUP_DIR: Final = Path(os.environ.get("SPAREHASH_UPGRADE_BACKUP_DIR", STATE_DIR + "/upgrade-backups"))
-PROTECTED_UPGRADE_FILES: Final = (
-    "config.toml", "xmrig.json", "xmrig.runtime.json", "state.json", "deployment.json",
-    "install-manifest.json", "lifecycle-lease.json", "lifecycle.json", "migration.json",
-)
 UNSUPPORTED_STAGES: Final = frozenset(("python", "systemd", "architecture"))
 
 PREFLIGHT_EXIT: Final[dict[str, int]] = {
@@ -66,10 +57,7 @@ class Arguments(argparse.Namespace):
     clear_lifecycle_latch: bool = False
     operation_id: str | None = None
     bootstrap_created: list[str] | None = None
-    upgrade: str | None = None
     reconfigure: bool = False
-    recover: str | None = None
-    complete_upgrade: str | None = None
     no_start: bool = False
     no_enable: bool = False
     preflight: bool = False
@@ -235,96 +223,6 @@ def bootstrap(ledger: Ledger, created: tuple[str, ...]) -> None:
         ledger.applied(0, (receipt,))
 
 
-def upgrade_source_root() -> Path:
-    """The running local release selected for --upgrade; never a remote self-updater."""
-    return Path(__file__).resolve().parent.parent
-
-
-@dataclass(frozen=True, slots=True)
-class Preservation:
-    """Pre-publish protected snapshot used to prove secrets and manual state survived."""
-
-    operation_id: str
-    backup: Path
-    token_sha256: str
-    manual_state_sha256: str | None
-
-
-def _reject_constant(value: str) -> None:
-    raise ValueError(f"invalid JSON constant: {value}")
-
-
-def _digest(data: bytes) -> str:
-    return hashlib.sha256(data).hexdigest()
-
-
-def _manual_state_digest(path: Path) -> str | None:
-    """Return the digest of a readable manual pause state, None when absent.
-
-    An unreadable or non-pause document refuses: the upgrade must never treat a
-    corrupt manual state as a fresh default or silently reset it.
-    """
-    if not path.exists():
-        return None
-    try:
-        raw = path.read_bytes()
-        decoded = json.loads(raw, parse_constant=_reject_constant)
-    except (OSError, ValueError, UnicodeError) as error:
-        raise DeploymentError("upgrade", f"manual pause state unreadable: {error}") from error
-    if not isinstance(decoded, dict) or decoded.get("manual") is not True:
-        raise DeploymentError("upgrade", "manual pause state invalid; refusing to reset it")
-    return _digest(raw)
-
-
-def capture_preservation(config_dir: Path, state_dir: Path, *, operation_id: str,
-                         backup_root: Path = UPGRADE_BACKUP_DIR) -> Preservation:
-    """Take a private 0700 root backup of protected config before any upgrade publish.
-
-    The backup is read-only root and never used as runtime input. A missing token
-    or unreadable manual state refuses rather than inventing a new default.
-    """
-    token_path = config_dir / "xmrig.json"
-    if not token_path.is_file():
-        raise DeploymentError("upgrade", "expected protected token is missing; refusing to invent a new one")
-    token_sha256 = _digest(xmrig_config.read_token(token_path).encode())
-    manual_state_sha256 = _manual_state_digest(state_dir / "state.json")
-    directory = backup_root / operation_id
-    try:
-        directory.mkdir(parents=True, mode=0o700)
-    except FileExistsError as error:
-        raise DeploymentError("upgrade", f"backup for operation {operation_id} exists; refusing to reuse it") from error
-    os.chmod(directory, 0o700)
-    for origin in (*(config_dir / name for name in PROTECTED_UPGRADE_FILES),
-                   *(state_dir / name for name in PROTECTED_UPGRADE_FILES)):
-        if not origin.is_file():
-            continue
-        target = directory / origin.name
-        target.write_bytes(origin.read_bytes())
-        os.chmod(target, 0o400)
-    return Preservation(operation_id, directory, token_sha256, manual_state_sha256)
-
-
-def verify_preservation(preservation: Preservation, config_dir: Path, state_dir: Path) -> None:
-    """Refuse when the protected backup, published token or manual state drifted."""
-    backup_token = preservation.backup / "xmrig.json"
-    if not backup_token.is_file() or _digest(xmrig_config.read_token(backup_token).encode()) != preservation.token_sha256:
-        raise DeploymentError("upgrade", "protected token backup does not match the recorded value")
-    published = config_dir / "xmrig.json"
-    if not published.is_file() or _digest(xmrig_config.read_token(published).encode()) != preservation.token_sha256:
-        raise DeploymentError("upgrade", "API token changed during upgrade; refusing")
-    if _manual_state_digest(state_dir / "state.json") != preservation.manual_state_sha256:
-        raise DeploymentError("upgrade", "manual pause state changed during upgrade; refusing")
-
-
-def empty_proof() -> bool:
-    """Fresh stopped/empty proof: neither controller nor miner may be active."""
-    for unit in ("sparehash.service", "sparehash-xmrig.service"):
-        result = command(("/usr/bin/systemctl", "is-active", unit))
-        if result.returncode == 0 and result.stdout.strip() == "active":
-            return False
-    return True
-
-
 def preflight_report(tree: Tree, caps: Capabilities) -> tuple[int, dict[str, object]]:
     """Read-only readiness report; performs no mutation and no transient probe."""
     capabilities = caps.summary()
@@ -357,8 +255,6 @@ def launcher_source_root() -> Path:
 
 def execute(tree: Tree, caps: Capabilities, cfg: config.Config, *, use_existing: bool = False,
             bootstrap_created: tuple[str, ...] = (), interactive: bool = True,
-            preserve: bool = False, operation_id: str | None = None,
-            backup_root: Path | None = None,
             source_root: Path | None = None, approved: bool = False,
             boot: bool | None = None, now: bool | None = None) -> None:
     preflight(tree, caps)
@@ -367,12 +263,6 @@ def execute(tree: Tree, caps: Capabilities, cfg: config.Config, *, use_existing:
             approved = confirm_effects(input, print)
         if not approved:
             raise ConsentRefused("consent", "installation consent was refused; no host mutation performed")
-    preservation: Preservation | None = None
-    if preserve:
-        operation = operation_id if operation_id is not None else uuid4().hex
-        root = backup_root if backup_root is not None else tree.path(str(UPGRADE_BACKUP_DIR))
-        preservation = capture_preservation(tree.path(CONFIG_DIR), tree.path(STATE_DIR),
-                                            operation_id=operation, backup_root=root)
     ledger = Ledger(tree)
     if source_root is not None:
         caps = Capabilities.detect(environ=ENV, manager_probe=systemd.probe_cpuweight_idle)
@@ -389,7 +279,7 @@ def execute(tree: Tree, caps: Capabilities, cfg: config.Config, *, use_existing:
             raise DeploymentError("token", "restore the protected xmrig.json token; automatic rotation is refused") from error
     else:
         token = xmrig_config.new_token()
-    ledger.initialize()
+    ledger.initialize(fresh=source_root is not None)
     identities(ledger)
     if source_root is not None:
         bootstrapper = Bootstrapper(tree)
@@ -435,8 +325,6 @@ def execute(tree: Tree, caps: Capabilities, cfg: config.Config, *, use_existing:
             return (tree.receipt(UNITS + "/sparehash.service", False),)
         ledger.perform((UNITS + "/sparehash.service", operation), mutate)
     post_install(tree, cfg, boot=boot, now=now)
-    if preservation is not None:
-        verify_preservation(preservation, tree.path(CONFIG_DIR), tree.path(STATE_DIR))
     ledger.ready()
 
 
@@ -471,11 +359,8 @@ def _retired_guidance() -> str:
 
 def _validate_options(args: Arguments) -> str | None:
     """Return a refusal reason for contradictory options, or None when valid."""
-    for flag in ("upgrade", "recover", "complete_upgrade", "reconfigure"):
-        if (args.reconfigure if flag == "reconfigure" else getattr(args, flag) is not None):
-            return (f"--{flag.replace('_', '-')} is unsupported in experimental v0.2.0; "
-                    "in-place upgrades/rollback/reconfiguration are deferred. Preserve "
-                    "migration journals and safety holds; do not delete them to bypass refusal.")
+    if args.reconfigure:
+        return "--reconfigure is unsupported; preserve configuration and receipts. Use update for application updates."
     if args.yes and args.answers is None:
         return "--yes requires an answers file via --answers FILE"
     if args.answers is not None and not args.yes and not args.preflight:
@@ -633,15 +518,9 @@ def main(argv: Sequence[str] | None = None, *, geteuid: Callable[[], int] = os.g
     _ = parser.add_argument("--operation-id", metavar="ID",
                             help="operation id of the uninstall retirement to resolve "
                                  "(required with --clear-lifecycle-latch when the record carries one)")
-    _ = parser.add_argument("--upgrade", metavar="OPERATION_ID",
-                            help="deferred in experimental v0.2; refuses before effects")
     _ = parser.add_argument("--reconfigure", action="store_true",
-                            help="deferred in experimental v0.2; refuses before effects")
+                            help="deferred; refuses before effects")
     _ = parser.add_argument("--bootstrap-created", action="append", metavar="PATH", help=argparse.SUPPRESS)
-    _ = parser.add_argument("--recover", metavar="OPERATION_ID",
-                            help="deferred in experimental v0.2; preserve existing journals/holds")
-    _ = parser.add_argument("--complete-upgrade", metavar="OPERATION_ID",
-                            help="deferred in experimental v0.2; preserve existing journals/holds")
     _ = parser.add_argument("--no-start", action="store_true",
                             help="fresh install: leave the controller stopped")
     _ = parser.add_argument("--no-enable", action="store_true",
@@ -671,10 +550,19 @@ def main(argv: Sequence[str] | None = None, *, geteuid: Callable[[], int] = os.g
             raise DeploymentError("architecture", "x86_64 is required")
         tree = Tree()
         if tree.read("/usr/local/bin/sparehash") is not None:
-            print("sparehash: install: in-place installation/reconfiguration is deferred in v0.2; "
+            print("sparehash: install: existing installation refused; use sparehash update for application updates; "
                   "preserve existing receipts and holds. Resolve any partial removal; "
                   "fresh installation or explicit reinstall after completed removal only.", file=sys.stderr)
             return 2
+        from .upgrade import pending
+
+        pending(tree)
+        try:
+            removal = tree.read("/var/lib/sparehash/uninstall-progress.json")
+        except FileNotFoundError:
+            removal = None
+        if removal is not None:
+            raise DeploymentError("install", "partial removal must be resolved before reinstalling")
         if is_retired():
             if args.clear_lifecycle_latch:
                 try:
@@ -710,7 +598,7 @@ def main(argv: Sequence[str] | None = None, *, geteuid: Callable[[], int] = os.g
             else:
                 print("capabilities: idle cgroup weights unavailable; retaining Nice/SCHED_IDLE")
         execute(tree, caps, cfg, use_existing=args.use_existing, bootstrap_created=tuple(args.bootstrap_created or ()),
-                interactive=(args.answers is None), preserve=args.reconfigure, source_root=launcher_source_root(),
+                 interactive=(args.answers is None), source_root=launcher_source_root(),
                 approved=True,
                 boot=(False if args.no_enable else None),
                 now=(False if args.no_start else None))

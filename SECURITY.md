@@ -3,7 +3,7 @@
 ## Supported versions
 
 Only the latest release in the v0.x series is supported with security updates.
-v0.2.1 is Experimental/Beta, not production-stable. Report vulnerabilities in
+v0.3.0 is in release preparation; v0.x software is Experimental/Beta, not production-stable. Report vulnerabilities in
 this release privately; experimental status is not a security guarantee.
 
 | Version | Supported          |
@@ -54,16 +54,22 @@ SpareHash is designed around these security properties:
   and existing sidecar holds, durably retires, stops/disables services, proves the
   miner cgroup empty, and removes only receipt-owned artifacts. It does not need
   controller IPC or create a lease. Config is retained by default; retirement
-  remains after partial failure. The durable sidecar still gates internal updates,
-  but public updates/rollback, config editing, benchmark and in-place
-  reconfiguration are deferred in experimental v0.2.
+  remains after partial failure. A pending application update blocks removal;
+  validated owned updater leftovers are removed only after its completion.
 
-- **Preserved internal migration protections, not a public upgrade route.**
-  Historical update holds and journals remain independent safety records. Public
-  `update`, `complete-upgrade`, `config edit`, `benchmark` and installer
-  `--upgrade`, `--recover`, `--complete-upgrade`, `--reconfigure` refuse before
-  effects. Do not delete journals/staging or clear update holds to bypass this;
-  seek maintainer assistance for partial historical migrations.
+- **Authenticated application updates with restoration recovery.** Online and
+  offline input is privately snapshotted and verified by isolated system GPG
+  against a separately pinned application primary signer before extraction or
+  candidate execution. Extraction rejects links, traversal, duplicates and
+  special files, with bounded sizes/counts. Owner confirmation of production
+  trust is required; missing trust refuses rather than accepting test keys.
+  An untrusted candidate cannot supply its own trust anchor. Fresh installation
+  requires independently authenticated key/fingerprint and archive signature.
+  An incomplete/corrupt app journal inhibits authorization even without its
+  separate hold. Ordinary failures restore the protected previous app; interrupted
+  recovery repeats restoration, while committed records only finalise. No
+  post-success rollback exists. Never delete safety records to bypass refusal.
+  Historical migration records need maintainer assistance, not conversion.
 
 - **Verified supply chain.** XMRig releases are downloaded from GitHub and
   verified against a pinned GPG fingerprint and SHA-256 checksum before any file
@@ -96,6 +102,7 @@ SpareHash is designed around these security properties:
 - Failure modes that leave XMRig running when it should be stopped.
 - Unsafe subprocess, archive extraction, or file-permission handling.
 - Tampering with the XMRig download/verification chain.
+- Tampering with application release discovery, archive verification or recovery.
 - Control-socket authorization flaws.
 - Path traversal or symlink attacks against SpareHash-managed paths.
 

@@ -28,7 +28,7 @@ def check() -> int:
     try:
         release = discover()
         print(f"Installed: {display()}")
-        print(f"Latest signed-asset release: {release.version}")
+        print(f"Latest release with archive/signature assets: {release.version}")
         print(release.url)
         print("Update available" if version_tuple(release.version) > version_tuple(__version__)
               else "No newer release available")

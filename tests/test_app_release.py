@@ -27,7 +27,7 @@ def test_rootless_offline_version(capsys) -> None:
 
 def test_production_trust_is_not_test_trust(tmp_path: Path) -> None:
     with pytest.raises(AppReleaseError, match="owner confirmation"):
-        verify_archive(tmp_path / "missing", tmp_path / "missing.asc")
+        verify_archive(tmp_path / "missing", tmp_path / "missing.asc", key=b"", fingerprint="")
 
 
 @pytest.fixture(scope="module")

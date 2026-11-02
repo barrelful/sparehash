@@ -156,7 +156,7 @@ class FetchTests(unittest.TestCase):
         # Given
         assets = tuple(Asset(n, BASE + n) for n in NAMES)
         # When / Then
-        with self.assertRaisesRegex(FetchError, "^SpareHash v1 supports x86_64 only$"):
+        with self.assertRaisesRegex(FetchError, "^SpareHash supports x86_64 only$"):
             _ = select_asset(assets, "aarch64")
 
     def test_release_when_json_contract_invalid(self) -> None:

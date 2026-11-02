@@ -30,7 +30,6 @@ PUBLIC_COMMANDS: Final = (
     "benchmark",
     "update",
     "uninstall",
-    "complete-upgrade",
 )
 GAMING_COMMANDS: Final = ("gaming-start", "gaming-end")
 INTERNAL_COMMANDS: Final = (
@@ -77,8 +76,8 @@ def _parser() -> argparse.ArgumentParser:
             help_text = "requires root; show controller/miner/blocker/power state"
         elif command == "update":
             help_text = "check, install or recover authenticated application updates"
-        elif command in ("benchmark", "complete-upgrade"):
-            help_text = "deferred in experimental v0.2; refuses before effects"
+        elif command == "benchmark":
+            help_text = "deferred; refuses before effects"
         command_parser = subparsers.add_parser(command, help=help_text)
         if command == "install":
             _ = command_parser.add_argument("--answers", metavar="FILE")
@@ -95,8 +94,6 @@ def _parser() -> argparse.ArgumentParser:
             _ = mode.add_argument("--check", action="store_true")
             _ = mode.add_argument("--from", dest="from_archive", metavar="ARCHIVE")
             _ = mode.add_argument("--recover", action="store_true")
-        elif command == "complete-upgrade":
-            _ = command_parser.add_argument("operation_id")
         elif command == "uninstall":
             _ = command_parser.add_argument("--purge", action="store_true")
         elif command == "status":
@@ -106,7 +103,7 @@ def _parser() -> argparse.ArgumentParser:
         elif command == "config":
             config_commands = command_parser.add_subparsers(dest="config_command", required=True)
             for action in ("show", "edit"):
-                _ = config_commands.add_parser(action, help="deferred in experimental v0.2" if action == "edit" else "show public configuration")
+                _ = config_commands.add_parser(action, help="deferred" if action == "edit" else "show public configuration")
     for command in GAMING_COMMANDS:
         _ = subparsers.add_parser(command)
     debug = subparsers.add_parser("debug")
@@ -122,8 +119,8 @@ def _incomplete(command: str) -> int:
 
 
 def _unsupported(command: str) -> int:
-    print(f"sparehash: {command} is unsupported in experimental v0.2.0; "
-          "upgrades/rollback and benchmark are deferred. Preserve any existing "
+    print(f"sparehash: {command} is unsupported; "
+          "benchmark and in-place configuration editing are deferred. Preserve any existing "
           "migration journals and safety holds; do not delete them to bypass refusal.", file=sys.stderr)
     return 2
 
@@ -179,7 +176,7 @@ def main(
         return check() if parsed.check else mutate(local=parsed.from_archive, recovery=parsed.recover, geteuid=geteuid)
     if command == "config" and parsed.config_command == "edit":
         return _unsupported("config edit")
-    if command in ("benchmark", "complete-upgrade"):
+    if command == "benchmark":
         return _unsupported(command)
     if command == "config":
         from sparehash.cli_config import show

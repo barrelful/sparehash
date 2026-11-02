@@ -76,7 +76,7 @@ class StatusSnapshot:
     hashrate: float | None = None
     pool: str | None = None
     dns_hint: str | None = None
-    msr: str = 'unavailable in v1'
+    msr: str = 'unavailable'
 
 
 class Provider(Protocol):
@@ -268,7 +268,7 @@ def format_status(snapshot: StatusSnapshot, json_output: bool = False) -> str:
     rendered = re.sub(r'[0-9a-fA-F]{64}', '[redacted]', json.dumps(data, allow_nan=False))
     if json_output:
         return rendered
-    return '\n'.join(f'{name}: {json.dumps(value)}' for name, value in decode_json(rendered).items()) + '\nMSR: unavailable in v1'
+    return '\n'.join(f'{name}: {json.dumps(value)}' for name, value in decode_json(rendered).items()) + '\nMSR: unavailable'
 
 
 def run(json_output: bool = False, provider: Provider | None = None, *,

@@ -163,14 +163,14 @@ def test_refuses_unsafe_or_unapproved_install(tmp_path: Path) -> None:
     assert "readiness: REFUSED_UNSUPPORTED" in out.getvalue()
 
 
-def test_merge_forwards_bootstrap_preservation_and_startup_options(tmp_path: Path) -> None:
+def test_merge_forwards_bootstrap_and_startup_options(tmp_path: Path) -> None:
     with _patches(_debian(), _cfg()):
         assert install.main(["--answers", str(tmp_path / "answers.toml"), "--yes",
                              "--no-start", "--no-enable"],
                             geteuid=lambda: 0) == 0
         kwargs = install.execute.call_args.kwargs
         assert kwargs["source_root"] == install.launcher_source_root()
-        assert kwargs["preserve"] is False
+        assert "preserve" not in kwargs
         assert kwargs["approved"] is True
         assert kwargs["boot"] is False
         assert kwargs["now"] is False
@@ -184,13 +184,11 @@ def test_merge_preflight_never_clears_retirement() -> None:
         install.execute.assert_not_called()
 
 
-def test_merge_declined_bootstrap_never_captures_preservation(tmp_path: Path) -> None:
+def test_merge_declined_bootstrap_never_starts_ledger(tmp_path: Path) -> None:
     with (mock.patch.object(install, "preflight"),
           mock.patch.object(install, "confirm_effects", return_value=False),
-          mock.patch.object(install, "capture_preservation") as capture,
           mock.patch.object(install, "Ledger") as ledger):
         with pytest.raises(install.ConsentRefused):
-            install.execute(mock.Mock(), capabilities(), _cfg(), preserve=True,
+            install.execute(mock.Mock(), capabilities(), _cfg(),
                             source_root=tmp_path, interactive=True)
-        capture.assert_not_called()
         ledger.assert_not_called()
