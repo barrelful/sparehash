@@ -26,7 +26,7 @@ tests must be run inside a disposable VM from the lab.
   repository, in a gitignored local directory.
 - Do not add a runtime dependency on the lab. The lab is a developer
   convenience, not a runtime dependency.
-- Follow the approved plan in `.omo/plans/`; do not invent new
+- Follow the approved plan in `docs/development/v030-plan.md`; do not invent new
   distribution channels, new policy modules or new privileged paths
   without explicit owner approval.
 - When a test cannot be satisfied with the available lab, surface that
@@ -39,7 +39,9 @@ tests must be run inside a disposable VM from the lab.
 - The project targets Python >=3.11; CI covers 3.11–3.14. The test
   runner uses `uv sync --locked` once and then `.venv/bin/python -m
   pytest`.
-- All destructive tests use `.omo/evidence/v020/task-N/` for evidence.
+- All destructive v0.3 tests use `.omo/evidence/v030/milestone-N/` for evidence.
   Evidence is gitignored; do not commit it.
-- Branches in the active plan live on `atlas/v020-task-N-*` and are not
-  pushed to remote until the user approves.
+- Use sequential short-lived `atlas/v030-mN-*` branches and PRs into `main`.
+  The owner has authorized pushes and squash merges after passing CI for this
+  plan. No final tag, published release or production signing without confirmed
+  signing-key trust; never install/update/uninstall on the real workstation.

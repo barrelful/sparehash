@@ -185,6 +185,10 @@ freshly authorized miner start.
 
 ## CLI reference
 
+`sparehash --version` reports the package version and full build commit without
+root, Git, network, controller or access to private configuration. Development
+checkouts without a release stamp report `commit unknown`.
+
 Every public command:
 
 | Command | Flags | Requires root | Description |
