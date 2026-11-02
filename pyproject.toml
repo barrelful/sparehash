@@ -7,7 +7,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "sparehash"
-version = "0.2.1"
+dynamic = ["version"]
 description = "Low-priority XMRig controller with best-effort Steam detection and strict safety blockers."
 readme = "README.md"
 license = { text = "GPL-3.0-or-later" }
@@ -46,6 +46,9 @@ dev = [
     "pytest>=8.3",
     "ruff>=0.6",
 ]
+
+[tool.hatch.version]
+path = "sparehash/__init__.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["sparehash"]

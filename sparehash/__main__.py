@@ -62,6 +62,9 @@ class CliArguments(argparse.Namespace):
 def _parser() -> argparse.ArgumentParser:
     """Build the public argument parser."""
     parser = argparse.ArgumentParser(prog="sparehash")
+    from sparehash.identity import display
+
+    _ = parser.add_argument("--version", action="version", version=display())
     subparsers = parser.add_subparsers(dest="command", required=True)
     for command in PUBLIC_COMMANDS:
         help_text = None
