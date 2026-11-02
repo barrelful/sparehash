@@ -157,7 +157,9 @@ def extract_archive(archive: Path, destination: Path) -> tuple[str, str]:
                     parts = member.name.rstrip("/").split("/")
                     name = "/".join(parts)
                     if (count > FILE_LIMIT or not name or name in seen or any(p in ("", ".", "..") for p in parts)
-                            or "\\" in name or "\x00" in name or not (member.isfile() or member.isdir())
+                            or "\\" in name or "\x00" in name
+                            or member.type not in (tarfile.REGTYPE, tarfile.AREGTYPE, tarfile.DIRTYPE)
+                            or member.sparse is not None
                             or member.size < 0 or member.size > EXPANDED_LIMIT):
                         raise AppReleaseError("Unsafe, duplicate or oversized archive member")
                     seen.add(name)

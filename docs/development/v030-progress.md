@@ -32,8 +32,17 @@
   prepared. Fresh reinstall drops obsolete removed-module/action receipts while
   retaining matching config ownership. Recovery also handles killed atomic-write
   temporaries; offline preflight compiles modules and checks credential agreement.
-  Host-safe suite 1,255 passed / 567 subtests; typing, lint, docs/build checks pass.
-  Final-source two-distro rerun and PR/CI still pending.
+  [PR #7](https://github.com/barrelful/sparehash/pull/7) is open. Host-safe suite
+  1,258 passed / 567 subtests; typing, lint and docs checks pass. Initial M4 CI
+  passed all five checks. Final hardening rejects sparse archive members and
+  passes the operation-lock descriptor into the backup worker so launcher death
+  cannot permit concurrent recovery. Artifact QA distinguishes source assets
+  from package sdists. Runtime changes are frozen pending final two-distro rerun.
+  An intermediate M4 Ubuntu run passed all seven scenarios plus actual fresh
+  reinstall/receipt-reset/uninstall; its evidence is under milestone-4/ubuntu-pre-final.
+  The real local builder passed against an isolated test-tag clone, producing
+  signed complete source plus stamped wheel/sdist; public no-Git identity and
+  source/licence/dependency checks passed. The project/origin has no v0.3.0 tag.
 - Access: GitHub Git and authenticated local `gh` work; disposable lab reachable.
   SSH writes timed out; HTTPS works. OAuth lacks `workflow` scope, so CI workflow
   remains unchanged; new tests run in its existing full suite and touched new

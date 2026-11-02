@@ -143,11 +143,15 @@ def main(
             print("sparehash: privileged command requires root", file=sys.stderr)
             return 2
         if command == "__app_update__":
-            if len(arguments) != 1:
+            if len(arguments) != 3:
                 return 2
             from sparehash.upgrade import worker
 
-            return worker()
+            try:
+                lock_fd = int(arguments[2])
+            except ValueError:
+                return 2
+            return worker(arguments[1], lock_fd)
         if command == "__miner_exec__" and getusername(geteuid()) != "xmrig":
             print("sparehash: miner command requires the xmrig identity", file=sys.stderr)
             return 2

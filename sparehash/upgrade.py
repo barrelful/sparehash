@@ -8,6 +8,7 @@ the source being replaced. Committed transactions can only finish finalisation.
 """
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import json
 import os
@@ -481,7 +482,7 @@ def _clean_write_temps(tree: Tree, directory: str) -> None:
     for name in temps:
         path = directory + "/" + name
         receipt = tree.receipt(path, True)
-        if receipt.kind != "file" or receipt.uid != tree.uid or receipt.mode not in (0o600, 0o644, 0o755):
+        if receipt.kind != "file" or receipt.uid != tree.uid or receipt.mode & ~0o755:
             raise DeploymentError("update-recovery", "foreign atomic-write temporary retained")
         _unlink(tree, path)
 
@@ -661,10 +662,21 @@ def recover(tree: Tree, infra: Infrastructure) -> bool:
     return True
 
 
-def worker() -> int:
+def worker(operation_id: str, lock_fd: int) -> int:
     """Fixed internal dispatch, root checked by __main__; no caller paths."""
     try:
         tree = Tree()
+        with ExitStack() as stack:
+            parent = tree.pin(stack, "/opt/sparehash")
+            selected, inherited = os.fstat(parent), os.fstat(lock_fd)
+            if (selected.st_dev, selected.st_ino) != (inherited.st_dev, inherited.st_ino):
+                raise DeploymentError("update-worker", "inherited operation lock does not name the protected app root")
+            # Same open-file description as the launcher: if the parent dies,
+            # the worker still owns the operation lock until publication ends.
+            fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        record = load(tree)
+        if record is None or record.operation_id != operation_id:
+            raise DeploymentError("update-worker", "worker does not match the reserved operation")
         if Path(__file__).resolve() != tree.path(BACKUP + "/src/sparehash/upgrade.py").resolve():
             raise DeploymentError("update-worker", "publication must run from the known-good backup source")
         return 0 if publish(tree, Infrastructure()) else 1
@@ -676,12 +688,12 @@ def worker() -> int:
         return 1
 
 
-def run_from_backup(tree: Tree) -> int:
+def run_from_backup(tree: Tree, lock_fd: int) -> int:
     record = load(tree)
     if record is None:
         raise DeploymentError("update", "journal disappeared")
     bundle(tree, BACKUP, record.backup_digest, backup=True)
     result = subprocess.run(("/usr/bin/python3", "-I", "-B",
-                             str(tree.path(BACKUP + "/src/sparehash/__main__.py")), "__app_update__"),
-                            env=ENV, check=False)
+                             str(tree.path(BACKUP + "/src/sparehash/__main__.py")), "__app_update__",
+                             record.operation_id, str(lock_fd)), pass_fds=(lock_fd,), env=ENV, check=False)
     return result.returncode

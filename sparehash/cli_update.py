@@ -88,7 +88,7 @@ def mutate(*, local: str | None = None, recovery: bool = False,
                 infra.verify_units(tree.path(stage + "/units"))
                 infra.verify_identity(tree.path(stage + "/src"))
             upgrade.prepare(tree, stage, stage_digest, infra)
-            code = upgrade.run_from_backup(tree)
+            code = upgrade.run_from_backup(tree, fd)
             if code != 0:
                 if load(tree) is None:
                     print("sparehash: update failed; previous application automatically restored", file=sys.stderr)

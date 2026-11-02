@@ -96,11 +96,11 @@ def make_archive(path: Path, extras: list[tarfile.TarInfo] | None = None, *, ver
 
 @pytest.mark.parametrize("name,kind", [("../outside", "file"), ("/outside", "file"), ("foo/../../outside", "file"),
                                       ("sparehash/__init__.py", "file"), ("link", "symlink"),
-                                      ("hard", "hardlink"), ("fifo", "fifo")])
+                                      ("hard", "hardlink"), ("fifo", "fifo"), ("sparse", "sparse")])
 def test_unsafe_extraction_refuses(tmp_path: Path, name: str, kind: str) -> None:
     info = tarfile.TarInfo(name)
     info.type = {"file": tarfile.REGTYPE, "symlink": tarfile.SYMTYPE,
-                 "hardlink": tarfile.LNKTYPE, "fifo": tarfile.FIFOTYPE}[kind]
+                 "hardlink": tarfile.LNKTYPE, "fifo": tarfile.FIFOTYPE, "sparse": tarfile.GNUTYPE_SPARSE}[kind]
     info.linkname = "outside"
     archive = tmp_path / "input.tar.gz"
     make_archive(archive, [info])

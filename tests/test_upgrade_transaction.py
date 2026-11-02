@@ -297,3 +297,17 @@ def test_fresh_install_cannot_adopt_remaining_application_files(installation) ->
     with pytest.raises(DeploymentError, match="remnants"):
         Ledger(tree).initialize(fresh=True)
     assert tree.read("/var/lib/sparehash/install-manifest.json") == before
+
+
+def test_backup_worker_inherits_operation_lock_and_reserved_identity(installation) -> None:
+    import subprocess
+    from contextlib import ExitStack
+
+    tree, _, _, _ = installation
+    record = prepare(installation)
+    with ExitStack() as stack:
+        fd = tree.pin(stack, "/opt/sparehash")
+        with patch.object(upgrade.subprocess, "run", return_value=subprocess.CompletedProcess([], 0)) as run:
+            assert upgrade.run_from_backup(tree, fd) == 0
+        assert run.call_args.kwargs["pass_fds"] == (fd,)
+        assert run.call_args.args[0][-2:] == (record.operation_id, str(fd))
