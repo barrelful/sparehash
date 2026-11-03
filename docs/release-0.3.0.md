@@ -61,16 +61,40 @@ Guest networking stays disabled: real read-only GitHub discovery is checked on
 the development host, while the shared signed offline pipeline/update/recovery is
 exercised in VMs. True online end-to-end guest coverage is not claimed. Existing
 published GitHub application archives have no detached signatures, so no real
-production-signed successor can currently be verified. Test signatures are not
-production release evidence. Gaming/hardware limitations remain unchanged.
+published production-signed successor can currently be downloaded. A local real
+Nitrokey-signed preparation archive **has** now been verified as recorded below;
+this is separate from VM test signatures. Gaming/hardware limitations remain unchanged.
+
+## Verified local production preparation (2026-11-03)
+
+PR [#8](https://github.com/barrelful/sparehash/pull/8) is squash-merged at
+`9de1e004594ff07dd856cfdaa837981e157f8dab`; all five PR and main CI checks passed.
+That exact clean commit was prepared with `qa/build_release.py --commit` (no tag)
+and signed by the existing Nitrokey's signing subkey. The complete source archive
+signature verifies with the **bundled application defaults**, independently from
+both the repository and the extracted archive. Source/wheel/sdist stamps, source
+contents, GPL/attribution and zero runtime dependencies were checked. No PIN or
+private key was exported/logged and no hardware interaction remains outstanding.
+
+Artifacts are local/gitignored under
+`.omo/evidence/v030/milestone-4/nitrokey-followup/production-prepared-9de1e00/`.
+The source archive SHA-256 is
+`7e78dcb76ef4f660a0b44a877c78b50ee0d12516c7e0f755390ed4166f926c4d`;
+its `.asc` SHA-256 is
+`e7de399e5965b0046e9be4b6c071abd1b54fa9b8f1b77e9d0c1c8ce2496c1662`.
+Full wheel/sdist hashes and a read-only verification command are in
+[`v030-progress.md`](development/v030-progress.md#production-signing-outcome-2026-11-03).
+Only the source archive is detached-signed; wheel/sdist are stamped packages.
+Later handover changes are documentation only. **Ubuntu acceptance remains blocked;
+this authentic artifact is not an approved release.**
 
 ## Owner prerequisites and release steps
 
 1. The owner-confirmed existing Nitrokey primary certificate is now pinned in
    `sparehash/app_release.py`: **`23E9CE0E1C95324190571379766F2AE440E1019A`**,
    separate from XMRig. Its signing subkey was independently matched to the card;
-   only public material is bundled. Production signature verification is still
-   required; missing/incorrect trust remains a hard refusal, never a test bypass.
+   only public material is bundled. Actual local production-signature verification
+   is complete above; missing/incorrect trust remains a hard refusal, never a test bypass.
 2. Ubuntu acceptance remains blocked as above; resolve the native OS failure
    before release signoff. The focused public-key/build-preparation PR may merge
    after passing CI because the native failure reproduces without the product;
