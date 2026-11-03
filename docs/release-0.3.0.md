@@ -29,6 +29,21 @@ non-hashing synthetic XMRig, test-only signer/source fixtures, no guest networki
 and Bazzite SELinux Enforcing. Ubuntu is conventional-family evidence, not Mint
 certification. No real wallets, public pools, mining or host storage are used.
 
+Final frozen runtime source `5b24684d156453e5701386197ea8e74ddaae420f` passed all
+seven scenarios on Bazzite, including controlled power-cycle and broken-CLI
+recovery, with SELinux Enforcing and no captured AVCs. All test guests were
+discarded. Subsequent handover changes are documentation only.
+
+**Final Ubuntu acceptance is blocked, not passed.** Earlier product source and
+an intermediate M4 source passed all seven scenarios on Ubuntu; the latter also
+passed actual fresh-reinstall/receipt-reset/uninstall. Two final hardened-source
+attempts at `5b24684d156453e5701386197ea8e74ddaae420f` lost the QEMU guest-agent
+transport, and one controlled power-cycle still had no connected agent. Both
+instances were discarded. This is inconclusive infrastructure evidence, not a
+diagnosed product failure or permission to use mocks/workstation tests. Repair
+and revalidate that lab path (or approve another disposable Ubuntu environment),
+then repeat all seven final-source scenarios before release signoff.
+
 Guest networking stays disabled: real read-only GitHub discovery is checked on
 the development host, while the shared signed offline pipeline/update/recovery is
 exercised in VMs. True online end-to-end guest coverage is not claimed. Existing
@@ -42,7 +57,8 @@ production release evidence. Gaming/hardware limitations remain unchanged.
    primary fingerprint**, separate from XMRig's signer. Pin them in
    `sparehash/app_release.py`; never substitute test trust. Confirm key availability
    before signing. Empty production trust deliberately refuses updates.
-2. Review/merge the key pin and release changes with passing CI. Re-run relevant
+2. Resolve the Ubuntu lab blocker above and repeat final-source acceptance.
+   Review/merge the key pin and release changes with passing CI. Re-run relevant
    acceptance against the final source and verify the final production-signed
    artifact. Unit tests alone do not satisfy real-distro acceptance.
 3. With owner approval, tag the merged clean commit `v0.3.0`; no tag was created

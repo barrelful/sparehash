@@ -67,6 +67,7 @@ Requirements:
 - Linux x86_64
 - systemd as PID 1 (tested: Ubuntu systemd 255; Bazzite systemd 259)
 - Python 3.11 or newer
+- System GPG for archive authentication (no Python cryptography dependency)
 - No additional Python packages required at runtime
 
 ## Preflight check
