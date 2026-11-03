@@ -29,10 +29,12 @@ non-hashing synthetic XMRig, test-only signer/source fixtures, no guest networki
 and Bazzite SELinux Enforcing. Ubuntu is conventional-family evidence, not Mint
 certification. No real wallets, public pools, mining or host storage are used.
 
-Final frozen runtime source `5b24684d156453e5701386197ea8e74ddaae420f` passed all
+Milestone-4 runtime source `5b24684d156453e5701386197ea8e74ddaae420f` passed all
 seven scenarios on Bazzite, including controlled power-cycle and broken-CLI
 recovery, with SELinux Enforcing and no captured AVCs. All test guests were
-discarded. Subsequent handover changes are documentation only.
+discarded. The 2026-11-03 follow-up adds the owner-confirmed public signer pin and
+exact-commit release preparation; its runtime source is
+`095b17d7986702b37bd76193ae4ed83dd9671c45` (2026-11-03 Ubuntu attempt, not a pass).
 
 **Prior final Ubuntu acceptance was blocked, not passed.** Earlier product source and
 an intermediate M4 source passed all seven scenarios on Ubuntu; the latter also
@@ -40,12 +42,20 @@ passed actual fresh-reinstall/receipt-reset/uninstall. Two final hardened-source
 attempts at `5b24684d156453e5701386197ea8e74ddaae420f` lost the QEMU guest-agent
 transport, and one controlled power-cycle still had no connected agent. Both
 instances were discarded. This is inconclusive infrastructure evidence, not a
-diagnosed product failure or permission to use mocks/workstation tests. Repair
-and revalidate that lab path (or approve another disposable Ubuntu environment),
-then repeat all seven final-source scenarios before release signoff. The owner
-has now authorized this lab repair: a separate authenticated-serial Ubuntu v2
-baseline is prepared and its fresh-clone acceptance is in progress. The original
-baselines and all networking/storage/security isolation remain preserved.
+diagnosed product failure or permission to use mocks/workstation tests. The owner
+authorized a lab repair: separate authenticated-serial Ubuntu v2 administration
+now works independently of QGA. An initial follow-up run exposed an actual PID 1
+systemd segfault/kernel panic during scenario 6; diagnostic evidence was preserved.
+Reboot recovery and a repeated signed activation-failure restoration succeeded,
+but that retry does not explain the original OS crash. The fresh attempt also
+panicked, before its first signed update. A native fwupd-refresh/daemon-reload
+reproducer panicked with SpareHash stopped; a separate **no-SpareHash** overlay
+also panicked after authenticated offline updates to systemd `255.4-1ubuntu8.18`
+and kernel `6.8.0-147-generic`. The bounded repair attempt therefore did not resolve
+acceptance. No new product defect is identified, and no full Ubuntu pass is
+claimed. All owned guests are discarded; original/v2 baseline hashes were
+revalidated. Isolation and policy were not weakened. A pristine official-image
+OS reproduction/debugging step is proposed before another product acceptance run.
 
 Guest networking stays disabled: real read-only GitHub discovery is checked on
 the development host, while the shared signed offline pipeline/update/recovery is
@@ -61,10 +71,11 @@ production release evidence. Gaming/hardware limitations remain unchanged.
    separate from XMRig. Its signing subkey was independently matched to the card;
    only public material is bundled. Production signature verification is still
    required; missing/incorrect trust remains a hard refusal, never a test bypass.
-2. Resolve the Ubuntu lab blocker above and repeat final-source acceptance.
-   Review/merge the key pin and release changes with passing CI. Re-run relevant
-   acceptance against the final source and verify the final production-signed
-   artifact. Unit tests alone do not satisfy real-distro acceptance.
+2. Ubuntu acceptance remains blocked as above; resolve the native OS failure
+   before release signoff. The focused public-key/build-preparation PR may merge
+   after passing CI because the native failure reproduces without the product;
+   that merge does not approve a release. Unit tests and an authentic production
+   signature alone do not satisfy real-distro acceptance.
 3. With owner approval, tag the merged clean commit `v0.3.0`; no tag was created
    by implementation. Run `python3 qa/build_release.py --tag v0.3.0 --sign FINGERPRINT`.
    Inspect archive/wheel/sdist identity, signatures, dependencies and legal notices.

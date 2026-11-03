@@ -37,6 +37,13 @@ or runtime dependency is added to SpareHash. See `v030-progress.md` for acceptan
 This scoped authorization does not permit unrelated VM/data changes or weaker
 networking, storage, wallet/mining or SELinux/AppArmor isolation.
 
+**Closure:** serial-v2 administration works, but Ubuntu acceptance remains blocked
+by a reproducible PID 1/systemd panic. The same panic occurred outside SpareHash
+and in a no-product overlay after current Ubuntu security/kernel updates. That
+updated overlay was not sealed. All follow-up guests were discarded and baseline
+hashes revalidated. Do not treat serial-v2 as a passed acceptance baseline; see
+`v030-progress.md` for evidence and the bounded-attempt outcome.
+
 The VM lab **cannot certify**:
 
 - Real Steam Gaming Mode gameplay lifecycle.
