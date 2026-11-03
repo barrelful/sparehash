@@ -61,6 +61,8 @@ def test_detached_signature_tampering_and_wrong_pin(signing_key, tmp_path: Path)
     archive.write_bytes(b"complete archive bytes")
     gpg("--armor", "--local-user", pin, "--output", str(signature), "--detach-sign", str(archive))
     verify_archive(archive, signature, key=key, fingerprint=pin)
+    with pytest.raises(AppReleaseError):
+        verify_archive(archive, signature)  # Production trust must reject fixture signatures.
     with pytest.raises(AppReleaseError, match="pinned primary"):
         verify_archive(archive, signature, key=key, fingerprint="A" * 40)
     archive.write_bytes(b"tampered archive bytes")
@@ -88,7 +90,8 @@ def test_real_signed_offline_staging(signing_key, tmp_path: Path) -> None:
     assert archive.is_file() and signature.is_file()
 
 
-def test_clean_tag_builder_stamps_and_verifies(signing_key, tmp_path: Path, monkeypatch) -> None:
+@pytest.mark.parametrize("selection", ["tag", "commit"])
+def test_clean_builder_stamps_and_verifies(signing_key, tmp_path: Path, monkeypatch, selection: str) -> None:
     import tarfile
 
     from qa import build_release as builder
@@ -111,16 +114,24 @@ dependencies = []
 path = "sparehash/__init__.py"
 ''')
     for args in (("init",), ("add", "."),
-                 ("-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-m", "fixture"),
-                 ("tag", f"v{__version__}")):
+                 ("-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-m", "fixture")):
         subprocess.run(["git", "-C", str(root), *args], check=True, capture_output=True)
     commit = subprocess.check_output(["git", "-C", str(root), "rev-parse", "HEAD"], text=True).strip()
+    if selection == "tag":
+        subprocess.run(["git", "-C", str(root), "tag", f"v{__version__}"], check=True)
     output = tmp_path / "artifacts"
     monkeypatch.setattr(builder, "ROOT", root)
+    # Isolated test installation trust, not a production CLI bypass or key
+    # exported by the builder. Production calls the bundled default verifier.
+    monkeypatch.setattr(builder, "APP_GPG_FINGERPRINT", pin)
+    monkeypatch.setattr(builder, "verify_archive", lambda a, s: verify_archive(a, s, key=key, fingerprint=pin))
     monkeypatch.setenv("GNUPGHOME", str(home))
-    monkeypatch.setattr("sys.argv", ["build_release.py", "--tag", f"v{__version__}", "--sign", pin,
+    monkeypatch.setattr("sys.argv", ["build_release.py", "--" + selection,
+                                      f"v{__version__}" if selection == "tag" else commit, "--sign", pin,
                                       "--output", str(output)])
     assert builder.main() == 0
+    if selection == "commit":
+        assert not subprocess.check_output(["git", "-C", str(root), "tag", "--list"], text=True).strip()
     archive = output / f"sparehash-{__version__}-source.tar.gz"
     verify_archive(archive, Path(str(archive) + ".asc"), key=key, fingerprint=pin)
     with tarfile.open(archive) as source:
@@ -139,3 +150,32 @@ path = "sparehash/__init__.py"
     (root / "sparehash/__init__.py").write_text("# dirty\n")
     with pytest.raises(SystemExit):
         builder.main()
+
+
+@pytest.mark.parametrize("selector,signer", [("main", None), ("a" * 40, "B" * 40)])
+def test_builder_refuses_moving_ref_or_unpinned_signer(monkeypatch, selector, signer) -> None:
+    from qa import build_release as builder
+
+    monkeypatch.setattr("sys.argv", ["build_release.py", "--commit", selector, "--sign",
+                                      signer or builder.APP_GPG_FINGERPRINT])
+    with patch.object(builder, "git", side_effect=AssertionError("refuse before Git/build/sign")), pytest.raises(SystemExit) as ended:
+        builder.main()
+    assert ended.value.code == 2
+
+
+@pytest.mark.skipif(shutil.which("gpg") is None, reason="GPG required")
+def test_bundled_production_certificate_matches_independently_confirmed_primary(tmp_path: Path) -> None:
+    from sparehash.app_release import APP_GPG_FINGERPRINT, APP_PUBLIC_KEY
+    from sparehash.xmrig_verify import XMRIG_GPG_FINGERPRINT, run_gpg
+
+    assert APP_GPG_FINGERPRINT == "23E9CE0E1C95324190571379766F2AE440E1019A"
+    assert APP_GPG_FINGERPRINT != XMRIG_GPG_FINGERPRINT
+    home = tmp_path / "public-keyring"
+    home.mkdir(mode=0o700)
+    certificate = home / "public.asc"
+    certificate.write_bytes(APP_PUBLIC_KEY)
+    run_gpg(home, ("--import", str(certificate)), "import")
+    listing = run_gpg(home, ("--with-colons", "--with-subkey-fingerprint", "--list-keys"), "fingerprint")
+    assert len([line for line in listing.splitlines() if line.startswith("pub:")]) == 1
+    assert f"fpr:::::::::{APP_GPG_FINGERPRINT}:" in listing
+    assert "fpr:::::::::3BA6A67F3A744D30C11772D6E2BB137A69EC321F:" in listing

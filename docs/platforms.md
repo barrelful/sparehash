@@ -163,7 +163,8 @@ or corrupt record is not cleared. Never delete lifecycle files to bypass this.
 
 Authenticate the complete source archive and adjacent `.asc` with an independently
 confirmed maintainer key before fresh installation; see the [quick start](../README.md#select-and-authenticate-the-source).
-Production signing trust is an owner prerequisite, not supplied by a candidate.
+The owner-confirmed application primary pin is
+`23E9CE0E1C95324190571379766F2AE440E1019A`, never supplied by a candidate.
 Remove v0.2.1 receipt-aware and freshly install v0.3.0; no old-alpha migration exists.
 
 For v0.3+ applications, `sparehash --version` and `sparehash update --check` need
