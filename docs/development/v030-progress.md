@@ -1,7 +1,7 @@
 # v0.3.0 implementation handover
 
-Implementation is complete; **Ubuntu release acceptance remains blocked** below.
-Production artifact signing is recorded separately; neither gate approves release. All PRs
+Implementation and final Ubuntu acceptance are complete. Production artifact
+signing is verified; this still does not approve tagging or publication. All PRs
 use squash merge only after five green CI checks. GitHub links carry live final
 merge/check status; no release approval is implied by merging preparation code.
 
@@ -41,7 +41,7 @@ merge/check status; no release approval is implied by merging preparation code.
   No-Git identity agrees on that milestone's commit. Temporary isolated-clone test
   tags were removed; no project/origin v0.3.0 tag or published release exists.
 
-## Owner-authorized follow-up (2026-11-03)
+## Historical Ubuntu v2 investigation (superseded by v3)
 
 Current diagnostic status: Ubuntu v2 at product commit
 `3fe79840c7aa41a507ed613946ee5003aa6b08ad` passed scenarios 1–4 and both
@@ -141,19 +141,47 @@ print('Production archive signature verified against bundled application trust')
 PY
 ```
 
+## Final Ubuntu v3 acceptance (2026-11-03)
+
+The owner authorized replacing the affected Ubuntu environment. A replacement
+baseline was built from a newly downloaded, signature-verified official Ubuntu
+24.04 cloud image:
+
+- Image SHA-256: `04e8f2461a16a44e78a370284471f29616cdd9baf1893df25807b71f985b6c94`
+- Baseline: `ubuntu-noble-20261103-v3`; 4 vCPU, 6 GiB RAM, 40 GiB disk, no NIC,
+  no host share/passthrough, authenticated serial administration.
+- CPU model pinned to `EPYC-Rome` (not host passthrough); baseline disk/NVRAM/
+  firmware hashes are recorded in `baseline.json`.
+- Before SpareHash installation, the VM passed repeated cold boots,
+  `systemctl daemon-reload`, service start/stop, 30 `fwupd-refresh`/reload cycles,
+  and a 120-second survival window.
+
+The final seven-scenario acceptance then passed on a fresh clone with test-only
+signed fixtures and no guest networking. The forced power-off publication
+recovery, broken-live-CLI backup recovery, activation-failure restoration and
+receipt-aware uninstall all completed. The fixture driver now fsyncs removal of
+its test-only SIGSTOP marker before the hard power cycle and clears stale markers
+after boot; product code was not changed. Evidence is in
+`.omo/evidence/v030/milestone-4/ubuntu-final-v3/` and the private lab result for
+`v030-ubuntu-v3-final`; all disposable guests were discarded and the new baseline
+hashes were revalidated.
+
+The accepted runtime source is the 2026-11-03 fixture source
+`095b17d7986702b37bd76193ae4ed83dd9671c45`; current `main` has the same runtime
+and differs only in documentation. The acceptance fixture uses test-only signer
+trust. Production trust remains the independently matched Nitrokey primary
+`23E9CE0E1C95324190571379766F2AE440E1019A`, and its local artifact signature was
+verified with bundled defaults above.
+
 ## Remaining release gates
 
-The public production trust anchor is populated and independently matched to the
-existing Nitrokey; it is not empty. Authenticated serial administration is working
-without a QGA dependency. **Ubuntu seven-scenario acceptance is still blocked.**
-Proposed next step: independently provision a pristine official Ubuntu image (not
-derived from the affected lab baseline), reproduce the native OS case before any
-SpareHash installation, and obtain an upstream debugger/backtrace if it persists.
-Only then repeat all seven scenarios on the recorded runtime source. Do not
-claim the diagnostic recovery/retry as a full acceptance run.
-Production signing/default-trust verification is complete above; it does not
-remove the Ubuntu release blocker. No further hardware interaction is required. Final tag and
-publication require separate owner approval and are not part of this task.
+No Ubuntu acceptance or production-trust blocker remains. Final tag creation and
+GitHub publication require separate owner approval and are not part of this task.
+The prepared production artifact was built/signed at `9de1e00`; after the owner
+approves the final tag, rebuild from that exact tagged commit so the shipped
+archive includes final release notes, then verify it before publishing. No real
+host installation/update/uninstallation or real mining has been performed in this
+work.
 
 Real read-only GitHub discovery was exercised; existing releases lack `.asc`.
 Published production-signed download verification and online end-to-end guest coverage are

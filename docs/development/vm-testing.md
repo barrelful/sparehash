@@ -16,7 +16,8 @@ user's real operating system. Two baseline operating systems are available:
 
 | Baseline | Resources | Administration | Purpose |
 |---|---|---|---|
-| `ubuntu-noble-20260926-v1` | 4 vCPUs, 6 GiB RAM, 40 GiB disk | QEMU guest agent | Conventional Debian-family testing |
+| `ubuntu-noble-20261103-v3` | 4 vCPUs, 6 GiB RAM, 40 GiB disk | Authenticated serial console | Current v0.3 Ubuntu acceptance |
+| `ubuntu-noble-20260926-v1` | 4 vCPUs, 6 GiB RAM, 40 GiB disk | QEMU guest agent | Historical Ubuntu baseline |
 | `bazzite-kde-44-20261012-v1` | 4 vCPUs, 8 GiB RAM, 80 GiB disk | Authenticated virtual serial console | Atomic / SELinux-enforcing testing |
 
 Both baselines have been validated for boot, command execution, file transfer,
@@ -37,12 +38,37 @@ or runtime dependency is added to SpareHash. See `v030-progress.md` for acceptan
 This scoped authorization does not permit unrelated VM/data changes or weaker
 networking, storage, wallet/mining or SELinux/AppArmor isolation.
 
-**Closure:** serial-v2 administration works, but Ubuntu acceptance remains blocked
-by a reproducible PID 1/systemd panic. The same panic occurred outside SpareHash
-and in a no-product overlay after current Ubuntu security/kernel updates. That
-updated overlay was not sealed. All follow-up guests were discarded and baseline
-hashes revalidated. Do not treat serial-v2 as a passed acceptance baseline; see
-`v030-progress.md` for evidence and the bounded-attempt outcome.
+**Closure:** serial-v2 administration works, but the v2 baseline was not
+validated for acceptance; its Ubuntu systemd/PID1 crash reproduced outside the
+product. All affected follow-up guests were discarded and baseline hashes
+revalidated. Do not treat serial-v2 as a passed acceptance baseline; see
+`v030-progress.md` for the historical evidence and failure analysis.
+
+### 2026-11-03 v3 replacement
+
+The owner authorized creating a replacement baseline from a newly downloaded
+official Ubuntu 24.04 cloud image. The image SHA-256 was verified against the
+signed Ubuntu `SHA256SUMS`:
+
+```text
+04e8f2461a16a44e78a370284471f29616cdd9baf1893df25807b71f985b6c94
+```
+
+The new baseline `ubuntu-noble-20261103-v3` uses the same 4-vCPU/6-GiB/40-GiB
+limits, no NIC, no host share, no passthrough, and authenticated serial
+administration. Its CPU model is pinned to `EPYC-Rome` instead of forwarding every
+host feature; this avoids the host CPU-feature compatibility path associated with
+the earlier instability. Baseline disk/NVRAM/firmware hashes are recorded in its
+`baseline.json`.
+
+Before any SpareHash installation, the v3 guest passed repeated cold boots,
+`systemctl daemon-reload`, service start/stop, and 30 `fwupd-refresh` / reload
+cycles followed by a 120-second survival window. The final v0.3 Ubuntu seven-
+scenario acceptance then passed on a fresh clone using the signed offline fixture:
+including forced power-off publication recovery and the broken-live-CLI backup
+path. Bazzite remained Enforcing with no AVCs in its separate run. Evidence is
+under the private lab results and `.omo/evidence/v030/milestone-4/ubuntu-final-v3/`
+on the development host.
 
 The VM lab **cannot certify**:
 
@@ -104,8 +130,8 @@ Run **one** disposable instance at a time. Always perform cleanup, including
 on failure or cancellation.
 
 ```sh
-# Ubuntu
-python3 "$LAB" create ubuntu-noble-20260926-v1 ubuntu-test-001
+# Ubuntu (current v3 serial baseline)
+python3 "$LAB" create ubuntu-noble-20261103-v3 ubuntu-test-001
 python3 "$LAB" start ubuntu-test-001
 python3 "$LAB" exec ubuntu-test-001 30 /usr/bin/id
 python3 "$LAB" stop ubuntu-test-001
@@ -127,8 +153,10 @@ more advanced workflows.
 
 The two baselines differ in how root operations are reached:
 
-- **Ubuntu Noble** uses the QEMU guest agent. Commands execute quickly
-  (sub-second) and the agent does not require interactive login.
+- **Ubuntu v3** uses an authenticated serial console. Console operations are
+  slower than the historical QGA path but do not depend on a guest agent. The
+  older `ubuntu-noble-20260926-v1` baseline remains available for historical
+  comparison.
 - **Bazzite KDE** uses an authenticated virtual serial console. Each `exec`
   call has approximately 24 seconds of authentication and logout overhead.
   Avoid many small commands; transfer scripts and run them in batches.
@@ -382,19 +410,19 @@ builder directories; use a fresh `BASELINE` for ordinary tests.
 1. **Read this file first** and confirm the launcher is at
    `$HOME/sparehash-lab-client/lab_remote.py` and `python3 "$LAB" status`
    returns the expected baselines.
-2. **Establish the v0.1.1 baseline** as in §7; record evidence.
-3. **Iterate** the v0.2.0 plan tasks (Tasks 1–24, 31–34) on the lab,
-   merging branches in a task-owned worktree per the project's plan and
-   re-running regression + mypy + `qa/check_readme.py` after each
-   change.
-4. **Run VM-acceptance tasks** (Tasks 3, 25–30, F3) on fresh
-   disposables as planned. Do not run them on the user's actual
-   workstation.
+2. Use `ubuntu-noble-20261103-v3` and the current Bazzite baseline for new
+   v0.3 acceptance; the v0.1.1/v0.2 baseline procedures are historical and
+   need not be repeated.
+3. Create one fresh disposable clone at a time, record the exact source and
+   fixture identities, and run the required focused tests for the change.
+4. For update/lifecycle acceptance, use the signed offline fixture and the
+   current `qa/update_acceptance.py`; do not run destructive tests on the
+   user's workstation.
 5. **Re-baseline** any baseline that produces a `prepare` mismatch
    before trusting its results.
-6. **Record durable evidence** under
-   `.omo/evidence/v020/task-N/` on the development host. Keep generated
-   test results and machine-specific files out of version control.
+6. **Record durable evidence** under `.omo/evidence/v030/` on the
+   development host. Keep generated test results and machine-specific files
+   out of version control.
 7. **Escalate to the owner** if a concrete requirement surfaces that the
    VM lab cannot satisfy (e.g. real Steam session lifecycle, physical
    Ryzen sensor accuracy).
