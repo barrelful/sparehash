@@ -36,7 +36,7 @@ Licensed under GPL-3.0-or-later. See `LICENSE` and `THIRD_PARTY_NOTICES.md`.
 - **Does not:** mine as root.
 - **Does not:** change DNS, firewall, SELinux, AppArmor, sysctl, or bootloader
   settings.
-- **Does not:** enable MSR optimisation, GPU mining, or 1GiB hugepages in v0.2.
+- **Does not:** enable MSR optimisation, GPU mining, or 1GiB hugepages in v0.3.
 - **Does not:** provide public pool presets or calculate mining profitability.
 
 ## Supported platforms
@@ -49,10 +49,12 @@ SpareHash classifies every host into one of three support tiers. Run `sudo ./ins
 | **UNVERIFIED** | Known distribution family but no VM evidence for this version |
 | **UNSUPPORTED** | Known incompatible; installation refused (NixOS, Proxmox VE) |
 
-**Synthetic lifecycle evidence:** Ubuntu 24.04 on `ubuntu-noble-20260926-v1`
-and Bazzite 44 on `bazzite-kde-44-20261012-v1`. Install/removal/reinstall/reboot,
-permissions and synthetic safety callbacks passed; see the
-[acceptance record](docs/release-0.2-candidate.md#fresh-owner-requested-acceptance-at-b18e1c8). Real native/Proton
+**Synthetic lifecycle evidence:** v0.3 application updates passed all seven
+signed-update scenarios on `ubuntu-noble-20261103-v3` and
+`bazzite-kde-44-20261012-v1`, including stopped/running preservation, forced
+power-off recovery, activation-failure restoration and receipt-aware uninstall.
+The Ubuntu image was freshly downloaded from the official Ubuntu archive and its
+SHA-256 was verified against Ubuntu's signed checksums. Real native/Proton
 gameplay, KDE/Gaming Mode and hardware validation remain pending owner testing.
 
 **UNVERIFIED:** Debian, Mint, Ubuntu 22.04 and other releases, Fedora Workstation,

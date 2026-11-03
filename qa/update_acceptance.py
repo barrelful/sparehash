@@ -78,6 +78,11 @@ def main() -> int:
         smoke.drop = Path("/run/systemd/system/sparehash.service.d/s4-smoke.conf")
         if smoke.result["source_sha256"] != args.source_sha256:
             parser.error("evidence identity mismatch")
+        # A hard power-cycle can replay the fixture flag's deletion. It is test
+        # state, not product recovery material, and must never block recovery.
+        Path("/var/tmp/v030-interrupt-request").unlink(missing_ok=True)
+        Path("/var/tmp/v030-worker-pid").unlink(missing_ok=True)
+        os.sync()
 
     def preserved() -> None:
         for name, expected in smoke.result["preserved"].items():
@@ -137,11 +142,16 @@ def main() -> int:
                 os.kill(int(marker.read_text()), signal.SIGKILL)
                 assert process.wait(timeout=30) != 0
             Path("/var/tmp/v030-interrupt-request").unlink()
+            # The fixture flag controls a SIGSTOP in the signed test source.
+            # Persist its removal before the lab power-cycles this guest; a
+            # non-fsynced unlink could otherwise be replayed after the crash.
+            os.sync()
             record = upgrade.load(Tree())
             assert record is not None and record.phase == "installing"
             assert smoke.empty()
             smoke.check("5a_interrupted_publication_pending_reboot", record.operation_id)
             smoke.save()
+            os.sync()
             print("READY FOR LAB POWER-CYCLE", flush=True)
             return 0
         assert smoke.empty()

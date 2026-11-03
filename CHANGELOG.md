@@ -23,6 +23,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   separately from XMRig. Exact-commit pre-tag builds require that signer and verify
   against installed trust; no private key or test bypass is shipped. Final
   signed-artifact verification remains required before owner-approved publication.
+- Final Ubuntu acceptance was run on a fresh signature-verified official cloud
+  image with a pinned stable CPU model; all seven update/recovery scenarios passed,
+  including forced power-off and broken-live-CLI recovery. The test driver now
+  durably removes its fixture-only interrupt marker before that power cycle.
 
 ## [0.2.1] - 2026-11-01
 

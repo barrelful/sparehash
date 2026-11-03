@@ -8,7 +8,8 @@ this release privately; experimental status is not a security guarantee.
 
 | Version | Supported          |
 | ------- | ------------------ |
-| 0.2.1 (Experimental) | :white_check_mark: |
+| 0.3.0 (release preparation) | :white_check_mark: |
+| 0.2.1 (latest published, Experimental) | :white_check_mark: |
 | 0.2.0   | :x:                |
 | 0.1.1   | :x:                |
 | 0.1.0   | :x:                |
