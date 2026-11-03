@@ -40,6 +40,23 @@ merge/check status; no release approval is implied by merging preparation code.
 
 ## Owner-authorized follow-up (2026-11-03)
 
+Current diagnostic status: Ubuntu v2 at product commit
+`3fe79840c7aa41a507ed613946ee5003aa6b08ad` passed scenarios 1–4 and both
+interrupted-publication/reboot-recovery checkpoints (5a/5b), but **not all seven**.
+During scenario 6, PID 1 (`systemd`) segfaulted and the Ubuntu kernel panicked
+(`Attempted to kill init`, exit `0x8b`, kernel `6.8.0-142-generic`). The private
+lab console log was preserved before powering off the owned guest. This is an
+actual guest OS crash, not merely a QGA/serial transport timeout. Root cause and
+scenarios 6–7 remain pending; production hardware signing has not been attempted.
+After controlled reboot, durable recovery succeeded. A diagnostic repeat of the
+signed activation-failure update exited 1 and automatically restored the active
+0.3.2 application with no pending journal. No second panic occurred. The original
+panic is not explained by that retry; console/journal/overlay evidence is retained
+privately, the diagnostic guest was stopped/discarded, and fresh acceptance is next.
+PR [#8](https://github.com/barrelful/sparehash/pull/8) has five green CI checks at
+`3fe7984`; it is not yet merged. Local suite: 1,262 passed / 567 subtests;
+package typing, focused lint, README inventory and development artifact checks pass.
+
 - Owner authorized designated-lab administration/provisioning repair. Original
   baselines are preserved; a fresh Ubuntu authenticated-serial baseline was sealed
   as `ubuntu-noble-20261103-serial-v2`, with unchanged isolation/resources. Private

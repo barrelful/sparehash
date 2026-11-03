@@ -73,7 +73,7 @@ def main() -> int:
         subprocess.run(["uv", "build", "--out-dir", str(args.output.absolute()), directory],
                        check=True, timeout=120)
     try:
-        subprocess.run(["gpg", "--batch", "--armor", "--local-user", args.sign, "--output", str(signature),
+        subprocess.run(["gpg", "--batch", "--pinentry-mode", "ask", "--armor", "--local-user", args.sign, "--output", str(signature),
                         "--detach-sign", str(archive)], check=True, timeout=120)
     except (OSError, subprocess.SubprocessError) as error:
         signature.unlink(missing_ok=True)
