@@ -1,5 +1,9 @@
 # Upgrade status — deferred in experimental v0.2
 
+> **Historical page.** For the supported fresh v0.3+ application updater and
+> interrupted recovery, use [updating](updating.md). There is no v0.2.1 migration;
+> preserve historical safety records and seek maintainer help.
+
 There is **no supported in-place upgrade, rollback, reconfiguration or migration
 completion workflow** in this release. Old instructions from experimental branches
 must not be used as installation guidance.

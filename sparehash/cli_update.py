@@ -28,7 +28,7 @@ def check() -> int:
     try:
         release = discover()
         print(f"Installed: {display()}")
-        print(f"Latest signed-asset release: {release.version}")
+        print(f"Latest release with archive/signature assets: {release.version}")
         print(release.url)
         print("Update available" if version_tuple(release.version) > version_tuple(__version__)
               else "No newer release available")
@@ -88,7 +88,7 @@ def mutate(*, local: str | None = None, recovery: bool = False,
                 infra.verify_units(tree.path(stage + "/units"))
                 infra.verify_identity(tree.path(stage + "/src"))
             upgrade.prepare(tree, stage, stage_digest, infra)
-            code = upgrade.run_from_backup(tree)
+            code = upgrade.run_from_backup(tree, fd)
             if code != 0:
                 if load(tree) is None:
                     print("sparehash: update failed; previous application automatically restored", file=sys.stderr)

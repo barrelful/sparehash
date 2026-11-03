@@ -7,10 +7,10 @@ import zipfile
 from pathlib import Path
 
 
-def check(directory: Path) -> None:
+def check(directory: Path, *, source: Path | None = None) -> None:
     wheel, = directory.glob("*.whl")
-    sdist, = directory.glob("*.tar.gz")
-    source = Path(__file__).resolve().parents[1]
+    sdist, = (path for path in directory.glob("*.tar.gz") if not path.name.endswith("-source.tar.gz"))
+    source = Path(__file__).resolve().parents[1] if source is None else source
     with zipfile.ZipFile(wheel) as archive:
         metadata = email.message_from_bytes(archive.read(next(n for n in archive.namelist() if n.endswith(".dist-info/METADATA"))))
         assert not metadata.get_all("Requires-Dist"), "mandatory runtime dependencies are forbidden"

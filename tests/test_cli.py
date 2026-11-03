@@ -192,7 +192,7 @@ class CliTests(unittest.TestCase):
                         result = main(["config", "edit"], geteuid=geteuid_fn)
                 self.assertEqual(result, 2)
                 self.assertIn(
-                    "sparehash: config edit is unsupported in experimental v0.2.0",
+                    "sparehash: config edit is unsupported",
                     captured.getvalue(),
                 )
 
@@ -214,7 +214,7 @@ class CliTests(unittest.TestCase):
                     result = main(["benchmark"], geteuid=geteuid_fn)
                 self.assertEqual(result, 2)
                 self.assertIn(
-                    "sparehash: benchmark is unsupported in experimental v0.2.0",
+                    "sparehash: benchmark is unsupported",
                     captured.getvalue(),
                 )
 

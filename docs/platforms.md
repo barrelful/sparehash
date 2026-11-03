@@ -1,4 +1,4 @@
-# Experimental v0.2 platforms, installation and removal
+# Experimental platforms, installation, updating and removal
 
 ## Evidence and support labels
 
@@ -159,14 +159,27 @@ After completed removal, explicit **interactive** reinstall consent uses
 printed retirement guidance requires it. An active update hold, mismatched ID
 or corrupt record is not cleared. Never delete lifecycle files to bypass this.
 
-## Deferred workflows
+## Application updates and deferred workflows
 
-No supported upgrade/rollback, in-place reconfiguration, benchmark or native
-RPM/DEB/Nix/Flatpak channel is delivered. `update`, `complete-upgrade`, `config edit`,
-`benchmark` and installer `--upgrade`, `--recover`, `--complete-upgrade`,
-`--reconfigure` refuse with exit 2 before inspection/effects. Preserved internals
-are research, not another route. Keep any old migration hold/journal and contact
-the maintainer; see [upgrade status](upgrade-v020.md).
+Authenticate the complete source archive and adjacent `.asc` with an independently
+confirmed maintainer key before fresh installation; see the [quick start](../README.md#select-and-authenticate-the-source).
+Production signing trust is an owner prerequisite, not supplied by a candidate.
+Remove v0.2.1 receipt-aware and freshly install v0.3.0; no old-alpha migration exists.
+
+For v0.3+ applications, `sparehash --version` and `sparehash update --check` need
+neither root nor controller access. Root `update`, `update --from ARCHIVE` and
+`update --recover` use one authenticated pipeline/transaction. Recovery also works
+through the protected previous-source CLI when live source is broken. Configuration,
+credentials, manual pause, boot preference and XMRig are retained; see
+[updating and recovery](updating.md) for the exact exit/failure contract.
+Receipt-aware uninstall refuses a pending app journal and removes validated owned
+updater leftovers after successful completion. It never force-clears inhibition.
+
+In-place reconfiguration, benchmark and native RPM/DEB/Nix/Flatpak channels remain
+deferred. `config edit`, `benchmark` and installer `--reconfigure` refuse with exit 2.
+Obsolete `complete-upgrade` and installer upgrade/recovery flags have been removed.
+Keep any historical migration hold/journal and contact the maintainer; see
+[historical upgrade status](upgrade-v020.md).
 Ordinary installation also checks the protected CLI read-only and refuses an
 existing installation before retirement clearing or capability detection.
 Completed removal deletes that CLI, preserving the explicit reinstall path.

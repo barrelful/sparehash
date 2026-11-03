@@ -138,7 +138,7 @@ def _parse_release(data: bytes) -> Release:
 def select_asset(assets: Sequence[Asset], arch: str = "x86_64") -> tuple[str, str, str]:
     """Select a Linux x64 archive plus the mandatory signed checksum pair."""
     if arch != "x86_64":
-        raise FetchError("SpareHash v1 supports x86_64 only")
+        raise FetchError("SpareHash supports x86_64 only")
     by_name = {asset.name: asset.url for asset in assets}
     for required in ("SHA256SUMS", "SHA256SUMS.sig"):
         if required not in by_name:

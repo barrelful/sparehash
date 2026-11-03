@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### v0.3.0 experimental release preparation
+
+- Rootless/offline version and full source-commit identity; one dynamic version
+  source and a clean exact-tag local archive build/sign/verify command.
+- Numeric release discovery including GitHub pre-releases, bounded downloads,
+  detached GPG verification and safe extraction shared by online/offline updates.
+- App-only update transaction, one protected backup/journal, automatic restoration
+  on ordinary failure, and interrupted recovery through the known-good source CLI.
+  Preserves config/credentials/manual pause/startup/XMRig; no post-success rollback.
+- Journal-based mining inhibition even with a missing lifecycle hold, protected
+  receipt refresh and removal of validated owned updater leftovers.
+- Superseded migration/completion engine and installer upgrade flags removed.
+- Production trust confirmation and final signed-artifact verification remain
+  owner prerequisites; this is not a published release or workstation rollout.
+
 ## [0.2.1] - 2026-11-01
 
 **Experimental/Beta, not production-stable.** See [release notes](docs/release-0.2.1.md).

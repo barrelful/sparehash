@@ -8,7 +8,7 @@ from __future__ import annotations
 import grp
 from collections.abc import Callable
 from dataclasses import replace
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import TypeAlias, assert_never, final
 from uuid import uuid4
 
@@ -42,10 +42,40 @@ class Ledger:
             gid = 0
         return StoreContext(self.tree.trust, gid=gid if self.tree.uid == 0 else None, create=True)
 
-    def initialize(self, context: StoreContext | None = None) -> None:
+    def initialize(self, context: StoreContext | None = None, *, fresh: bool = False) -> None:
         with locked_store(self.context() if context is None else context) as store:
             prior = store.read()
             manifest = prior.manifest if prior else Manifest("/opt/xmrig", ())
+            if fresh and manifest.installer is not None:
+                old = manifest.installer
+                if old.phase != "ready" or any(action.state != "applied" for action in old.actions):
+                    raise DeploymentError("reinstall", "partial installation requires inspection; receipts retained")
+                retained: list[Artifact] = []
+                for artifact in old.artifacts:
+                    if artifact.kind != "file":
+                        continue
+                    configuration = artifact.path in ("/etc/sparehash/config.toml", "/etc/sparehash/xmrig.json",
+                                                       "/etc/sparehash/xmrig.runtime.json")
+                    application = (artifact.path.startswith("/opt/sparehash/src/")
+                                   or artifact.path == "/usr/local/bin/sparehash"
+                                   or artifact.path.startswith("/etc/systemd/system/sparehash"))
+                    if not configuration and not application:
+                        continue
+                    try:
+                        current = self.tree.read(artifact.path)
+                    except FileNotFoundError:
+                        current = None
+                    if configuration:
+                        if current is not None and self.tree.receipt(artifact.path, artifact.created, identity=artifact.id) == artifact:
+                            retained.append(artifact)
+                    elif current is not None:
+                        raise DeploymentError("reinstall", "application remnants require receipt-aware removal first")
+                # Completed uninstall leaves the canonical record for evidence.
+                # A fresh install must not inherit removed modules/action targets
+                # or deleted account identities as if they were still deployed.
+                store.write(replace(manifest, installer=Installer(2, "installing", (), (), tuple(retained), ()),
+                                    payload_version=None, inventory_digest=None))
+                return
             if manifest.installer is None:
                 store.write(replace(manifest, installer=Installer(2, "installing", (), (), (), ())))
 
@@ -60,7 +90,7 @@ class Ledger:
             if any(item.state == "pending" for item in installer.actions):
                 raise DeploymentError("recovery", "pending installer action requires inspection; do not delete the manifest or rotate the token")
             sequence = max((item.sequence for item in installer.actions), default=0) + 1
-            action = Action(sequence, self.install_id, datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"), operation, target, "pending")
+            action = Action(sequence, self.install_id, datetime.now(UTC).isoformat().replace("+00:00", "Z"), operation, target, "pending")
             updated = replace(manifest, installer=replace(installer, phase="installing", actions=(*installer.actions, action)))
             reserve = 16384 if operation == "merge-gaming" else 8192
             try:

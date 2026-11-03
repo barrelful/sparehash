@@ -14,12 +14,7 @@ from tests.install_fixture import capabilities
 
 
 @pytest.mark.parametrize("arguments", [
-    ["benchmark"], ["config", "edit"], ["complete-upgrade", "old-operation"],
-    ["install", "--upgrade", "operation"], ["install", "--recover", "operation"],
-    ["install", "--complete-upgrade", "operation"], ["install", "--reconfigure"],
-    ["install", "--preflight", "--upgrade", "operation"],
-    ["install", "--upgrade", ""], ["install", "--recover", ""],
-    ["install", "--complete-upgrade", ""],
+    ["benchmark"], ["config", "edit"], ["install", "--reconfigure"],
 ])
 @pytest.mark.parametrize("uid", [0, 1000])
 def test_deferred_workflows_have_no_effects(arguments: list[str], uid: int) -> None:
@@ -32,8 +27,19 @@ def test_deferred_workflows_have_no_effects(arguments: list[str], uid: int) -> N
         assert main(arguments, geteuid=lambda: uid) == 2
     for boundary in (tree, retired, detect, clear):
         boundary.assert_not_called()
-    assert "unsupported in experimental v0.2.0" in output.getvalue()
-    assert "Preserve" in output.getvalue()
+    assert "unsupported" in output.getvalue()
+    assert "preserve" in output.getvalue().lower()
+
+
+@pytest.mark.parametrize("arguments", [
+    ["complete-upgrade", "old-operation"], ["install", "--upgrade", "operation"],
+    ["install", "--recover", "operation"], ["install", "--complete-upgrade", "operation"],
+])
+def test_obsolete_upgrade_interfaces_are_removed(arguments) -> None:
+    with patch.object(install, "Tree") as tree, pytest.raises(SystemExit) as ended:
+        main(arguments, geteuid=lambda: 0)
+    assert ended.value.code == 2
+    tree.assert_not_called()
 
 
 @pytest.mark.parametrize("distro,version", [
@@ -59,7 +65,7 @@ def test_help_labels_deferred_workflows(arguments: list[str], capsys) -> None:
         main(arguments)
     assert ended.value.code == 0
     text = capsys.readouterr().out
-    assert "deferred in experimental v0.2" in text
+    assert "deferred" in text
     assert "stage and publish a selected local release" not in text
 
 
@@ -85,4 +91,4 @@ def test_default_install_cannot_bypass_deferral_or_clear_retirement() -> None:
     tree.read.assert_called_once_with("/usr/local/bin/sparehash")
     detect.assert_not_called()
     clear.assert_not_called()
-    assert "in-place installation/reconfiguration is deferred" in output.getvalue()
+    assert "existing installation refused" in output.getvalue()

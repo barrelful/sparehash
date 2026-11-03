@@ -32,7 +32,7 @@ from .wallet import validate_address
 
 T = TypeVar("T")
 TomlValue = str | int | float | bool | date | datetime | Sequence["TomlValue"] | Mapping[str, "TomlValue"]
-MSR_NOTICE: Final = "MSR optimisation is not supported in v1; SpareHash never writes CPU MSRs."
+MSR_NOTICE: Final = "MSR optimisation is not supported; SpareHash never writes CPU MSRs."
 NUMA_NOTICE: Final = (
     "Automatic hugepages unavailable: require exactly one credibly detected online "
     "memory-bearing NUMA node; multiple or unknown nodes are unsupported. Mining still works."
@@ -142,7 +142,7 @@ def load_answers(path: str | Path, caps: Capabilities, *,
     if "msr" in parsed:
         msr = parsed["msr"]
         if not isinstance(msr, Mapping) or set(msr) != {"enabled"} or msr["enabled"] is not False:
-            raise WizardError("msr", "only disabled legacy MSR settings are accepted; MSR unavailable in v1")
+            raise WizardError("msr", "only disabled legacy MSR settings are accepted; MSR unavailable")
         del parsed["msr"]
     try:
         with warnings.catch_warnings():

@@ -100,12 +100,35 @@ support matrix and `qa/README.md` for destructive-suite invocation.
 
 ## Pull request workflow
 
-1. Open an issue first for significant changes.
-2. Fork the repository and create a feature branch.
+1. Discuss architectural/security scope changes; ordinary fixes need no issue ceremony.
+2. Create a short-lived feature branch (fork when needed), targeting `main`.
 3. Keep commits atomic and write clear commit messages.
 4. Ensure unit tests, the README checker, mypy, and the package build pass.
 5. Update `CHANGELOG.md` under the unreleased section.
-6. Submit a pull request describing what changed and why.
+6. Submit a pull request describing what changed and why; squash merge only after CI passes.
+
+## Experimental release preparation
+
+`sparehash/__init__.py` is the sole version source; Hatch metadata derives from it.
+From a clean exact release tag, the maintainer uses local keys only:
+
+```sh
+python3 qa/build_release.py --tag v0.3.0 --sign FULL_CONFIRMED_PRIMARY_FINGERPRINT
+```
+
+This stamps the full commit into `_build.py`, builds and detached-signs the complete
+source archive, verifies its signature, and builds stamped wheel/sdist artifacts.
+Publish the source archive plus `.asc` together. Do not add a CI private key,
+keyserver lookup, unsigned bypass or candidate-provided trust. Confirm the owner
+key/pin before production signing/publication. Use a new patch version rather
+than replacing published assets/tags. See [release preparation](docs/release-0.3.0.md).
+
+Application acceptance uses `qa/update_acceptance.py` in the two approved
+networkless disposable baselines, with isolated test-key source copies, the
+non-hashing miner, a power-cycle between phases, and captured evidence. No test
+trust/fault switch belongs in production code. Read
+`docs/development/vm-testing.md` before any lifecycle test. No workstation rollout
+or production signing is implied by passing tests.
 
 ## Questions?
 
