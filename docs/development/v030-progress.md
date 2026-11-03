@@ -1,6 +1,6 @@
 # v0.3.0 implementation handover
 
-Implementation is complete; **release signoff remains blocked** below. All PRs
+Implementation is complete; **follow-up acceptance/signing is in progress** below. All PRs
 use squash merge only after five green CI checks. GitHub links carry live final
 merge/check status; no release approval is implied by merging preparation code.
 
@@ -9,7 +9,7 @@ merge/check status; no release approval is implied by merging preparation code.
 | 1: version / signed release identity | [#4](https://github.com/barrelful/sparehash/pull/4) | Merged after green CI |
 | 2: discovery / verified staging | [#5](https://github.com/barrelful/sparehash/pull/5) | Merged after green CI |
 | 3: app transaction / restoration recovery | [#6](https://github.com/barrelful/sparehash/pull/6) | Merged after green CI |
-| 4: cleanup / acceptance / release preparation | [#7](https://github.com/barrelful/sparehash/pull/7) | Code/docs complete; acceptance caveat below |
+| 4: cleanup / acceptance / release preparation | [#7](https://github.com/barrelful/sparehash/pull/7) | Merged after green CI; follow-up below |
 
 ## Validation
 
@@ -38,7 +38,23 @@ merge/check status; no release approval is implied by merging preparation code.
   No-Git identity agrees on the full frozen commit. Temporary isolated-clone test
   tags were removed; no project/origin v0.3.0 tag or published release exists.
 
-## Blockers and exact next task
+## Owner-authorized follow-up (2026-11-03)
+
+- Owner authorized designated-lab administration/provisioning repair. Original
+  baselines are preserved; a fresh Ubuntu authenticated-serial baseline was sealed
+  as `ubuntu-noble-20261103-serial-v2`, with unchanged isolation/resources. Private
+  lab controller originals/checksums were backed up outside this repository.
+- Nitrokey inspection independently matched its existing signing subkey
+  `3BA6A67F3A744D30C11772D6E2BB137A69EC321F` to primary
+  `23E9CE0E1C95324190571379766F2AE440E1019A`, suitable/unexpired. Owner authorized
+  its public certificate/pin; no new production key or private export. Public
+  pin and exact-commit builder preparation are on `atlas/v030-nitrokey-ubuntu-acceptance`.
+- Next: validate a fresh v2 clone, run all seven Ubuntu scenarios on the pinned
+  source, finish tests/PR/CI, then attempt bounded normal Nitrokey signing and
+  verify with bundled installed trust. Complete independent work before asking
+  for any required local pinentry/touch. No final tag/publication or host lifecycle.
+
+## Prior blockers (being resolved)
 
 1. Owner/lab maintainer: repair and revalidate Ubuntu guest-agent administration,
    or approve another disposable Ubuntu environment; rerun the seven final-source

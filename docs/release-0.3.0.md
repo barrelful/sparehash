@@ -34,7 +34,7 @@ seven scenarios on Bazzite, including controlled power-cycle and broken-CLI
 recovery, with SELinux Enforcing and no captured AVCs. All test guests were
 discarded. Subsequent handover changes are documentation only.
 
-**Final Ubuntu acceptance is blocked, not passed.** Earlier product source and
+**Prior final Ubuntu acceptance was blocked, not passed.** Earlier product source and
 an intermediate M4 source passed all seven scenarios on Ubuntu; the latter also
 passed actual fresh-reinstall/receipt-reset/uninstall. Two final hardened-source
 attempts at `5b24684d156453e5701386197ea8e74ddaae420f` lost the QEMU guest-agent
@@ -42,7 +42,10 @@ transport, and one controlled power-cycle still had no connected agent. Both
 instances were discarded. This is inconclusive infrastructure evidence, not a
 diagnosed product failure or permission to use mocks/workstation tests. Repair
 and revalidate that lab path (or approve another disposable Ubuntu environment),
-then repeat all seven final-source scenarios before release signoff.
+then repeat all seven final-source scenarios before release signoff. The owner
+has now authorized this lab repair: a separate authenticated-serial Ubuntu v2
+baseline is prepared and its fresh-clone acceptance is in progress. The original
+baselines and all networking/storage/security isolation remain preserved.
 
 Guest networking stays disabled: real read-only GitHub discovery is checked on
 the development host, while the shared signed offline pipeline/update/recovery is
@@ -53,10 +56,11 @@ production release evidence. Gaming/hardware limitations remain unchanged.
 
 ## Owner prerequisites and release steps
 
-1. Independently confirm/provide the maintainer public certificate and **full
-   primary fingerprint**, separate from XMRig's signer. Pin them in
-   `sparehash/app_release.py`; never substitute test trust. Confirm key availability
-   before signing. Empty production trust deliberately refuses updates.
+1. The owner-confirmed existing Nitrokey primary certificate is now pinned in
+   `sparehash/app_release.py`: **`23E9CE0E1C95324190571379766F2AE440E1019A`**,
+   separate from XMRig. Its signing subkey was independently matched to the card;
+   only public material is bundled. Production signature verification is still
+   required; missing/incorrect trust remains a hard refusal, never a test bypass.
 2. Resolve the Ubuntu lab blocker above and repeat final-source acceptance.
    Review/merge the key pin and release changes with passing CI. Re-run relevant
    acceptance against the final source and verify the final production-signed
@@ -64,6 +68,9 @@ production release evidence. Gaming/hardware limitations remain unchanged.
 3. With owner approval, tag the merged clean commit `v0.3.0`; no tag was created
    by implementation. Run `python3 qa/build_release.py --tag v0.3.0 --sign FINGERPRINT`.
    Inspect archive/wheel/sdist identity, signatures, dependencies and legal notices.
+   Pre-tag preparation instead uses `--commit FULL_SOURCE_SHA`; it creates no tag,
+   prepares packages before normal local pinentry/touch, and verifies signatures
+   against bundled installed trust. Never supply/log a PIN or export private keys.
 4. Create a GitHub **draft** release; attach `sparehash-0.3.0-source.tar.gz` and
    `sparehash-0.3.0-source.tar.gz.asc` together, plus useful optional checksums and
    notes. Publish only after owner approval as an experimental pre-release.

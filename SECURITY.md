@@ -61,8 +61,10 @@ SpareHash is designed around these security properties:
   offline input is privately snapshotted and verified by isolated system GPG
   against a separately pinned application primary signer before extraction or
   candidate execution. Extraction rejects links, traversal, duplicates and
-  special files, with bounded sizes/counts. Owner confirmation of production
-  trust is required; missing trust refuses rather than accepting test keys.
+  special files, with bounded sizes/counts. The owner-confirmed application primary
+  fingerprint is `23E9CE0E1C95324190571379766F2AE440E1019A` (existing Nitrokey
+  signing subkey); only its public certificate is bundled. Missing/incorrect
+  trust refuses rather than accepting test keys or candidate-exported trust.
   An untrusted candidate cannot supply its own trust anchor. Fresh installation
   requires independently authenticated key/fingerprint and archive signature.
   An incomplete/corrupt app journal inhibits authorization even without its

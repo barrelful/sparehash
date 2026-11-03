@@ -19,11 +19,43 @@ from typing import Final
 from .xmrig_release import FetchError, ReleaseClient
 from .xmrig_verify import VerifyError, run_gpg
 
-# OWNER PREREQUISITE: independently confirm the maintainer's full primary
-# fingerprint and public certificate. Empty trust MUST refuse production updates.
-# Never put a test certificate here, or derive trust from candidate contents.
-APP_GPG_FINGERPRINT: Final = ""
-APP_PUBLIC_KEY: Final = b""
+# Owner-authorized existing Nitrokey certificate. The primary fingerprint was
+# independently matched to the card's signing subkey on 2026-11-03. Public data
+# only; no private key, card serial, PIN, test trust or candidate-supplied anchor.
+APP_GPG_FINGERPRINT: Final = "23E9CE0E1C95324190571379766F2AE440E1019A"
+APP_PUBLIC_KEY: Final = b"""-----BEGIN PGP PUBLIC KEY BLOCK-----
+
+mG8EaHt5TRMFK4EEACIDAwQbWSI32VUMKMkOAwgaocC1uDzeqpgqzrSWNzg39Xl+
+ywa9JxW8yM6qnQ7wLR79VSUEdhcJFGfaKIMC7EzOMs7qPXdA5qpPO7RO2v5vNx9+
+WCEIq1b9/22FKHPLKOUHVUa0KkRpb2dvIEMgZCBBdmlsYSA8dW52YWd1ZWx5X2xh
+eUBhbGVlYXMuY29tPoi5BBMTCQBBFiEEI+nODhyVMkGQVxN5dm8q5EDhAZoFAmh7
+eU0CGwEFCQPCZwAFCwkIBwICIgIGFQoJCAsCBBYCAwECHgcCF4AACgkQdm8q5EDh
+AZpRUQF/VJh0T04pVpJitJPj4TkHXxDZftlb7UDoodvpw7Q4uizvGS848J/rWAV8
+vr3s9IuRAYCkW99rfeJPgww2A3CMCiKfxanDKg9hi25+1KleHBmSXcU7/Tf4LAHY
+siWBZS8ZOXq4bwRoe4HpEwUrgQQAIgMDBB/07dhx+cbVyu5GmqfiYqTNqkDLZnjg
+fy4Psia6afko9QUZo82pMK8jftBo/M9whTGba/oJoujZkQCHOOzHLa8TL87fXUda
+XT2DwjLL3AkhHaa2IWkNgPZ38Lpt/pKvkYkBNQQYEwkAJhYhBCPpzg4clTJBkFcT
+eXZvKuRA4QGaBQJoe4HpAhsCBQkDwmcAAKEJEHZvKuRA4QGaliAEGRMJAB0WIQQ7
+pqZ/OnRNMMEXctbiuxN6aewyHwUCaHuB6QAKCRDiuxN6aewyH+3kAX4izl67ECYO
+ZU0/nj9iAWT+DyO4WsHyUh3Tk6APD6+4vOs0sW+s1eFsXzKjIv0ZFTkBgLKu45IU
+GgttAc8axn2bGsNHTnvEo304k1S9ForXROXMoCMMvdVUf8zI99gbDz/BXh/hAX9k
+Q/+zI/DZVDY3zN1F5OE+iiyEGsvyJNwqRY9VWw/IvpTG5m8Ko00qRVhbqZK0OYwB
+gOpjrmyi7FdFp5PmTFHRFyY6CRHwJUo7re1X5gPysZPrkSCGL21qcCWp+pfj69og
+gLhvBGh7gksTBSuBBAAiAwMEUjehr37HQTR0ZwdixUKheaduxjyu5JhLk+KPmqcp
+njAp9YR6VF/f/KKhp93BEUuJaPGHrfrjb8FqQEAlaIWHZ9FPN2FKGVclS0ITtjzG
+YaIe3iK1Onq+FSuQjeUc4wELiJ4EGBMJACYWIQQj6c4OHJUyQZBXE3l2byrkQOEB
+mgUCaHuCSwIbIAUJA8JnAAAKCRB2byrkQOEBmqZ6AYC2m8vD3OiwS6G2NkhvDcOH
+sNXp2LX30f2OnZYY1it1bdNBTUQ0zlO4QjRxXnrKij4BgMgCLdNxBEE6ayHd+MY9
+Bl5o5lmt6Si4xDkZEaiMHWae+vnIXXCJECCuLDXgdu1nZrhzBGh7gnwSBSuBBAAi
+AwMEiSFA5lzvGA6z+H8+aKdFHogn27QvkVr+N9XRD3C/1oyWLB73ae75jn7TeSlm
+jUaVQLFEdIqhn9SJSwYNS9L538SjYLjVgAc2qyFZ2tH4SVs4bClMIv7jFaAQIe8z
+X76MAwEJCYieBBgTCQAmFiEEI+nODhyVMkGQVxN5dm8q5EDhAZoFAmh7gnwCGwwF
+CQPCZwAACgkQdm8q5EDhAZrTYAF/VxpoCYUbVEhqLi6ZRfe/0xHETuWZA0sFnkYJ
+2pCQHzCySXz1Jz9nURP8qREpDqL1AYDCqQ70eEiFDt8i4EO5F5douTV5hqLm8Wzi
+IPGuoZLlRrv8644hrmtxE9INupJANXE=
+=tcXy
+-----END PGP PUBLIC KEY BLOCK-----
+"""
 RELEASES_URL: Final = "https://api.github.com/repos/barrelful/sparehash/releases"
 ARCHIVE_LIMIT: Final = 32 * 1024 * 1024
 EXPANDED_LIMIT: Final = 128 * 1024 * 1024

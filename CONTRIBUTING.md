@@ -110,17 +110,23 @@ support matrix and `qa/README.md` for destructive-suite invocation.
 ## Experimental release preparation
 
 `sparehash/__init__.py` is the sole version source; Hatch metadata derives from it.
-From a clean exact release tag, the maintainer uses local keys only:
+From a clean exact release tag, the maintainer uses the existing Nitrokey only:
 
 ```sh
-python3 qa/build_release.py --tag v0.3.0 --sign FULL_CONFIRMED_PRIMARY_FINGERPRINT
+python3 qa/build_release.py --tag v0.3.0 --sign 23E9CE0E1C95324190571379766F2AE440E1019A
 ```
 
-This stamps the full commit into `_build.py`, builds and detached-signs the complete
-source archive, verifies its signature, and builds stamped wheel/sdist artifacts.
+Before tag approval, use `--commit FULL_SOURCE_SHA` instead of `--tag`; it requires
+the full exact clean HEAD commit and creates no tag. The builder prepares stamped
+source/wheel/sdist before hardware interaction, detached-signs the complete source
+archive, then verifies against the bundled installed application trust (not a key
+exported from the signing keyring). Only the pinned primary fingerprint is accepted.
+Use normal local pinentry/touch for the card; never put a PIN in chat, command
+arguments, environment variables or evidence. If signing cannot complete, the
+prepared archive/packages remain available for an explicit local signing command.
 Publish the source archive plus `.asc` together. Do not add a CI private key,
-keyserver lookup, unsigned bypass or candidate-provided trust. Confirm the owner
-key/pin before production signing/publication. Use a new patch version rather
+keyserver lookup, unsigned bypass or candidate-provided trust. Verify production
+signatures before publication. Use a new patch version rather
 than replacing published assets/tags. See [release preparation](docs/release-0.3.0.md).
 
 Application acceptance uses `qa/update_acceptance.py` in the two approved

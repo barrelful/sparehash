@@ -93,7 +93,8 @@ refusals return 2. See `docs/platforms.md` for the full installer exit contract.
 
 ### Select and authenticate the source
 
-The v0.3.0 production signer must be independently confirmed before publication.
+The owner-confirmed v0.3.0 application signer is the existing Nitrokey certificate:
+**`23E9CE0E1C95324190571379766F2AE440E1019A`** (full primary fingerprint).
 Do not install an unsigned development archive or trust a key bundled only inside
 the same download. Once the experimental release is approved and published,
 obtain `sparehash-0.3.0-source.tar.gz` and its adjacent `.asc` asset from the
@@ -101,8 +102,8 @@ obtain `sparehash-0.3.0-source.tar.gz` and its adjacent `.asc` asset from the
 the maintainer public certificate from an independently confirmed channel.
 
 Import that certificate into an isolated keyring and compare its **full primary
-fingerprint** with the independently confirmed value. No production fingerprint
-is asserted by this development branch. Then verify the complete archive:
+fingerprint** with the independently confirmed value above, using a trusted
+channel rather than only the candidate download. Then verify the complete archive:
 
 ```sh
 VERIFY_HOME=$(mktemp -d)

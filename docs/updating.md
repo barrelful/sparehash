@@ -25,10 +25,11 @@ includes numeric GitHub pre-releases and requires the source/signature pair;
 availability does not authenticate an archive. Both update paths use the same
 staged detached-GPG verification before extraction or candidate execution.
 
-**Production prerequisite:** the owner must independently confirm/provide the
-maintainer's full primary fingerprint and public certificate. Until pinned in
-the installed application, updates deliberately refuse all archives. A candidate
-key, test fixture or signed Git tag alone does not establish archive trust.
+The owner-confirmed application primary fingerprint is
+**`23E9CE0E1C95324190571379766F2AE440E1019A`**. Its public certificate is bundled in
+the installed application, independently of XMRig; signing uses the existing
+Nitrokey OpenPGP signing subkey. A candidate key, test fixture or signed Git tag
+alone does not establish archive trust. Missing/incorrect trust still fails closed.
 
 ## Failure and interruption
 

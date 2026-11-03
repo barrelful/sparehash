@@ -24,6 +24,19 @@ controlled shutdown, forced recovery and clean disposal. SELinux remains
 enforcing in the Bazzite baseline and atomic-filesystem redirects
 (`/opt -> var/opt`, `/usr/local -> ../var/usrlocal`) are present.
 
+### Owner-authorized v0.3 Ubuntu administration repair (2026-11-03)
+
+The owner separately authorized repair/reprovisioning within the designated lab.
+The original two baselines are preserved. A fresh Ubuntu overlay was provisioned
+with normal password-authenticated serial administration and sealed separately
+as `ubuntu-noble-20261103-serial-v2` (same CPU/RAM/disk limits, no NIC, shares or
+passthrough). Its console readiness does not depend on QGA. Disposable console
+credentials remain only in the private lab credential store, never source/evidence.
+The private launcher supports this recorded serial transport; no lab controller
+or runtime dependency is added to SpareHash. See `v030-progress.md` for acceptance.
+This scoped authorization does not permit unrelated VM/data changes or weaker
+networking, storage, wallet/mining or SELinux/AppArmor isolation.
+
 The VM lab **cannot certify**:
 
 - Real Steam Gaming Mode gameplay lifecycle.

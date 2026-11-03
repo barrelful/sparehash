@@ -19,8 +19,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Journal-based mining inhibition even with a missing lifecycle hold, protected
   receipt refresh and removal of validated owned updater leftovers.
 - Superseded migration/completion engine and installer upgrade flags removed.
-- Production trust confirmation and final signed-artifact verification remain
-  owner prerequisites; this is not a published release or workstation rollout.
+- The owner-confirmed existing Nitrokey public certificate/primary pin is bundled
+  separately from XMRig. Exact-commit pre-tag builds require that signer and verify
+  against installed trust; no private key or test bypass is shipped. Final
+  signed-artifact verification remains required before owner-approved publication.
 
 ## [0.2.1] - 2026-11-01
 
